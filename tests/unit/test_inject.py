@@ -1,0 +1,89 @@
+"""Tests for assembling and rendering the session-start block."""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from sessionmemory.lib import field, inject
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+NOW = "2026-09-01T14:03:11Z"
+
+
+def _project(vault: Path) -> Path:
+    root = vault / "projects" / "demo"
+    field.new_page(
+        root / "learnings",
+        title="Beta learning",
+        summary="SUMMARY-SENTINEL-beta",
+        body="BODY-SENTINEL-beta",
+        now=NOW,
+    )
+    field.new_page(
+        root / "learnings",
+        title="Alpha learning",
+        summary="SUMMARY-SENTINEL-alpha",
+        body="BODY-SENTINEL-alpha",
+        now=NOW,
+    )
+    field.new_document(root / "specs", title="A Spec", body="", now=NOW)
+    (root / "backlog.md").write_text(
+        "# Backlog\n\n- [ ] one\n- [x] done\n- [ ] two\n", encoding="utf-8"
+    )
+    return root
+
+
+def test_build_lists_titles_sorted_and_counts_open_backlog(tmp_path):
+    """Verify titles come from the pages, sorted, and the backlog count skips checked items."""
+    _project(tmp_path)
+
+    result = inject.build(tmp_path, "demo")
+
+    assert result.titles == ("Alpha learning", "Beta learning")
+    assert result.open_backlog == 2
+    assert result.specs == ("A Spec",)
+    assert result.plans == ()
+
+
+def test_build_empty_project(tmp_path):
+    """Verify a project with nothing yet builds an empty injection rather than failing."""
+    result = inject.build(tmp_path, "demo")
+
+    assert result == inject.Injection(project="demo", titles=(), open_backlog=0, specs=(), plans=())
+
+
+def test_render_leads_with_guidance_and_names_the_command(tmp_path):
+    """Verify the guidance block comes first and spells the CLI the way the caller asked."""
+    _project(tmp_path)
+
+    text = inject.render(inject.build(tmp_path, "demo"), command="/x/bin/sessionmemory")
+
+    assert text.startswith("## Using this vault")
+    assert "/x/bin/sessionmemory search" in text
+    assert "## What this project knows" in text
+    assert "  - Alpha learning\n  - Beta learning" in text
+    assert "2 open backlog items" in text
+    assert "A Spec" in text
+
+
+def test_render_names_an_empty_project_rather_than_an_empty_list(tmp_path):
+    """Verify a project with no learnings says so instead of rendering nothing."""
+    text = inject.render(inject.build(tmp_path, "demo"), command="sessionmemory")
+
+    assert "  nothing yet" in text
+
+
+def test_render_carries_no_summaries_or_bodies(tmp_path):
+    """Verify injection is titles only, carrying neither a page's summary nor its body."""
+    _project(tmp_path)
+
+    text = inject.render(inject.build(tmp_path, "demo"), command="sessionmemory")
+
+    assert "Alpha learning" in text
+    assert "Beta learning" in text
+    assert "SUMMARY-SENTINEL-alpha" not in text
+    assert "SUMMARY-SENTINEL-beta" not in text
+    assert "BODY-SENTINEL-alpha" not in text
+    assert "BODY-SENTINEL-beta" not in text

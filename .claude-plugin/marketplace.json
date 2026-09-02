@@ -1,0 +1,12 @@
+{
+  "name": "sessionmemory",
+  "owner": { "name": "Nathaniel Landau" },
+  "description": "Durable memory for coding agents: a CLI and the session hooks that feed it.",
+  "plugins": [
+    {
+      "name": "sessionmemory",
+      "source": "./",
+      "description": "Project memory: one field of markdown pages per project, captured by an end-of-session sweep and injected at session start."
+    }
+  ]
+}

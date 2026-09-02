@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# The one place that knows the CLI is run through uv. Hooks, skills, prompts, and
+# agents invoke this path and pass CLI arguments straight through, so the
+# invocation strategy can change without touching any of them.
+set -euo pipefail
+
+# Resolve this script's own location through any symlink chain, so a shim reached
+# through a link on PATH still finds the project it belongs to. macOS readlink has
+# no -f, so the chain is walked here.
+source="${BASH_SOURCE[0]}"
+while [ -L "$source" ]; do
+  dir="$(cd -P -- "$(dirname -- "$source")" && pwd)"
+  source="$(readlink -- "$source")"
+  [ "${source#/}" = "$source" ] && source="$dir/$source"
+done
+ROOT="$(cd -P -- "$(dirname -- "$source")/.." && pwd)"
+
+exec uv run --project "$ROOT" --frozen sessionmemory "$@"

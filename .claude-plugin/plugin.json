@@ -1,0 +1,8 @@
+{
+  "name": "sessionmemory",
+  "version": "0.1.0",
+  "description": "Project memory: one field of markdown pages per project, captured by an end-of-session sweep and injected at session start.",
+  "author": { "name": "Nathaniel Landau" },
+  "repository": "https://github.com/natelandau/sessionmemory",
+  "license": "MIT"
+}
