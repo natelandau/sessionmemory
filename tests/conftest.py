@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+import typer.rich_utils
 
 from sessionmemory.lib.bootstrap import initialize
 
@@ -53,3 +54,16 @@ def _git_identity(tmp_path_factory, monkeypatch) -> None:
     config.write_text('[user]\n\tname = "Test"\n\temail = "test@example.com"\n')
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+
+@pytest.fixture(autouse=True)
+def _plain_typer_output(monkeypatch) -> None:
+    """Keep Typer's error output free of escape codes, whatever the environment says.
+
+    Typer decides at import time to force terminal mode under `GITHUB_ACTIONS`,
+    `FORCE_COLOR`, or `PY_COLORS`, and Rich's option highlighter then styles
+    `--max-distance` as three fragments, so a test asserting the option name appears in
+    a usage error fails only on a machine that exports one of those. `CliRunner` is not
+    a terminal, and the tests assert on what a caller redirecting output would see.
+    """
+    monkeypatch.setattr(typer.rich_utils, "FORCE_TERMINAL", False)
