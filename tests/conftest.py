@@ -36,3 +36,20 @@ def vault(tmp_path, monkeypatch):
     initialize(root)
     monkeypatch.setenv("SESSIONMEMORY_VAULT", str(root))
     return root
+
+
+@pytest.fixture(autouse=True)
+def _git_identity(tmp_path_factory, monkeypatch) -> None:
+    """Give git a committer identity that does not depend on the machine.
+
+    Fixtures commit into throwaway repositories, and git refuses a commit with no
+    identity on a host where it cannot derive one from the login and hostname, which a
+    CI runner is. Pointing `GIT_CONFIG_GLOBAL` at a file of our own also keeps a
+    developer's real global config, such as commit signing, out of the suite. The hooks
+    strip `GIT_`-prefixed variables before running git, so their tests set a repo-local
+    identity themselves.
+    """
+    config = tmp_path_factory.mktemp("git") / "config"
+    config.write_text('[user]\n\tname = "Test"\n\temail = "test@example.com"\n')
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
