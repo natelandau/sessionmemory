@@ -82,7 +82,8 @@
 
     addopts        = "--color=yes --doctest-modules --strict-config --strict-markers -n auto --dist loadfile"
     cache_dir      = ".cache/pytest"
-    columns        = 120
+    cli_runner_patch_result = true
+    columns        = 1000
     filterwarnings = ['error', 'ignore:.*Pydantic.*:UserWarning', 'ignore::DeprecationWarning:']
     markers        = ["serial"]
     set_columns    = true
