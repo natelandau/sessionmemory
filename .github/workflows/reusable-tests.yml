@@ -1,0 +1,49 @@
+---
+name: "Reusable Tests"
+
+on:
+    workflow_call:
+        inputs:
+            run-coverage:
+                description: "Run coverage"
+                required: false
+                type: boolean
+                default: false
+
+jobs:
+    test-python-code:
+        runs-on: ubuntu-latest
+        strategy:
+            fail-fast: true
+            matrix:
+                python-version: ["3.14"]
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v7
+
+            - name: Setup Python, uv, and the package
+              uses: ./.github/actions/setup_python_env
+              with:
+                  python-version: ${{ matrix.python-version }}
+
+            - name: Run tests
+              shell: bash
+              run: uv run pytest tests/
+
+    lint-project:
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v7
+
+            - name: Setup Python, uv, and the package
+              uses: ./.github/actions/setup_python_env
+
+            - name: run all linters
+              shell: bash
+              run: |
+                  uv run ruff check --config pyproject.toml --no-fix
+                  uv run ruff format
+                  uv run ty check src/
+                  uv run typos --config .typos.toml
+                  uv run yamllint --config-file .yamllint.yml .
