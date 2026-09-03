@@ -74,7 +74,18 @@ context. It also records two things the sweep cannot recover later: the transcri
 so the sweep finds it after a `/clear`, and the commit the repository was on, so the
 session log reports the whole span.
 
-An unregistered repository is told so by name, rather than passed over in silence:
+When the directory is a git working tree that the vault has never seen, the hook
+registers it through `sessionmemory project --register` before it injects. The block
+then opens with the slug the repository was filed under:
+
+```
+This repository was registered with the vault as project 'invoice-api'.
+```
+
+A directory outside git is never registered by the hook. A slug is permanent once pages
+carry it. A session opened in a home directory or a scratch folder must not leave a
+project named after it in the vault. Such a directory, and a repository the CLI refuses
+to register, receive the command instead:
 
 ```
 This project is not registered with the vault, so it has no memory yet. Register it with: sessionmemory project --register
@@ -85,9 +96,9 @@ passed the handshake, and by the cached copy's absolute path otherwise.
 
 The hook's timeout is 100 seconds, and it budgets its own worst case: resolving the
 project root 5s, reading the head commit 5s, two version handshakes 10s, the vault commit
-35s, `sessionmemory inject` 25s, and one registration check 5s, which is 85 seconds in
-all. Injection reads no index and loads no model, so a first session never waits on the
-embedding model download.
+35s, one registration check 5s, one registration 5s, and `sessionmemory inject` 25s,
+which is 90 seconds in all. Injection reads no index and loads no model, so a first
+session never waits on the embedding model download.
 
 ### SessionEnd
 
@@ -237,9 +248,12 @@ to `sweep.log` in this project's machine-local state directory, which
 written, and the tail of stderr when the run failed.
 
 **A session starts with no memory.** Run `sessionmemory project` in that repository. An
-unregistered directory exits 1 and names the command that registers it. If the project is
-registered, run `sessionmemory inject --cwd <your repo>` by hand from a shell. If that
-prints the block, the hook is not finding the vault root, so set `vault.root` in
+unregistered directory exits 1 and names the command that registers it. The hook
+registers a git repository on its own, so a repository that stays unregistered is one the
+CLI refused. Run `sessionmemory project --register --cwd .` by hand to see the reason,
+which is usually a slug another project holds. If the project is registered, run
+`sessionmemory inject --cwd <your repo>` by hand from a shell. If that prints the block,
+the hook is not finding the vault root, so set `vault.root` in
 `~/.claude/sessionmemory.toml`.
 
 **Search misses a page you can see.** The index is behind its pages. Run

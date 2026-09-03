@@ -14,6 +14,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 import sessionstart  # ty: ignore[unresolved-import]
@@ -21,7 +22,7 @@ from sessionhooks.config import SessionMemoryConfig  # ty: ignore[unresolved-imp
 from sessionhooks.store import Store  # ty: ignore[unresolved-import]
 from sessionhooks.vaultcli import ROOT_ENV  # ty: ignore[unresolved-import]
 
-from sessionmemory.lib import field
+from sessionmemory.lib import field, registry
 from sessionmemory.lib.bootstrap import initialize
 from tests._env import clean_environ
 
@@ -425,15 +426,72 @@ def run_sessionstart(tmp_path: Path, request: pytest.FixtureRequest):
     return _run_it
 
 
-def test_an_unregistered_project_is_told_how_to_register(
+def _git_init(proj: Path) -> None:
+    """Turn `proj` into an empty git working tree, which is all registration needs."""
+    subprocess.run(
+        ["git", "init", "-q"], cwd=proj, check=True, capture_output=True, env=clean_environ()
+    )
+
+
+def test_an_unregistered_repository_is_registered_at_session_start(
     unregistered_vault: Path, hook_payload: dict, run_sessionstart
 ) -> None:
-    """Verify a reachable vault that has never registered this project names the fix."""
-    # Given an unregistered project and a reachable, initialized vault
+    """Verify a git working tree the vault has never seen is registered before injection."""
+    # Given an unregistered git repository and a reachable, initialized vault
+    proj = Path(hook_payload["cwd"])
+    _git_init(proj)
+    # When SessionStart runs
+    output = run_sessionstart(hook_payload)
+    # Then the vault holds the repository under its derived slug
+    entry = registry.load(unregistered_vault)[proj.name]
+    assert entry.root == str(proj.resolve())
+    # And the session is told the slug, then given the guidance, never the hint
+    context = output["hookSpecificOutput"]["additionalContext"]
+    assert f"'{proj.name}'" in context
+    assert "## Using this vault" in context
+    assert "sessionmemory project --register" not in context
+
+
+def test_a_directory_outside_git_is_told_how_to_register(
+    unregistered_vault: Path, hook_payload: dict, run_sessionstart
+) -> None:
+    """Verify a plain directory is never registered on its own, only told the command."""
+    # Given an unregistered directory that is not a git working tree
     # (fixtures above)
     # When SessionStart runs
     output = run_sessionstart(hook_payload)
-    # Then the injected context names the command that fixes it
+    # Then nothing was registered, and the injected context names the command that would
+    assert registry.load(unregistered_vault) == {}
+    assert "sessionmemory project --register" in output["hookSpecificOutput"]["additionalContext"]
+
+
+def test_a_registration_the_cli_refuses_falls_back_to_the_hint(
+    unregistered_vault: Path, hook_payload: dict, run_sessionstart, tmp_path: Path
+) -> None:
+    """Verify a refused registration leaves the person the command, not a silent start."""
+    # Given a repository whose derived slug is already taken by another root
+    proj = Path(hook_payload["cwd"])
+    _git_init(proj)
+    taken = tmp_path / "elsewhere"
+    taken.mkdir()
+    subprocess.run(
+        [
+            str(HOOKS.parent / "bin" / "sessionmemory"),
+            "project",
+            "--register",
+            "--cwd",
+            str(taken),
+            "--slug",
+            proj.name,
+        ],
+        env={**clean_environ(also_drop=_AMBIENT), ROOT_ENV: str(unregistered_vault)},
+        check=True,
+        capture_output=True,
+    )
+    # When SessionStart runs
+    output = run_sessionstart(hook_payload)
+    # Then the registry is unchanged and the hint is injected
+    assert registry.load(unregistered_vault)[proj.name].root == str(taken.resolve())
     assert "sessionmemory project --register" in output["hookSpecificOutput"]["additionalContext"]
 
 
@@ -451,18 +509,24 @@ def test_a_registered_project_gets_no_hint(
     )
 
 
-def _fake_vault_cli(*, memory: str, is_registered: bool) -> type:
-    """A VaultCLI stand-in whose inject and registered outcomes are fixed.
+def _fake_vault_cli(
+    *,
+    memory: str,
+    resolution: dict | None,
+    registers_as: str | None = None,
+) -> type:
+    """A VaultCLI stand-in whose resolve, register, and inject outcomes are fixed.
 
     The real vault always renders something once a project is registered, so
-    it cannot exercise the branch where inject comes back empty on a
-    registered project (or vice versa). This fake decouples the two so the
-    branch in `_memory_block` gets a direct test.
+    it cannot exercise the branches where inject comes back empty on a
+    registered project, or where the CLI cannot answer at all. This fake
+    decouples the three so each branch in `_memory_block` gets a direct test.
     """
 
     class _FakeVaultCLI:
         cli = Path("/fake/bin/sessionmemory")
         command = str(cli)
+        registered_cwds: ClassVar[list[Path]] = []
 
         @classmethod
         def discover(
@@ -473,11 +537,15 @@ def _fake_vault_cli(*, memory: str, is_registered: bool) -> type:
         ) -> _FakeVaultCLI:
             return cls()
 
+        def resolve(self, *, cwd: Path, env: dict) -> dict | None:
+            return resolution
+
+        def register(self, *, cwd: Path, env: dict) -> str | None:
+            self.registered_cwds.append(cwd)
+            return registers_as
+
         def inject(self, *, cwd: Path, env: dict) -> str:
             return memory
-
-        def registered(self, *, cwd: Path, env: dict) -> bool:
-            return is_registered
 
     return _FakeVaultCLI
 
@@ -509,26 +577,91 @@ def test_memory_block_omits_the_hint_for_a_registered_project_with_nothing_to_sa
 ) -> None:
     """Verify a registered project whose inject comes back empty gets no hint."""
     # Given a vault that reports the project registered but has nothing to inject
-    monkeypatch.setattr(sessionstart, "VaultCLI", _fake_vault_cli(memory="", is_registered=True))
+    fake_cli = _fake_vault_cli(memory="", resolution={"registered": True, "repo_root": "/r"})
+    monkeypatch.setattr(sessionstart, "VaultCLI", fake_cli)
     # When the memory block is built
     result = sessionstart._memory_block(SessionMemoryConfig(), cwd=tmp_path)
     # Then there is nothing to say, not a wrongful registration hint
     assert result is None
+    assert fake_cli.registered_cwds == []
 
 
-def test_memory_block_hints_when_an_empty_inject_is_from_an_unregistered_project(
+def test_memory_block_hints_for_an_unregistered_directory_outside_git(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Verify an empty inject from an unregistered project produces the hint."""
-    # Given a vault that reports the project is not registered and has nothing to inject
-    fake_cli = _fake_vault_cli(memory="", is_registered=False)
+    """Verify a plain directory is told the command rather than registered."""
+    # Given a vault that reports the directory unregistered and outside any repository
+    fake_cli = _fake_vault_cli(memory="", resolution={"registered": False, "repo_root": None})
     monkeypatch.setattr(sessionstart, "VaultCLI", fake_cli)
     # When the memory block is built
     result = sessionstart._memory_block(SessionMemoryConfig(), cwd=tmp_path)
     # Then the registration hint names the absolute CLI path, not a bare `sessionmemory`
-    # that a plugin-only install has nowhere on PATH to resolve
+    # that a plugin-only install has nowhere on PATH to resolve, and nothing was registered
     assert result == sessionstart._unregistered_hint(fake_cli())
     assert str(fake_cli.cli) in result
+    assert fake_cli.registered_cwds == []
+
+
+def test_memory_block_hints_when_the_cli_cannot_answer(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Verify an unreadable `project` answer is treated as unregistered, never as a repository."""
+    # Given a vault whose CLI could not resolve the directory at all
+    fake_cli = _fake_vault_cli(memory="", resolution=None)
+    monkeypatch.setattr(sessionstart, "VaultCLI", fake_cli)
+    # When the memory block is built
+    result = sessionstart._memory_block(SessionMemoryConfig(), cwd=tmp_path)
+    # Then the hint is given and no registration was attempted
+    assert result == sessionstart._unregistered_hint(fake_cli())
+    assert fake_cli.registered_cwds == []
+
+
+def test_memory_block_registers_a_repository_and_says_so(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Verify an unregistered repository is registered for `cwd` and the slug is reported."""
+    # Given a vault that reports an unregistered git working tree
+    fake_cli = _fake_vault_cli(
+        memory="## Guides", resolution={"registered": False, "repo_root": "/r"}, registers_as="r"
+    )
+    monkeypatch.setattr(sessionstart, "VaultCLI", fake_cli)
+    # When the memory block is built
+    result = sessionstart._memory_block(SessionMemoryConfig(), cwd=tmp_path)
+    # Then the directory was registered, and the block leads with the slug before the memory
+    assert fake_cli.registered_cwds == [tmp_path]
+    assert result is not None
+    assert result.index("'r'") < result.index("## Guides")
+    assert result.endswith(sessionstart.SKILL_POINTER)
+
+
+def test_memory_block_reports_a_registration_even_when_inject_is_empty(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Verify the registration is reported on its own when the vault renders nothing after it."""
+    # Given a registration that succeeds and an inject that comes back empty
+    fake_cli = _fake_vault_cli(
+        memory="", resolution={"registered": False, "repo_root": "/r"}, registers_as="r"
+    )
+    monkeypatch.setattr(sessionstart, "VaultCLI", fake_cli)
+    # When the memory block is built
+    result = sessionstart._memory_block(SessionMemoryConfig(), cwd=tmp_path)
+    # Then the block is the registration line alone
+    assert result == sessionstart._registered_note("r")
+
+
+def test_memory_block_hints_when_registration_is_refused(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Verify a refused registration falls back to naming the command."""
+    # Given a repository the CLI refuses to register
+    fake_cli = _fake_vault_cli(
+        memory="", resolution={"registered": False, "repo_root": "/r"}, registers_as=None
+    )
+    monkeypatch.setattr(sessionstart, "VaultCLI", fake_cli)
+    # When the memory block is built
+    result = sessionstart._memory_block(SessionMemoryConfig(), cwd=tmp_path)
+    # Then the hint is the whole answer
+    assert result == sessionstart._unregistered_hint(fake_cli())
 
 
 # ---------------------------------------------------------------------------
@@ -807,7 +940,9 @@ def test_memory_block_names_the_skill_that_carries_the_rest(
     """Verify a session with memory is also told where the full command surface is."""
     # Given a vault with something to inject
     monkeypatch.setattr(
-        sessionstart, "VaultCLI", _fake_vault_cli(memory="## Guides", is_registered=True)
+        sessionstart,
+        "VaultCLI",
+        _fake_vault_cli(memory="## Guides", resolution={"registered": True}),
     )
 
     # When the memory block is built
@@ -829,7 +964,11 @@ def test_memory_block_omits_the_skill_pointer_when_there_is_no_memory(
     alongside the registration hint.
     """
     # Given an unregistered project, whose one useful instruction is how to register
-    monkeypatch.setattr(sessionstart, "VaultCLI", _fake_vault_cli(memory="", is_registered=False))
+    monkeypatch.setattr(
+        sessionstart,
+        "VaultCLI",
+        _fake_vault_cli(memory="", resolution={"registered": False, "repo_root": None}),
+    )
 
     # When the memory block is built
     result = sessionstart._memory_block(SessionMemoryConfig(), cwd=tmp_path)

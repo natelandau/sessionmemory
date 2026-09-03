@@ -24,8 +24,12 @@ Independently, on any start other than `resume` it injects the consume-once
 after the inject is emitted. The handoff is an explicit user artifact, so it is
 carried even when memory injection is disabled.
 
-When the project is not registered with the vault, it says so instead of
-staying silent, naming the command that registers it.
+When the project is not registered with the vault and the directory is a git
+working tree, it registers the repository through the CLI before injecting, and
+says which slug it was filed under. A directory outside git is never registered
+on its own, since a slug is permanent and a session opened in a home or scratch
+directory would leave a project named after it behind; such a directory, and a
+registration the CLI refuses, are told the command that registers by hand.
 
 The schema version is deliberately not checked here. This path only reads, and a
 block rendered by a vault one version ahead is still readable text; it is the
@@ -35,10 +39,9 @@ No-ops when running inside the headless sweep agent, and when no vault is
 reachable. Fail-open: any error exits 0 rather than wedging session start.
 
 The hook's timeout budgets its worst case: `Store.for_cwd` 5s, `head_commit` 5s,
-two `VaultCLI.discover` handshakes 10s, the vault commit 35s, `VaultCLI.inject` 25s,
-`VaultCLI.registered` 5s, 85s in
-all; the timeout is 100 to stay ahead of that sum. Raising any of those numbers
-means raising it.
+two `VaultCLI.discover` handshakes 10s, the vault commit 35s, `VaultCLI.resolve` 5s,
+`VaultCLI.register` 5s, `VaultCLI.inject` 25s, 90s in all; the timeout is 100 to
+stay ahead of that sum. Raising any of those numbers means raising it.
 """
 
 from __future__ import annotations
@@ -82,6 +85,11 @@ def _unregistered_hint(vault: VaultCLI) -> str:
     )
 
 
+def _registered_note(slug: str) -> str:
+    """The line a session receives when this start registered its repository."""
+    return f"This repository was registered with the vault as project '{slug}'."
+
+
 def _write_all(fd: int, data: bytes) -> None:
     """Write every byte of `data` to `fd`, looping past short writes.
 
@@ -108,16 +116,25 @@ def _memory_block(cfg: SessionMemoryConfig, *, cwd: Path) -> str | None:
     vault = VaultCLI.discover(env=os.environ, configured=cfg.vault_root)
     if vault is None:
         return None
+    resolution = vault.resolve(cwd=cwd, env=os.environ)
+    registered = resolution is not None and resolution.get("registered") is True
+    slug: str | None = None
+    if not registered:
+        # A slug is permanent, so only a git working tree is registered unattended:
+        # a session opened in a home or scratch directory must not file a project
+        # named after it. Every other refusal belongs to the CLI.
+        if resolution is None or not resolution.get("repo_root"):
+            return _unregistered_hint(vault)
+        slug = vault.register(cwd=cwd, env=os.environ)
+        if slug is None:
+            return _unregistered_hint(vault)
+    blocks: list[str] = []
+    if slug is not None:
+        blocks.append(_registered_note(slug))
     memory = vault.inject(cwd=cwd, env=os.environ)
     if memory:
-        return f"{memory}\n\n{SKILL_POINTER}"
-    if vault.registered(cwd=cwd, env=os.environ):
-        return None
-    # An unregistered project injects nothing, which is indistinguishable from an
-    # empty vault. Registration is a deliberate one-time act, so this names it
-    # rather than performing it: a slug is permanent and its notes have to be
-    # moved by hand.
-    return _unregistered_hint(vault)
+        blocks.append(f"{memory}\n\n{SKILL_POINTER}")
+    return "\n\n".join(blocks) or None
 
 
 def main() -> None:  # pragma: no cover - runs only as a subprocess, where coverage cannot see it

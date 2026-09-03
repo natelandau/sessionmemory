@@ -30,7 +30,7 @@ import subprocess
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -64,6 +64,7 @@ COMMIT_GIT_TIMEOUT = 5
 
 # The CLI's own contract: 0 success, 1 refused, 2 misconfigured.
 EXIT_OK = 0
+EXIT_REFUSED = 1
 
 
 def _shim() -> Path:
@@ -133,6 +134,17 @@ def _cli_on_path(env: Mapping[str, str]) -> Path | None:
     if installed is None or installed < required:
         return None
     return Path(found)
+
+
+def _json_object(raw: str | None) -> dict[str, Any] | None:
+    """Parse `raw` as a JSON object, or None for anything the hook cannot trust."""
+    if raw is None:
+        return None
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -227,13 +239,8 @@ class VaultCLI:
         raw = self.output(
             ["project", "--cwd", str(cwd), "--json"], cwd=cwd, env=env, timeout=timeout
         )
-        if raw is None:
-            return None
-        try:
-            payload = json.loads(raw)
-        except json.JSONDecodeError:
-            return None
-        if not isinstance(payload, dict):
+        payload = _json_object(raw)
+        if payload is None:
             return None
         flat = {k: v for k, v in payload.items() if isinstance(k, str) and isinstance(v, str)}
         nested = payload.get("paths")
@@ -243,14 +250,42 @@ class VaultCLI:
             )
         return flat
 
-    def registered(self, *, cwd: Path, env: Mapping[str, str]) -> bool:
-        """Report whether `cwd` belongs to a project the vault knows.
+    def resolve(self, *, cwd: Path, env: Mapping[str, str]) -> dict[str, Any] | None:
+        """The `project --json` payload for `cwd`, or None when the CLI could not answer.
 
-        `project` exits non-zero for an unregistered directory, which is what the
-        session-start hint reads. Bounded by `RESOLVE_TIMEOUT` rather than the full
-        `TIMEOUT`, since this call never touches the index or the embedding model.
+        `project` exits 1 for an unregistered directory but still prints its
+        payload, and that payload is the answer here: `registered` says whether
+        the directory has an entry, and `repo_root` says whether it is a git
+        working tree, which is what decides whether the session-start hook may
+        register it. Bounded by `RESOLVE_TIMEOUT`, since the call never touches
+        the index or the embedding model.
         """
-        return self.project_paths(cwd=cwd, env=env, timeout=RESOLVE_TIMEOUT) is not None
+        proc = self.run(
+            ["project", "--cwd", str(cwd), "--json"], cwd=cwd, env=env, timeout=RESOLVE_TIMEOUT
+        )
+        if proc is None or proc.returncode not in (EXIT_OK, EXIT_REFUSED):
+            return None
+        return _json_object(proc.stdout)
+
+    def register(self, *, cwd: Path, env: Mapping[str, str]) -> str | None:
+        """Register the project owning `cwd`; the slug, or None when the CLI refused.
+
+        The CLI owns every rule here: which root and remote to record, how the
+        slug is derived, and what to refuse (a bare repository, a slug already
+        in use, a malformed registry). A refusal is reported as None rather than
+        interpreted, since the hook's only fallback is to name the command.
+        """
+        raw = self.output(
+            ["project", "--register", "--cwd", str(cwd), "--json"],
+            cwd=cwd,
+            env=env,
+            timeout=RESOLVE_TIMEOUT,
+        )
+        payload = _json_object(raw)
+        if payload is None:
+            return None
+        slug = payload.get("slug")
+        return slug if isinstance(slug, str) and slug else None
 
     def commit(self, *, env: Mapping[str, str]) -> str | None:
         """Commit the vault's outstanding changes; the short sha, or None."""

@@ -366,10 +366,87 @@ def test_project_paths_without_a_nested_paths_key(marked_vault, stub_cli, tmp_pa
     assert cli.project_paths(cwd=tmp_path, env=_env()) == {"slug": "demo"}
 
 
-def test_registered_reports_whether_project_paths_resolved(marked_vault, stub_cli, tmp_path):
-    """Verify registered() reflects whether project_paths resolved something."""
+def test_resolve_reads_the_payload_of_a_registered_project(marked_vault, stub_cli, tmp_path):
+    """Verify resolve() returns the CLI's payload for a directory with an entry."""
     # Given a discovered vault whose stub CLI resolves a project
     cli = VaultCLI.discover(env=_env(**{ROOT_ENV: str(marked_vault)}), configured=None)
 
-    # When asking whether the project is registered / Then it reports True
-    assert cli.registered(cwd=tmp_path, env=_env()) is True
+    # When resolving / Then the payload reports the entry
+    resolved = cli.resolve(cwd=tmp_path, env=_env())
+    assert resolved is not None
+    assert resolved["registered"] is True
+    assert resolved["slug"] == "demo"
+
+
+def test_resolve_reads_the_payload_of_an_unregistered_project(marked_vault, stub_cli, tmp_path):
+    """Verify resolve() still parses `project --json` when the CLI exits 1 for no entry."""
+    # Given a CLI that reports the directory unregistered, and exits 1 saying so
+    stub_cli.write_text(
+        "#!/usr/bin/env python3\nimport json, sys\n"
+        "print(json.dumps({'slug': None, 'registered': False, 'repo_root': '/r/proj'}))\n"
+        "sys.exit(1)\n",
+        encoding="utf-8",
+    )
+    stub_cli.chmod(0o755)
+    cli = VaultCLI.discover(env=_env(**{ROOT_ENV: str(marked_vault)}), configured=None)
+
+    # When resolving / Then the payload comes through, exit code notwithstanding
+    resolved = cli.resolve(cwd=tmp_path, env=_env())
+    assert resolved == {"slug": None, "registered": False, "repo_root": "/r/proj"}
+
+
+@pytest.mark.parametrize(
+    "emitted", ["not json at all", '["a", "b"]'], ids=["malformed", "non-object"]
+)
+def test_resolve_refuses_output_it_cannot_trust(marked_vault, stub_cli, tmp_path, emitted):
+    """Verify a `project` payload that is not a JSON object resolves to nothing."""
+    stub_cli.write_text(
+        f"#!/usr/bin/env python3\nimport sys\nprint({emitted!r})\n", encoding="utf-8"
+    )
+    stub_cli.chmod(0o755)
+    cli = VaultCLI.discover(env=_env(**{ROOT_ENV: str(marked_vault)}), configured=None)
+
+    assert cli.resolve(cwd=tmp_path, env=_env()) is None
+
+
+def test_register_returns_the_slug_the_cli_filed_the_project_under(
+    marked_vault, stub_cli, tmp_path
+):
+    """Verify register() sends `project --register` for the directory and returns the slug."""
+    cli = VaultCLI.discover(env=_env(**{ROOT_ENV: str(marked_vault)}), configured=None)
+
+    slug = cli.register(cwd=tmp_path, env=_env())
+
+    assert slug == "demo"
+    sent = (stub_cli.parent / "args.txt").read_text(encoding="utf-8").split()
+    assert sent[:2] == ["project", "--register"]
+    assert sent[sent.index("--cwd") + 1] == str(tmp_path)
+    assert "--json" in sent
+
+
+def test_register_yields_none_when_the_cli_refuses(marked_vault, stub_cli, tmp_path):
+    """Verify a refused registration is reported as None rather than a partial answer."""
+    # Given a CLI that refuses the registration, as it does for a slug already in use
+    stub_cli.write_text(
+        "#!/usr/bin/env python3\nimport json, sys\n"
+        "print(json.dumps({'slug': None, 'registered': False}))\nsys.exit(1)\n",
+        encoding="utf-8",
+    )
+    stub_cli.chmod(0o755)
+    cli = VaultCLI.discover(env=_env(**{ROOT_ENV: str(marked_vault)}), configured=None)
+
+    assert cli.register(cwd=tmp_path, env=_env()) is None
+
+
+def test_resolve_yields_none_when_the_cli_is_misconfigured(marked_vault, stub_cli, tmp_path):
+    """Verify an exit code outside the CLI's answered set is never read as a payload."""
+    # Given a CLI that exits 2, its code for a missing or uninitialized vault
+    stub_cli.write_text(
+        "#!/usr/bin/env python3\nimport json, sys\n"
+        "print(json.dumps({'registered': False, 'repo_root': '/r'}))\nsys.exit(2)\n",
+        encoding="utf-8",
+    )
+    stub_cli.chmod(0o755)
+    cli = VaultCLI.discover(env=_env(**{ROOT_ENV: str(marked_vault)}), configured=None)
+
+    assert cli.resolve(cwd=tmp_path, env=_env()) is None

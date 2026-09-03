@@ -108,8 +108,21 @@ Pushing that history to a remote stays yours to do.
 
 ## Register a project
 
-A project gets memory when its repository is registered. Registration is the only
-decision, and it happens once, from inside the repository:
+A project gets memory when its repository is registered. With the plugin installed, the
+first session you open in a git repository registers it. The session begins with one
+line that names the slug:
+
+```
+This repository was registered with the vault as project 'invoice-api'.
+```
+
+The slug comes from the git remote, or from the directory name when the repository has
+no remote. There is nothing else to choose: no tags, no scope, no note type.
+
+Only a git repository is registered for you. A slug is permanent once pages carry it. A
+session opened in your home directory or a scratch folder must not leave a project named
+after it in the vault. To register a directory outside git, or to choose the slug
+yourself, run the command once:
 
 ```bash
 cd ~/repos/invoice-api
@@ -120,11 +133,6 @@ sessionmemory project --register --cwd .
 ✓ registered 'invoice-api'
   └─ root: ~/repos/invoice-api
 ```
-
-`--register` reads the git remote and the repository root, and derives the slug from
-them. There is nothing else to choose: no tags, no scope, no note type. The slug is
-permanent once pages carry it, so an unregistered directory is told to run this command
-rather than registered for you.
 
 From then on, a session that starts in a registered repository receives that project's
 memory. A session that ends or compacts hands its transcript to a background pass, which
