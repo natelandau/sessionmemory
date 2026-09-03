@@ -208,13 +208,21 @@ redundant is a judgment, so curation is yours to start.
 
 | Command                           | What it does                                                                |
 | --------------------------------- | --------------------------------------------------------------------------- |
-| `/sessionmemory:review`  | Sharpens weak titles and summaries, retires stale or redundant pages         |
+| `/sessionmemory:review`  | Curates the learnings: sharpens weak titles, retires stale or redundant pages |
 | `/sessionmemory:backlog` | Triages `backlog.md`, then ranks what is left by impact and effort           |
 | `/sessionmemory:handoff` | Writes a consume-once handoff of the current task, for the next session      |
 | `/sessionmemory:cli`    | The command surface, loaded when a session needs to read or write the vault  |
 
 `cli` is the one skill a session can reach on its own. The other three run only
 when you ask for them.
+
+`review` handles the learnings field and `backlog` handles `backlog.md`; neither
+touches the other's files, except that `review` adds a backlog line for a page that
+turns out to be deferred work. `backlog` stops to ask before closing or removing an
+item a reviewer judged with low confidence. Pass `--yes`, as in
+`/sessionmemory:backlog --yes`, to apply those too and read them in the report
+instead. Nothing else waits on you: every page edit and delete is applied outright,
+since the vault is a git repository and a wrong one is reverted from its history.
 
 `review` matters more than it looks. A page's title is what every session start
 shows and its summary is what a search returns, so a weak title or a thin summary is a

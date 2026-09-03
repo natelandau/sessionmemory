@@ -2,6 +2,7 @@
 name: backlog
 description: Triage and curate this project's backlog.md - validate the open items against the current repository, tick, remove, or amend them, then rank what remains by impact and effort to recommend what to do next.
 disable-model-invocation: true
+argument-hint: "[--yes]"
 ---
 
 # Vault Backlog
@@ -10,6 +11,10 @@ Triage this project's `backlog.md` and surface what is worth doing next. Two
 read-only reviewer subagents do the analysis: one checks whether each open item is
 still real, the other scores the real ones by value. You apply the resulting edits
 and report. You are the only writer here.
+
+The invocation's arguments are `$ARGUMENTS`. This skill stops to confirm a
+low-confidence `CLOSE` or `REMOVE`; `--yes` applies those too and lists them in
+the report instead, for a run nobody is watching.
 
 ## Locate the backlog
 
@@ -51,13 +56,14 @@ Every disposition is an Edit to `backlog.md`; git history keeps all of them.
   `## <kind>` section. Keep the date.
 - **`KEEP`**: leave it.
 
-Confirm a low-confidence `CLOSE` or `REMOVE` with the user first. This skill never
-adds an item and never touches the learnings field.
+Confirm a low-confidence `CLOSE` or `REMOVE` with the user first, unless `--yes`
+was passed. This skill never adds an item and never touches the learnings field.
 
 ## Report
 
 1. **Changes applied**: one line with the counts, then the closed and removed
-   lines with their evidence.
+   lines with their evidence, marking each one applied under `--yes` on low
+   confidence.
 2. **Open backlog at a glance**: a count, then a table of open lines by kind and
    size.
 3. **Work on next**: the open lines where `recommend_now` is yes, best first, each

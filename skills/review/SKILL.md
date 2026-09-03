@@ -1,20 +1,24 @@
 ---
 name: review
-description: Curate this project's vault knowledge - sharpen weak titles and summaries, retire stale or redundant learnings, and resolve backlog items the repository shows are done. Read-only reviewer subagents judge; this skill applies the changes.
+description: Curate this project's learnings - sharpen weak titles and summaries, retire stale, historical, or redundant pages, and route a page that is really deferred work into backlog.md. Read-only reviewer subagents judge; this skill applies the changes.
 disable-model-invocation: true
 ---
 
 # Vault Review
 
-Curate this project's persisted knowledge: the learnings field and `backlog.md`.
-The end-of-session sweep adds and refines; this pass is what keeps the field
-accurate, non-redundant, and at the right altitude. Since a page's title is what
-every session start shows and its summary is what a search returns, a weak title
-or summary is a memory that effectively does not exist, and fixing those is the
-most valuable thing this skill does.
+Curate this project's learnings field. The end-of-session sweep adds and refines;
+this pass is what keeps the field accurate, non-redundant, and at the right
+altitude. Since a page's title is what every session start shows and its summary
+is what a search returns, a weak title or summary is a memory that effectively
+does not exist, and fixing those is the most valuable thing this skill does.
+
+The backlog has its own pass, `backlog`, which validates and ranks the open items.
+This skill touches `backlog.md` only to add a line for a learning that turns out
+to be deferred work.
 
 You orchestrate read-only reviewer subagents and apply their verdicts. You are the
-only writer here.
+only writer here, and nothing here waits on the user: the vault is a git
+repository, and a wrong change is recovered from its history.
 
 ## Locate what to review
 
@@ -41,10 +45,9 @@ all before dispatching reviewers.
 
 ```bash
 ls "$LEARNINGS"/*.md
-grep -n '^- \[ \]' "$BACKLOG"
 ```
 
-If there is nothing in either, report that and stop.
+If there is nothing, report that and stop.
 
 ## Dispatch the reviewers
 
@@ -58,13 +61,10 @@ agent per batch, run in parallel; a single batch when there are only a handful.
   is weak, a `proposed_change` for the body on UPDATE, a `backlog_candidate` for
   a page that really names deferred work, and a `claude_md_candidate`. Match by
   `target`.
-- **`backlog-validity-reviewer`**: batch the open lines. Pass the path of
-  `backlog.md` and the lines verbatim. It returns `CLOSE`/`REMOVE`/`AMEND`/`KEEP`
-  per line, keyed by `item`.
 - **`redundancy-reviewer`**: once, over the whole learnings directory. It returns
   clusters of overlapping pages naming a `merge_target`.
 
-The `backlog-opportunity-reviewer` is `backlog`'s job. Do not dispatch it here.
+The two backlog reviewers are `backlog`'s job. Do not dispatch them here.
 
 ## Apply changes
 
@@ -75,22 +75,20 @@ The `backlog-opportunity-reviewer` is `backlog`'s job. Do not dispatch it here.
   `"$CLI" delete` the others.
 - **Learnings**: `UPDATE` rewrites the body in place; `DELETE` runs
   `"$CLI" delete "$LEARNINGS/<file>"`; `KEEP` does nothing.
-- **Backlog**: `CLOSE` changes the line's `- [ ]` to `- [x]`; `REMOVE` deletes
-  the line; `AMEND` edits the line's text, size, or section; `KEEP` does nothing.
-- **Backlog routing** (from `backlog_candidate`): dedupe against the open lines,
-  then add one line under the right `## <kind>` section in the format
-  `- [ ] [S] <item> - <today> [#topic]`. A `workaround` page stays; a
+- **Backlog routing** (from `backlog_candidate`): dedupe against the open lines
+  in `$BACKLOG`, then add one line under the right `## <kind>` section in the
+  format `- [ ] [S] <item> - <today> [#topic]`. A `workaround` page stays; a
   `superseded` page is deleted like any other DELETE.
 - **CLAUDE.md promotion** (from `claude_md_candidate`): recommend only, never
   apply. Surface the reason and the suggested entry; do not edit `CLAUDE.md` and
   do not delete the page.
 
-Neither a delete nor an edit needs a confidence gate: the vault is a git
-repository and a wrong change is recovered from its history. Confirm a
-low-confidence backlog `CLOSE` with the user before ticking it.
+A delete or an edit never needs a confidence gate. Apply every verdict.
 
 ## Report
 
 One short paragraph or a brief list: pages reviewed, titles and summaries
-sharpened, pages merged and deleted; backlog lines closed, removed, amended, or
-routed in; any CLAUDE.md recommendations, stated plainly as not applied.
+sharpened, pages merged and deleted, backlog lines routed in, and any CLAUDE.md
+recommendations, stated plainly as not applied. Then every DELETE the reviewer
+returned with low confidence, each with its one-line reason, so a wrong one can
+be reverted from the vault's history.
