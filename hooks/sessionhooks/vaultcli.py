@@ -82,8 +82,9 @@ class VaultCLI:
     def _child_env(self, env: Mapping[str, str]) -> dict[str, str]:
         """The environment for the CLI, with the vault it must read pinned to ours.
 
-        Discovery may have come from the config file rather than the environment,
-        and the CLI reads its vault only from the environment.
+        Discovery may have come from the config file rather than the environment. The
+        CLI reads the same file, but pinning the root keeps a hook and the CLI it runs
+        from ever resolving two different vaults.
         """
         return {**env, ROOT_ENV: str(self.root)}
 

@@ -9,21 +9,20 @@ can drift from the other.
 
 ## Install
 
-Install the CLI and create a vault first, as [the README](../README.md) describes. Then
-add the clone as a marketplace and install the plugin from it:
+Install the CLI and create a vault first, as [the README](../README.md) describes. Then,
+in Claude Code, add this repository as a marketplace and install the plugin from it:
 
 ```
-/plugin marketplace add ~/repos/sessionmemory
+/plugin marketplace add natelandau/sessionmemory
 /plugin install sessionmemory@sessionmemory
 ```
 
-The GitHub shorthand `natelandau/sessionmemory` works as a marketplace source too.
-Installing from a local clone still copies it: Claude Code writes the plugin into
-`~/.claude/plugins/cache/sessionmemory/sessionmemory/<version>/`, with its own
-Python environment, and every hook runs the CLI out of that copy rather than out of your
-clone. Refresh the copy after pulling changes to the clone, with
-`/plugin update sessionmemory@sessionmemory` or a reinstall; nothing in the clone
-takes effect until you do.
+Claude Code copies the plugin into
+`~/.claude/plugins/cache/sessionmemory/sessionmemory/<version>/`, with a Python
+environment of its own, and every hook runs the CLI out of that copy. The copy is
+separate from the `sessionmemory` tool on your `PATH`, so upgrading the tool does not
+change the hooks. A release reaches the hooks through
+`/plugin update sessionmemory@sessionmemory`, or a reinstall.
 
 ### Point the hooks at your vault
 
@@ -37,9 +36,10 @@ root exported there is invisible to it. Record the root in a configuration file 
 root = "~/repos/my-vault"
 ```
 
-`SESSIONMEMORY_VAULT` still wins when both are set. This is the one setting a plugin
-install most needs. A session that finds neither one runs with no memory, and says
-nothing about it.
+`SESSIONMEMORY_VAULT` still wins when both are set. The CLI reads the same key with the
+same precedence, so one line in this file configures both halves. This is the one setting
+a plugin install most needs. A session that finds neither one runs with no memory, and
+says nothing about it.
 
 ## What runs, and when
 
@@ -150,7 +150,7 @@ session.
 
 | Key                       | Default             | What it does                                                       |
 | ------------------------- | ------------------- | ------------------------------------------------------------------ |
-| `vault.root`              | unset               | Where the vault is, when `SESSIONMEMORY_VAULT` is not exported     |
+| `vault.root`              | unset               | Where the vault is, for the hooks and the CLI, when `SESSIONMEMORY_VAULT` is not exported |
 | `inject.enabled`          | `true`              | Set false to stop memory injection at session start                 |
 | `sweep.enabled`           | `true`              | Set false to stop the end-of-session pass                           |
 | `sweep.model`             | `claude-sonnet-4-6` | The model the pass runs on                                          |
@@ -224,7 +224,7 @@ written, and the tail of stderr when the run failed.
 
 **A session starts with no memory.** Run `sessionmemory project` in that repository. An
 unregistered directory exits 1 and names the command that registers it. If the project is
-registered, run `bin/sessionmemory inject --cwd <your repo>` by hand from the clone. If that
+registered, run `sessionmemory inject --cwd <your repo>` by hand from a shell. If that
 prints the block, the hook is not finding the vault root, so set `vault.root` in
 `~/.claude/sessionmemory.toml`.
 

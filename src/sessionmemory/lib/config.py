@@ -11,6 +11,9 @@ from sessionmemory.lib.paths import SYSTEM_DIR
 
 VAULT_ENV_VAR = "SESSIONMEMORY_VAULT"
 
+# The plugin's settings file, read here only for `[vault] root`.
+CONFIG_FILE = Path("~/.claude/sessionmemory.toml")
+
 VAULT_MARKER = "vault.toml"
 
 
@@ -19,7 +22,11 @@ class VaultNotConfiguredError(RuntimeError):
 
 
 def vault_root() -> Path:
-    """Return the vault directory named by the environment.
+    """Return the vault directory named by the environment or the config file.
+
+    `SESSIONMEMORY_VAULT` wins. When it is unset, `[vault] root` in `CONFIG_FILE` is read
+    instead, so a plugin user who recorded the root there once has the CLI and the hooks
+    agree on where the vault is. The precedence is the hooks' own.
 
     The path is resolved, so every directory the CLI prints is absolute, such as the
     `project_dir` in `sessionmemory project --json`. A relative value would otherwise be
@@ -29,19 +36,50 @@ def vault_root() -> Path:
         Path: The resolved vault directory.
 
     Raises:
-        VaultNotConfiguredError: If the variable is unset or names a missing directory.
+        VaultNotConfiguredError: If neither source names a vault, the config file cannot
+            be parsed, or the named directory is missing.
     """
     raw = os.environ.get(VAULT_ENV_VAR)
+    source = VAULT_ENV_VAR
+    if not raw:
+        raw = _configured_root()
+        source = str(CONFIG_FILE)
     if not raw:
         msg = f"{VAULT_ENV_VAR} is not set. Point it at your vault repository."
         raise VaultNotConfiguredError(msg)
 
     root = Path(raw).expanduser().resolve()
     if not root.is_dir():
-        msg = f"{VAULT_ENV_VAR} is {root}, which does not exist or is not a directory."
+        msg = f"{source} names {root}, which does not exist or is not a directory."
         raise VaultNotConfiguredError(msg)
 
     return root
+
+
+def _configured_root() -> str | None:
+    """Return `[vault] root` from the config file, or None when it names nothing.
+
+    A value that is not a string is treated as absent, as the hooks treat it. An
+    unparsable file raises rather than reading as absent, because a person at a keyboard
+    fixes a named parse error faster than a "not set" message that is not true.
+
+    Raises:
+        VaultNotConfiguredError: If the file exists but cannot be read or parsed.
+    """
+    path = CONFIG_FILE.expanduser()
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (tomllib.TOMLDecodeError, OSError, UnicodeDecodeError) as error:
+        msg = f"{CONFIG_FILE} could not be read: {error}"
+        raise VaultNotConfiguredError(msg) from error
+
+    vault = data.get("vault")
+    if not isinstance(vault, dict):
+        return None
+    root = vault.get("root")
+    return root if isinstance(root, str) and root else None
 
 
 def today() -> str:

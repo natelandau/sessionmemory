@@ -13,7 +13,12 @@ from nclutils import pp
 
 from sessionmemory.lib import embed, registry
 from sessionmemory.lib.bootstrap import is_empty
-from sessionmemory.lib.config import VaultNotConfiguredError, is_initialized, vault_root
+from sessionmemory.lib.config import (
+    CONFIG_FILE,
+    VaultNotConfiguredError,
+    is_initialized,
+    vault_root,
+)
 from sessionmemory.lib.paths import SYSTEM_DIR
 from sessionmemory.lib.resolve import resolve as resolve_project
 
@@ -21,6 +26,13 @@ if TYPE_CHECKING:
     from sessionmemory.lib.embed import Embedder
 
 EMBEDDER_ENV_VAR = "SESSIONMEMORY_EMBEDDER"
+
+
+# The two ways to name the vault, offered together whenever neither is set.
+VAULT_FIX = [
+    "export SESSIONMEMORY_VAULT=/path/to/your/vault",
+    f"or set [vault] root in {CONFIG_FILE}",
+]
 
 
 def build_embedder() -> Embedder:
@@ -123,7 +135,7 @@ def require_vault() -> Path:
     try:
         vault = vault_root()
     except VaultNotConfiguredError as error:
-        pp.error(str(error), details=["export SESSIONMEMORY_VAULT=/path/to/your/vault"])
+        pp.error(str(error), details=VAULT_FIX)
         raise typer.Exit(1) from error
 
     if not is_initialized(vault):

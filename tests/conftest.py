@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from sessionmemory.lib import config
 from sessionmemory.lib.bootstrap import initialize
 
 
@@ -15,6 +16,16 @@ def _stub_embedder(monkeypatch) -> None:
     copy, and no test here depends on a real embedding.
     """
     monkeypatch.setenv("SESSIONMEMORY_EMBEDDER", "stub")
+
+
+@pytest.fixture(autouse=True)
+def _isolated_config_file(tmp_path, monkeypatch) -> None:
+    """Point the CLI's config file at a path that does not exist.
+
+    `vault_root` falls back to `~/.claude/sessionmemory.toml` when the environment is
+    unset, so a test of the unset case would otherwise read the developer's real file.
+    """
+    monkeypatch.setattr(config, "CONFIG_FILE", tmp_path / "config" / "sessionmemory.toml")
 
 
 @pytest.fixture

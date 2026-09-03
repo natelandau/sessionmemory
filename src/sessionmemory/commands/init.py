@@ -9,12 +9,12 @@ from pathlib import Path  # noqa: TC003
 import typer
 from nclutils import pp
 
-from sessionmemory.commands._common import emit_json
+from sessionmemory.commands._common import VAULT_FIX, emit_json
 from sessionmemory.lib.bootstrap import InitResult, NotAVaultError, initialize
 from sessionmemory.lib.config import VaultNotConfiguredError, vault_root
 
 DIRECTORY_ARGUMENT = typer.Argument(
-    None, help="Where to create the vault. Defaults to SESSIONMEMORY_VAULT."
+    None, help="Where to create the vault. Defaults to the configured vault root."
 )
 FORCE_OPTION = typer.Option(
     False,  # noqa: FBT003
@@ -60,12 +60,12 @@ def init(
 
     A vault cannot be created through `require_vault`, since that helper refuses an
     uninitialized directory and this command is what fixes that. When no directory is
-    given, `SESSIONMEMORY_VAULT` is read directly instead.
+    given, the configured root is read directly instead.
 
     Raises:
-        Exit: When no directory is given and the environment variable is unset or names
-            a missing directory, or when the target directory holds unrelated files and
-            `--force` is not given.
+        Exit: When no directory is given and no vault root is configured or the
+            configured one names a missing directory, or when the target directory holds
+            unrelated files and `--force` is not given.
     """
     if directory is not None:
         # Every other reader resolves the vault path, so a relative or symlinked path
@@ -76,7 +76,7 @@ def init(
         try:
             vault = vault_root()
         except VaultNotConfiguredError as error:
-            pp.error(str(error), details=["export SESSIONMEMORY_VAULT=/path/to/your/vault"])
+            pp.error(str(error), details=VAULT_FIX)
             raise typer.Exit(1) from error
 
     try:

@@ -1,17 +1,20 @@
 # CLI reference
 
-Every command below runs as `sessionmemory <command>`. From the clone without a tool
-install, run `uv run sessionmemory <command>` or `bin/sessionmemory <command>` instead.
+Every command below runs as `sessionmemory <command>`. The `sessionmemory` command comes
+from `uv tool install sessionmemory`, as [the README](../README.md#install) describes.
 
 ## Conventions
 
-Every command reads `SESSIONMEMORY_VAULT` to find the vault. With the variable unset, or
-pointing at a directory that `sessionmemory init` never touched, the command exits 1 and
-says so:
+Every command reads `SESSIONMEMORY_VAULT` to find the vault. When the variable is unset,
+the command reads `vault.root` from `~/.claude/sessionmemory.toml` instead, the same file
+the plugin reads, and the variable wins when both are set. With neither set, or with the
+vault pointing at a directory that `sessionmemory init` never touched, the command exits 1
+and says so:
 
 ```
 ✗ SESSIONMEMORY_VAULT is not set. Point it at your vault repository.
-  └─ export SESSIONMEMORY_VAULT=/path/to/your/vault
+  ├─ export SESSIONMEMORY_VAULT=/path/to/your/vault
+  └─ or set [vault] root in ~/.claude/sessionmemory.toml
 ```
 
 Every command except `init`, `delete`, and `doctor` resolves a project from the working
@@ -48,12 +51,12 @@ Create the files a new vault needs.
 
 | Option        | What it does                                                             |
 | ------------- | ------------------------------------------------------------------------ |
-| `[directory]` | Where to create the vault. Defaults to `SESSIONMEMORY_VAULT`.            |
+| `[directory]` | Where to create the vault. Defaults to the configured vault root.        |
 | `--force`     | Initialize a directory that already has contents. Nothing is overwritten. |
 | `--json`      | Emit JSON instead of prose.                                              |
 
 ```bash
-sessionmemory init                       # in SESSIONMEMORY_VAULT
+sessionmemory init                       # in the configured vault root
 sessionmemory init ~/repos/my-vault      # in a named directory
 sessionmemory init --force ~/old-notes   # a directory that already has contents
 ```
@@ -546,7 +549,7 @@ Archive:  ~/repos/invoice-api.memoryfield.zip
 
 | Variable                    | What it does                                                          |
 | --------------------------- | --------------------------------------------------------------------- |
-| `SESSIONMEMORY_VAULT`       | Where the vault is. Every command needs it.                           |
+| `SESSIONMEMORY_VAULT`       | Where the vault is. Wins over `vault.root` in `~/.claude/sessionmemory.toml`. |
 | `SESSIONMEMORY_MODEL_CACHE` | Where the embedding model is cached. Defaults to `~/.cache/sessionmemory/models`. |
 | `SESSIONMEMORY_EMBEDDER`    | Test only. `stub` selects a hash-derived embedder and loads no model. |
 

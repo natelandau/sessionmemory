@@ -24,58 +24,78 @@ speaks the format.
 
 ## Requirements
 
-- Python 3.13 or 3.14
-- [uv](https://docs.astral.sh/uv/)
+- [uv](https://docs.astral.sh/uv/). It installs the CLI, and the plugin runs its hooks
+  through it.
+- Python 3.13 or 3.14. `uv` downloads one when none is installed.
 - git. The vault is a git repository, and a project is registered by its git remote.
 - Claude Code, to run the plugin. The CLI works on its own without it.
 
 The first search downloads the `nomic-embed-text-v1.5` embedding model, about 520MB, and
 caches it under `~/.cache/sessionmemory/models`. Nothing else touches the network.
 
-## Install the CLI
+## Install
 
-Clone the repository and install its dependencies. Keep the clone: it is the source the
-plugin installs from, and it is where you pull updates.
+Installation is three steps: the CLI, the plugin, and a vault for them to share.
 
-```bash
-git clone https://github.com/natelandau/sessionmemory ~/repos/sessionmemory
-cd ~/repos/sessionmemory
-uv sync
-```
+### 1. Install the CLI
 
-To put a `sessionmemory` command on your `PATH`, install the package as a tool:
+The CLI is published on PyPI. Install it as a tool, which puts `sessionmemory` on your
+`PATH`:
 
 ```bash
-uv tool install .
+uv tool install sessionmemory
 ```
 
-Without that step, run the CLI as `uv run sessionmemory` from the clone, or through the
-`bin/sessionmemory` shim, which works from any directory.
+To upgrade it later, run `uv tool upgrade sessionmemory`.
 
-## Create a vault
+### 2. Install the Claude Code plugin
+
+In Claude Code, add this repository as a marketplace and install the plugin from it:
+
+```
+/plugin marketplace add natelandau/sessionmemory
+/plugin install sessionmemory@sessionmemory
+```
+
+Claude Code copies the plugin into its own cache and runs the hooks from that copy, in a
+Python environment of its own. The first session after the install builds that
+environment. The hooks run their own copy of the CLI, so upgrading the tool from step 1
+does not change them. `/plugin update sessionmemory@sessionmemory` does.
+
+### 3. Create a vault
 
 The vault is its own directory. Make it a git repository of its own, so your pages and
-this code do not share a history.
+this code do not share a history. Then initialize it:
 
 ```bash
 mkdir -p ~/repos/my-vault
 cd ~/repos/my-vault
 git init
-export SESSIONMEMORY_VAULT=~/repos/my-vault
-sessionmemory init
+sessionmemory init ~/repos/my-vault
 ```
-
-Put the `export` in your shell profile, and give it an absolute path. Every directory the
-CLI prints is built from that value.
 
 `sessionmemory init` writes the three files a vault needs. A marker in `_system/vault.toml`
 identifies the directory as a vault. A `.gitignore` keeps the derived index out of your
 history. A README explains the layout to whoever opens the vault later. `sessionmemory init`
 never overwrites a file, so you can run it again safely.
 
-Until a directory holds that marker, every command refuses to touch it. The refusal
-protects you. If `SESSIONMEMORY_VAULT` points at your home directory by mistake, the
-first page written scatters a `projects/` tree into it.
+Then tell the CLI and the hooks where the vault is. Both read the same two places, in the
+same order: the `SESSIONMEMORY_VAULT` environment variable, then `vault.root` in
+`~/.claude/sessionmemory.toml`. Record the root in the file, since a session launched
+from a GUI or an IDE does not read your shell profile:
+
+```toml
+[vault]
+root = "~/repos/my-vault"
+```
+
+The variable wins when both are set, so exporting it in one shell points that shell at a
+different vault without touching the file. The
+[plugin documentation](docs/plugin.md#settings) lists every other key that file accepts.
+
+Until a directory holds the marker that `sessionmemory init` writes, every command refuses
+to touch it. The refusal protects you. If the root points at your home directory by
+mistake, the first page written scatters a `projects/` tree into it.
 
 Nothing commits the vault on a timer. The plugin commits it when a session starts and
 again when a session ends, so a page reaches git within the session that wrote it.
@@ -104,6 +124,10 @@ sessionmemory project --register --cwd .
 them. There is nothing else to choose: no tags, no scope, no note type. The slug is
 permanent once pages carry it, so an unregistered directory is told to run this command
 rather than registered for you.
+
+From then on, a session that starts in a registered repository receives that project's
+memory. A session that ends or compacts hands its transcript to a background pass, which
+records what was worth keeping.
 
 ## Search and write pages
 
@@ -145,33 +169,6 @@ The vault path is shortened to `~` here; the command prints absolute paths.
 The command writes the frontmatter and prints the path. Write the body into that file,
 or pass it with `--body-file`. The title is what every future session sees at its start,
 and the summary is what a search result shows. Both state the fact and not the topic.
-
-## Install the Claude Code plugin
-
-Add the clone as a marketplace, then install the plugin from it:
-
-```
-/plugin marketplace add ~/repos/sessionmemory
-/plugin install sessionmemory@sessionmemory
-```
-
-The GitHub shorthand `natelandau/sessionmemory` works as a marketplace source too.
-Either way, Claude Code copies the plugin into its own cache and runs the hooks from that
-copy, not from your clone. After you pull changes into the clone, run
-`/plugin update sessionmemory@sessionmemory` to refresh the copy.
-
-A hook does not start from an interactive shell. A session launched from a GUI or an IDE
-cannot see a root exported in `.zshrc`, so record the vault root in
-`~/.claude/sessionmemory.toml` as well:
-
-```toml
-[vault]
-root = "~/repos/my-vault"
-```
-
-From then on, a session that starts in a registered repository receives that project's
-memory. A session that ends or compacts hands its transcript to a background pass, which
-records what was worth keeping.
 
 ## What a session sees
 
@@ -223,6 +220,8 @@ with their length. The titles say what exists. `sessionmemory search` returns wh
 ## Development
 
 ```bash
+git clone https://github.com/natelandau/sessionmemory
+cd sessionmemory
 uv sync                  # install dependencies
 uv run duty lint         # ruff, ty, typos, yamllint, shellcheck, prek
 uv run duty test         # pytest with coverage

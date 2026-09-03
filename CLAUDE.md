@@ -10,11 +10,14 @@ and Write.
 
 ## Running
 
-Every command reads `SESSIONMEMORY_VAULT` to locate the vault and exits non-zero when
-the variable is unset or names a missing or uninitialized directory. `init` reads the
-variable directly rather than through the check every other command goes through, since
-`init` is what makes that check pass. Point it at a throwaway directory when running by
-hand.
+Every command reads `SESSIONMEMORY_VAULT` to locate the vault, falls back to
+`vault.root` in `~/.claude/sessionmemory.toml` when the variable is unset, and exits
+non-zero when neither names a vault or the named directory is missing or uninitialized.
+The fallback lives in `lib/config.vault_root` and reads that one key and nothing else;
+every other setting in the file belongs to the hooks. `init` reads the root directly
+rather than through the check every other command goes through, since `init` is what
+makes that check pass. Point the variable at a throwaway directory when running by hand,
+since it wins over the file.
 
 ```bash
 export SESSIONMEMORY_VAULT=/tmp/scratch-vault && mkdir -p "$SESSIONMEMORY_VAULT"

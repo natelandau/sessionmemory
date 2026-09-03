@@ -3,9 +3,10 @@
 # All keys are optional; omitting the file uses the defaults shown.
 
 [vault]
-# Where the vault lives. Only needed when SESSIONMEMORY_VAULT is not exported:
-# a hook does not inherit an interactive shell's profile, so a root set in
-# .zshrc is invisible to a session started from a GUI launcher.
+# Where the vault lives, for the hooks and the CLI alike. Only needed when
+# SESSIONMEMORY_VAULT is not exported: a hook does not inherit an interactive
+# shell's profile, so a root set in .zshrc is invisible to a session started
+# from a GUI launcher.
 root = "~/repos/my-vault"
 
 [inject]

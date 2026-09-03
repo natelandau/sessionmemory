@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
 
 from sessionmemory.lib import config
@@ -11,6 +13,9 @@ from sessionmemory.lib.config import (
     is_initialized,
     vault_root,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def test_vault_root_reads_environment(tmp_path, monkeypatch):
@@ -38,6 +43,71 @@ def test_vault_root_missing_directory_raises(tmp_path, monkeypatch):
     """Fail when the variable points at something that does not exist."""
     monkeypatch.setenv("SESSIONMEMORY_VAULT", str(tmp_path / "nope"))
     with pytest.raises(VaultNotConfiguredError, match="does not exist"):
+        vault_root()
+
+
+def _write_config(monkeypatch, tmp_path, text: str) -> Path:
+    """Write `text` as the config file and point `vault_root` at it."""
+    path = tmp_path / "sessionmemory.toml"
+    path.write_text(text, encoding="utf-8")
+    monkeypatch.setattr(config, "CONFIG_FILE", path)
+    return path
+
+
+def test_vault_root_falls_back_to_the_config_file(tmp_path, monkeypatch):
+    """Read `[vault] root` from the config file when the variable is unset."""
+    monkeypatch.delenv("SESSIONMEMORY_VAULT", raising=False)
+    root = tmp_path / "configured"
+    root.mkdir()
+    _write_config(monkeypatch, tmp_path, f'[vault]\nroot = "{root}"\n')
+
+    assert vault_root() == root
+
+
+def test_environment_wins_over_the_config_file(tmp_path, monkeypatch):
+    """Prefer the variable when both name a vault, as the hooks do."""
+    from_env = tmp_path / "from-env"
+    from_env.mkdir()
+    monkeypatch.setenv("SESSIONMEMORY_VAULT", str(from_env))
+    _write_config(monkeypatch, tmp_path, f'[vault]\nroot = "{tmp_path / "from-config"}"\n')
+
+    assert vault_root() == from_env
+
+
+def test_config_file_root_expands_user(tmp_path, monkeypatch):
+    """Expand a leading tilde in the config file, since that is how the example writes it."""
+    monkeypatch.delenv("SESSIONMEMORY_VAULT", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / "somevault").mkdir()
+    _write_config(monkeypatch, tmp_path, '[vault]\nroot = "~/somevault"\n')
+
+    assert vault_root() == tmp_path / "somevault"
+
+
+def test_config_file_root_missing_directory_raises(tmp_path, monkeypatch):
+    """Name the config file when its root points at nothing, so the fix is findable."""
+    monkeypatch.delenv("SESSIONMEMORY_VAULT", raising=False)
+    path = _write_config(monkeypatch, tmp_path, f'[vault]\nroot = "{tmp_path / "nope"}"\n')
+
+    with pytest.raises(VaultNotConfiguredError, match=rf"{path.name}.*does not exist"):
+        vault_root()
+
+
+def test_config_file_without_a_root_raises_as_unset(tmp_path, monkeypatch):
+    """Treat a config file that names no root the same as no config file."""
+    monkeypatch.delenv("SESSIONMEMORY_VAULT", raising=False)
+    _write_config(monkeypatch, tmp_path, "[sweep]\nenabled = false\n")
+
+    with pytest.raises(VaultNotConfiguredError, match="SESSIONMEMORY_VAULT"):
+        vault_root()
+
+
+def test_unparsable_config_file_raises_naming_the_file(tmp_path, monkeypatch):
+    """Report a broken config file rather than silently running with no vault."""
+    monkeypatch.delenv("SESSIONMEMORY_VAULT", raising=False)
+    path = _write_config(monkeypatch, tmp_path, "[vault\nroot = oops")
+
+    with pytest.raises(VaultNotConfiguredError, match=path.name):
         vault_root()
 
 
