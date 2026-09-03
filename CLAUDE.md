@@ -36,7 +36,7 @@ under `sessionmemory init` is a one-time step a human runs by hand:
 
 ```bash
 uv sync                  # Install dependencies
-uv run duty lint         # Run all linters (ruff, ty, typos, prek)
+uv run duty lint         # Run all linters (ruff, ty, typos, yamllint, shellcheck, prek)
 uv run duty test         # Run tests with coverage
 uv run ruff check src/   # Check code quality
 uv run ruff format src/  # Format code

@@ -224,7 +224,7 @@ with their length. The titles say what exists. `sessionmemory search` returns wh
 
 ```bash
 uv sync                  # install dependencies
-uv run duty lint         # ruff, ty, typos, prek
+uv run duty lint         # ruff, ty, typos, yamllint, shellcheck, prek
 uv run duty test         # pytest with coverage
 ```
 
