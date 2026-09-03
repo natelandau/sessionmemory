@@ -229,7 +229,7 @@ Record this session's work in the one page that belongs to it.
 
 ```bash
 sessionmemory log --session-id 0f6c1f9a-4c1e-4a1b-9d2f-6f4b2a7c5e10 \
-  --title "invoice-api 2026-09-02" \
+  --title "2026-09-02 09:41" \
   --summary "Made the Stripe webhook handler idempotent." \
   --body-file - --cwd . <<'EOF'
 ## Summary
@@ -239,16 +239,16 @@ EOF
 ```
 
 ```
-✓ created 2026-09-02-invoice-api.md
-  └─ ~/repos/my-vault/projects/invoice-api/logs/2026-09-02-invoice-api.md
+✓ created 2026-09-02-09-41.md
+  └─ ~/repos/my-vault/projects/invoice-api/logs/2026-09-02-09-41.md
 ```
 
 The page is keyed on `--session-id`. A second call for the same session updates the page
 it already wrote:
 
 ```
-✓ updated 2026-09-02-invoice-api.md
-  └─ ~/repos/my-vault/projects/invoice-api/logs/2026-09-02-invoice-api.md
+✓ updated 2026-09-02-09-41.md
+  └─ ~/repos/my-vault/projects/invoice-api/logs/2026-09-02-09-41.md
 ```
 
 CAUTION: The body replaces the page's whole body. Send the complete text every time,
@@ -367,8 +367,8 @@ sessionmemory search "webhook handler work" --logs --limit 2
 ```
 
 ```
-~/repos/my-vault/projects/invoice-api/logs/2026-09-02-invoice-api.md
-  invoice-api 2026-09-02
+~/repos/my-vault/projects/invoice-api/logs/2026-09-02-09-41.md
+  2026-09-02 09:41
   Made the Stripe webhook handler idempotent.
 ```
 

@@ -63,6 +63,22 @@ def test_two_sessions_on_one_day_get_two_files(tmp_path):
     assert second.path.name == "2026-09-01-session-2.md"
 
 
+def test_two_sessions_with_distinct_start_times_get_distinct_stems(tmp_path):
+    """Verify a clock time in the title becomes part of the stem, so no suffix is needed."""
+    first = _upsert(tmp_path, session_id="one", title="2026-09-01 09:14")
+    second = _upsert(tmp_path, session_id="two", title="2026-09-01 15:02")
+
+    assert first.path.name == "2026-09-01-09-14.md"
+    assert second.path.name == "2026-09-01-15-02.md"
+
+
+def test_the_stem_is_dated_for_the_day_the_title_names(tmp_path):
+    """Verify a session swept after midnight is filed under the day it began, not the day it was swept."""
+    result = _upsert(tmp_path, title="2026-09-01 23:50", today="2026-09-02")
+
+    assert result.path.name == "2026-09-01-23-50.md"
+
+
 def test_a_date_in_the_title_is_not_written_twice(tmp_path):
     """Verify the filename does not repeat a date the title already carries."""
     result = _upsert(tmp_path, title="2026-09-01 shared-context")

@@ -73,6 +73,19 @@ def session_url(entries: list[dict[str, Any]]) -> str:
     return ""
 
 
+def session_start(entries: list[dict[str, Any]]) -> str:
+    """Return the timestamp of the first entry that carries one, or '' when none does.
+
+    Read from every entry rather than the window since the last compaction, so a
+    session swept twice is named for when it began both times.
+    """
+    for entry in entries:
+        stamp = entry.get("timestamp")
+        if isinstance(stamp, str) and stamp:
+            return stamp
+    return ""
+
+
 def _is_compact_boundary(entry: dict[str, Any]) -> bool:
     """Return whether an entry marks a compaction checkpoint."""
     return bool(

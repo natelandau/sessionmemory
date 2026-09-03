@@ -24,7 +24,7 @@ commits the vault when a session starts and again when a session ends.
       <slug>.md                      pages
       nomic-embed-text-v1.5.sqlite3  vector index (gitignored, derived)
     logs/                            a second field, one page per session
-      <date>-<slug>.md
+      <date>-<time>.md
       nomic-embed-text-v1.5.sqlite3
     specs/<slug>.md                  plain files, not a field, never indexed
     plans/<slug>.md
@@ -114,6 +114,9 @@ the file holds, and nothing more.
 
 `logs/` is a second field holding one page per session. The end-of-session pass
 writes it, keyed on the session id, and it replaces the page's whole body on every call.
+The page is titled for the date and clock time the session began, and the filename is
+dated for the day the title names, so a session that crosses midnight is filed under the
+day it started and two sessions on one day get two distinct names.
 A long session is swept more than once, so each sweep resends everything the last one
 wrote. The page's frontmatter names the transcript on disk as `transcript` and, when
 the session was reachable from claude.ai, its link as `session_url`, so a reader can

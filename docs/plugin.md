@@ -141,7 +141,9 @@ is recorded as nothing at all. Then it does three jobs, in order:
 2. **Deferred work.** Concrete work that was decided and not done becomes one line in
    `backlog.md`. Work the transcript shows was finished is ticked on its existing line.
 3. **The session log.** One page per session, written through `sessionmemory log`, which
-   replaces the page's whole body on every call.
+   replaces the page's whole body on every call. The page is titled with the date and
+   clock time the session began, in local time, so two sessions on one day are told
+   apart by when each started.
 
 Most sessions produce nothing for jobs 1 and 2, and that is the correct outcome. Three
 floors keep trivial sessions out of the vault, and below any one of them the whole pass

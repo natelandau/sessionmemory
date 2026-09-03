@@ -65,6 +65,7 @@ class SweepJob:
     session_id: str
     transcript_path: str = ""
     session_url: str = ""
+    started: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,9 +189,21 @@ def _git_context(cwd: str, *, timeout: int = 10) -> str:
     return proc.stdout.strip() if proc.returncode == 0 else ""
 
 
-def _today() -> str:
-    """Today's date as YYYY-MM-DD in local time, for a log's title."""
-    return datetime.now().astimezone().strftime("%Y-%m-%d")
+def _log_moment(started: str) -> str:
+    """When a session began, as local `YYYY-MM-DD HH:MM`: the whole of a log's title.
+
+    The log already sits in its project's folder, so the title carries nothing but the
+    moment, and the clock time is what keeps two sessions on one day from sharing a
+    title and a filename. It is the session's start rather than the sweep's, so a
+    second sweep of the same session renders the same title. A start that is missing
+    or unreadable falls back to now, since a log titled for the wrong minute beats no
+    log.
+    """
+    try:
+        moment = datetime.fromisoformat(started) if started else datetime.now(UTC)
+    except ValueError:
+        moment = datetime.now(UTC)
+    return moment.astimezone().strftime("%Y-%m-%d %H:%M")
 
 
 def _render_template(path: Path, **variables: str) -> str:
@@ -281,6 +294,7 @@ class Sweep:
                 # Read from every entry rather than the window: the bridge entry is
                 # written at the top of the transcript, before any compaction.
                 session_url=transcript.session_url(entries),
+                started=transcript.session_start(entries),
             )
         except Exception:  # noqa: BLE001 - gate must never raise or leak the lock
             lock.release()
@@ -305,9 +319,9 @@ class Sweep:
         target = Target.from_paths(paths)
         if target is None:
             return None
-        return target, self._log_command(job, slug=paths.get("slug", "session"))
+        return target, self._log_command(job)
 
-    def _log_command(self, job: SweepJob, *, slug: str) -> str:
+    def _log_command(self, job: SweepJob) -> str:
         """Build the `sessionmemory log` command line, complete except for the body.
 
         The body is the one thing the model composes rather than runs, because the
@@ -321,7 +335,7 @@ class Sweep:
             "--session-id",
             job.session_id,
             "--title",
-            f"{slug} {_today()}",
+            _log_moment(job.started),
             "--cwd",
             job.cwd,
         ]

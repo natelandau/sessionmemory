@@ -7,6 +7,7 @@ searched on request without diluting the learnings field.
 
 from __future__ import annotations
 
+import re
 import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -20,6 +21,8 @@ if TYPE_CHECKING:
 SESSION_FIELD = "session_id"
 TRANSCRIPT_FIELD = "transcript"
 URL_FIELD = "session_url"
+
+_ISO_DATE = re.compile(r"(?<!\d)\d{4}-\d{2}-\d{2}(?!\d)")
 
 
 @dataclass(frozen=True)
@@ -36,6 +39,17 @@ def find_session_log(vault: Path, slug: str, session_id: str) -> Path | None:
         if field.read_page(path).meta.get(SESSION_FIELD) == session_id:
             return path
     return None
+
+
+def log_date(title: str, today: str) -> str:
+    """The day a log is filed under: the first date its title names, else `today`.
+
+    A log records a session, and the sweep titles it for the moment the session began,
+    so a session that runs past midnight is swept on a day its title does not name.
+    Filing it under the title's date keeps the filename from carrying both.
+    """
+    match = _ISO_DATE.search(title)
+    return match.group(0) if match else today
 
 
 def upsert_log(  # noqa: PLR0913
@@ -70,8 +84,9 @@ def upsert_log(  # noqa: PLR0913
         field.write_page(existing, meta, body)
         return Upserted(path=existing, created=False)
 
+    day = log_date(title, today)
     try:
-        stem = f"{today}-{slugify(strip_date(title, today))}"
+        stem = f"{day}-{slugify(strip_date(title, day))}"
     except ValueError as error:
         raise field.PageError(str(error)) from error
     path = field.claim_filename(paths.logs_dir(vault, slug), title, stem=stem)

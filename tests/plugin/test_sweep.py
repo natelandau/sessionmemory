@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -318,6 +319,21 @@ def test_gate_carries_the_transcript_path_and_online_link(tmp_path: Path) -> Non
     assert result is not None
     assert result.transcript_path == str(t_file)
     assert result.session_url == "https://claude.ai/code/session_01XYZ"
+
+
+def test_gate_carries_the_session_start(tmp_path: Path) -> None:
+    """Verify the job knows when the session began, so its log can be named for it."""
+    # Given a transcript whose first timestamped entry precedes the window
+    store = store_at(tmp_path)
+    entries = [{"type": "user", "timestamp": "2026-09-03T17:53:10.187Z"}, *_meaningful(6)]
+    t_file = tmp_path / "timed.jsonl"
+    _write_transcript(t_file, entries)
+    sweep = Sweep(store, SessionMemoryConfig(min_exchanges=5), _FakeRunner([]))
+    # When gating
+    result = sweep._gate({"cwd": str(tmp_path), "transcript_path": str(t_file)}, now=1000.0)
+    # Then the start is carried on the job
+    assert result is not None
+    assert result.started == "2026-09-03T17:53:10.187Z"
 
 
 def test_gate_falls_back_to_transcript_pointer(tmp_path: Path) -> None:
@@ -1501,11 +1517,56 @@ def test_the_log_command_carries_no_body(sweep_factory, tmp_path):
     sweep = sweep_factory()
     job = _job(cwd=str(tmp_path), session_id="abc")
 
-    command = sweep._log_command(job, slug="demo")
+    command = sweep._log_command(job)
 
     assert "--body" not in command
     assert "--session-id abc" in command
     assert "log" in command
+
+
+@pytest.fixture
+def utc_clock(monkeypatch: pytest.MonkeyPatch):
+    """Pin local time to UTC so a rendered clock time is the same on every machine."""
+    monkeypatch.setenv("TZ", "UTC")
+    time.tzset()
+    yield
+    monkeypatch.undo()
+    time.tzset()
+
+
+@pytest.mark.usefixtures("utc_clock")
+def test_the_log_title_names_the_session_start(sweep_factory, tmp_path):
+    """Verify the title carries the session's start date and clock time in local time."""
+    sweep = sweep_factory()
+    job = SweepJob(window=[], cwd=str(tmp_path), session_id="abc", started="2026-09-03T17:53:10Z")
+
+    command = sweep._log_command(job)
+
+    assert "--title '2026-09-03 17:53'" in command
+
+
+@pytest.mark.usefixtures("utc_clock")
+def test_the_log_title_renders_the_start_in_local_time(sweep_factory, tmp_path):
+    """Verify a start recorded with an offset is shown on the local clock, not the recorded one."""
+    sweep = sweep_factory()
+    job = SweepJob(
+        window=[], cwd=str(tmp_path), session_id="abc", started="2026-09-03T23:30:00-04:00"
+    )
+
+    command = sweep._log_command(job)
+
+    assert "--title '2026-09-04 03:30'" in command
+
+
+@pytest.mark.parametrize("started", ["", "not a time"])
+def test_the_log_title_falls_back_to_now_without_a_usable_start(sweep_factory, tmp_path, started):
+    """Verify a session with no readable start is still titled with a date and a time."""
+    sweep = sweep_factory()
+    job = SweepJob(window=[], cwd=str(tmp_path), session_id="abc", started=started)
+
+    command = sweep._log_command(job)
+
+    assert re.search(r"--title '\d{4}-\d{2}-\d{2} \d{2}:\d{2}'", command)
 
 
 def test_changes_are_empty_without_a_base_commit(sweep_factory, tmp_path):

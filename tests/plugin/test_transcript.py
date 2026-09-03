@@ -380,3 +380,30 @@ def test_session_url_rejects_a_bridge_id_of_the_wrong_shape(bridge_id: object) -
     entries = [{"type": "bridge-session", "bridgeSessionId": bridge_id}]
 
     assert transcript.session_url(entries) == ""
+
+
+def test_session_start_is_the_first_timestamped_entry() -> None:
+    """Verify the session's start is the earliest entry that carries a timestamp."""
+    entries = [
+        {"type": "mode", "mode": "normal"},
+        {"type": "user", "timestamp": "2026-09-03T17:53:10.187Z"},
+        {"type": "assistant", "timestamp": "2026-09-03T17:54:00.000Z"},
+    ]
+
+    assert transcript.session_start(entries) == "2026-09-03T17:53:10.187Z"
+
+
+@pytest.mark.parametrize("stamp", ["", 42, None])
+def test_session_start_skips_a_timestamp_of_the_wrong_shape(stamp: object) -> None:
+    """Verify an entry whose timestamp is not a non-empty string is passed over."""
+    entries = [
+        {"type": "user", "timestamp": stamp},
+        {"type": "assistant", "timestamp": "2026-09-03T17:54:00.000Z"},
+    ]
+
+    assert transcript.session_start(entries) == "2026-09-03T17:54:00.000Z"
+
+
+def test_session_start_is_empty_without_a_timestamp() -> None:
+    """Verify a transcript with no timestamped entry yields nothing rather than a guess."""
+    assert transcript.session_start([{"type": "mode", "mode": "normal"}]) == ""
