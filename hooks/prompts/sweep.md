@@ -41,7 +41,8 @@ even when it produces no commit and no learning. So does a decision, a change, a
 dead end worth not repeating, or a question left open for next time.
 
 When the two readings are genuinely balanced, record it. A thin log can be
-pruned later; a session that was never written down is gone.
+pruned later; a session that was never written down is gone. That tie-break
+decides the log alone: a learning still has to pass both gates.
 
 ## The three jobs
 

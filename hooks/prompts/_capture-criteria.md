@@ -13,11 +13,16 @@ leave it out: clutter is expensive to remove.
    today, the code + commit + tests already hold it. Skip it.
 2. **Non-recoverability.** Is it absent from the code, types, tests, config, and
    docs, so a future agent would re-make a mistake, re-spend effort, or guess
-   wrong about how the user wants things done? If a quick read of the project
-   would reveal it, skip it.
+   wrong about how the user wants things done? Say in one sentence what that
+   agent would do wrong without the page. If you cannot, or a quick read of the
+   project would stop them anyway, skip it.
 
-A bug you fixed is NOT automatically a learning: the test you added encodes it.
-A learning survives only if it's something the test/code does NOT make visible.
+The work this session did is not a learning. A bug you fixed is encoded by its
+test. A change you made, and why, is encoded by the commit message and the
+comment beside the code, and a page that restates either is a copy of the log.
+A learning is something that would still be true if the code this session
+touched were deleted. This session's commit may be where a trap was found,
+never what the page is about.
 
 ## What is worth capturing
 
