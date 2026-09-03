@@ -35,8 +35,9 @@ No-ops when running inside the headless sweep agent, and when no vault is
 reachable. Fail-open: any error exits 0 rather than wedging session start.
 
 The hook's timeout budgets its worst case: `Store.for_cwd` 5s, `head_commit` 5s,
-the vault commit 35s, `VaultCLI.inject` 25s, `VaultCLI.registered` 5s, 75s in
-all; the timeout is 90 to stay ahead of that sum. Raising any of those numbers
+two `VaultCLI.discover` handshakes 10s, the vault commit 35s, `VaultCLI.inject` 25s,
+`VaultCLI.registered` 5s, 85s in
+all; the timeout is 100 to stay ahead of that sum. Raising any of those numbers
 means raising it.
 """
 
@@ -77,7 +78,7 @@ def _unregistered_hint(vault: VaultCLI) -> str:
     """The line a session in an unregistered project receives instead of memory."""
     return (
         "This project is not registered with the vault, so it has no memory yet. "
-        f"Register it with: {vault.cli} project --register"
+        f"Register it with: {vault.command} project --register"
     )
 
 

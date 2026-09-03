@@ -310,7 +310,7 @@ class Sweep:
         placement, filename, and frontmatter stays resolved here.
         """
         args = [
-            str(self.vault.cli) if self.vault else "",
+            self.vault.command if self.vault else "",
             "log",
             "--session-id",
             job.session_id,
@@ -388,7 +388,7 @@ class Sweep:
                 existing_memory=self._existing_memory(target),
                 git_context=_git_context(job.cwd),
                 capture_criteria=CRITERIA_PATH.read_text(encoding="utf-8"),
-                vault_cli=str(self.vault.cli) if self.vault else "",
+                vault_cli=self.vault.command if self.vault else "",
                 repo=job.cwd,
                 log_command=log_command,
                 nothing_sentinel=NOTHING_TO_RECORD,

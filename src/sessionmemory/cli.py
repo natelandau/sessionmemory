@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import importlib.metadata
+
 import typer
 from nclutils import pp
 
@@ -15,14 +17,29 @@ from sessionmemory.commands import new as new_commands
 from sessionmemory.commands import project
 from sessionmemory.commands import reindex as reindex_commands
 from sessionmemory.commands import search as search_commands
+from sessionmemory.commands._common import emit_value
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
+
+
+def _print_version(value: bool) -> None:  # noqa: FBT001
+    """Print the installed version bare and exit, for a caller that compares it."""
+    if value:
+        emit_value(importlib.metadata.version("sessionmemory"))
+        raise typer.Exit
 
 
 @app.callback()
 def _root(
     verbosity: int = typer.Option(
         0, "-v", "--verbose", count=True, help="Increase output verbosity. Repeat for more."
+    ),
+    version: bool = typer.Option(  # noqa: ARG001, FBT001
+        False,  # noqa: FBT003
+        "--version",
+        callback=_print_version,
+        is_eager=True,
+        help="Print the version and exit.",
     ),
 ) -> None:
     """Manage a project's memory in a vault of markdown pages."""

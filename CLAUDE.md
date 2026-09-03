@@ -297,9 +297,10 @@ exists and not how to read or write it. It cannot be left to a skill: three of t
 ship `disable-model-invocation: true` and are the user's slash commands, and the one that
 is model-invocable only reaches an agent that happens to match its description, which
 fails silently. `--command` is how the guidance spells this CLI, defaulting to
-`sessionmemory` for a human and set to the shim's absolute path by `VaultCLI.inject`,
-since a session that reached the plugin without installing the CLI as a tool has no
-`sessionmemory` on `PATH`.
+`sessionmemory` for a human and set to `VaultCLI.command` by `VaultCLI.inject`: the bare
+name when the tool on `PATH` passed the handshake, and the shim's absolute path when the
+hooks fell back to it, since guidance naming a command the reader cannot run tells them
+nothing.
 
 Injection is deliberately unranked and unlimited. If the titles prove not to be read, the
 next thing to try is a `UserPromptSubmit` hook that embeds each prompt and injects the
@@ -314,32 +315,42 @@ This repository is also a Claude Code plugin. `.claude-plugin/marketplace.json` 
 one marketplace holding one plugin, `sessionmemory`, sourced from `./`. A local-path
 marketplace installs by copying this repository into
 `~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/`, so `${CLAUDE_PLUGIN_ROOT}`
-inside any hook is that copy, never this checkout. `bin/sessionmemory` inside the copy
-resolves `ROOT` to the copy's own directory and runs `uv run --project` there, against an
-environment that belongs to the copy alone; the first run after an install pays to build
-it. A commit to this repository reaches a running session only after
-`/plugin update sessionmemory@sessionmemory` refreshes the copy, or a reinstall replaces
-it.
+inside any hook is that copy, never this checkout. A commit to this repository reaches a
+running session only after `/plugin update sessionmemory@sessionmemory` refreshes the
+copy, or a reinstall replaces it.
 
-`bin/sessionmemory` is the only thing in this repository that knows the CLI runs through
-`uv`. It resolves its own location by walking any symlink chain back to the directory it
-lives in before running `uv run --project "$ROOT" --frozen vault "$@"`, so a shim reached
-through a link on `PATH` still finds the project it belongs to. Every hook, skill, and
-agent reaches the CLI by executing this path; nothing else may invoke `uv` directly, which
-is what keeps the invocation strategy changeable in one place without touching every
-caller.
+**`VaultCLI.discover` in `hooks/sessionhooks/vaultcli.py` is the one place that decides
+which CLI runs.** Two can exist: the `sessionmemory` a person installed on `PATH` from
+PyPI, and `bin/sessionmemory` inside the plugin copy. The tool on `PATH` is preferred
+when it passes a version handshake, since it is what the person and their agent type and
+its environment is already built. The handshake runs `sessionmemory --version` once per
+discovery, under `VERSION_TIMEOUT`, and passes when the reported version is at or past
+the plugin's own, which `plugin_version` reads from the `pyproject.toml` beside the
+shim. The floor is the package version rather than a separate constant because the two
+halves release together under it, so a bump needs no second edit. Anything short of a
+pass, including a plugin copy that cannot read its own version, falls back to the shim.
+The handshake exists because the hooks hard-code the flags and payloads of the CLI they
+shipped with and every hook fails open, so an older tool would mean a session with no
+memory and no error. `VaultCLI.command` is how a prompt spells the result: the bare name
+for a tool on `PATH`, the absolute path for the shim. `hooks/vault-path.py --cli` prints
+`VaultCLI.cli`, and every skill resolves the CLI through that call, so a skill never
+decides this for itself.
+
+`bin/sessionmemory` is the fallback, and the only thing in this repository that knows the
+CLI can run through `uv`. It resolves its own location by walking any symlink chain back
+to the directory it lives in before running `uv run --project "$ROOT" --frozen
+sessionmemory "$@"`, against an environment that belongs to the copy alone; the first
+fallback run after an install pays to build it. Nothing else may invoke `uv` directly.
 
 `hooks/` imports nothing from `src/`. The hooks are standalone `uv run --script` programs
-with no dependencies of their own, and they reach the CLI only by executing
-`bin/sessionmemory`, the same as a human would from a shell. A hook that imported
-`sessionmemory` directly would pay for the CLI's whole dependency graph just to decide
-whether to shell out to it.
+with no dependencies of their own, and they reach the CLI only by executing whichever
+path `VaultCLI.discover` chose, the same as a human would from a shell. A hook that
+imported `sessionmemory` directly would pay for the CLI's whole dependency graph just to
+decide whether to shell out to it.
 
-There is deliberately no schema-version check between the two halves. It existed to catch
-the plugin and the CLI drifting apart across two repositories that shipped and versioned
-separately. There is now one checkout and one version of both, so a checkout cannot drift
-from itself, and adding the check back would be solving a problem this repository no
-longer has.
+`.claude-plugin/plugin.json` carries the same version as `pyproject.toml`, and
+`version_files` in the commitizen config bumps both, so the manifest cannot fall behind
+the package it describes.
 
 `sessionmemory log` replaces a note's body on every call, and `--body` defaults to empty,
 so any caller has to send the complete body every time, never a diff or an addendum. This
@@ -358,10 +369,11 @@ committed by the next hook. Git history is the recovery. The prompt forbids dele
 page, and a page the model deletes through Bash is committed as a deletion.
 
 `hooks.json` budgets each hook's own worst case. `SessionStart` runs `Store.for_cwd` (one
-git call, `_GIT_TIMEOUT` 5s), `head_commit` (5s), the vault commit (`COMMIT_GIT_TIMEOUT`
-5s across up to seven git calls, so 35s), `VaultCLI.inject` (`TIMEOUT` 25s), and
-`VaultCLI.registered` (`RESOLVE_TIMEOUT` 5s): a worst case of 75s under a timeout of 90.
-`SessionEnd` gates inline and then commits, so its 60 covers the same 35s with headroom.
+git call, `_GIT_TIMEOUT` 5s), `head_commit` (5s), two `VaultCLI.discover` handshakes
+(`VERSION_TIMEOUT` 5s each), the vault commit (`COMMIT_GIT_TIMEOUT` 5s across up to seven
+git calls, so 35s), `VaultCLI.inject` (`TIMEOUT` 25s), and `VaultCLI.registered`
+(`RESOLVE_TIMEOUT` 5s): a worst case of 85s under a timeout of 100. `SessionEnd` runs one
+handshake and then commits, so its 60 covers 40s with headroom.
 `PreCompact` only gates and spawns, and its timeout is 10. Raising any of those constants
 means raising the timeout that covers them.
 

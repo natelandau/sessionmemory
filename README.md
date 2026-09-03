@@ -57,10 +57,11 @@ In Claude Code, add this repository as a marketplace and install the plugin from
 /plugin install sessionmemory@sessionmemory
 ```
 
-Claude Code copies the plugin into its own cache and runs the hooks from that copy, in a
-Python environment of its own. The first session after the install builds that
-environment. The hooks run their own copy of the CLI, so upgrading the tool from step 1
-does not change them. `/plugin update sessionmemory@sessionmemory` does.
+The hooks run the `sessionmemory` from step 1 when its version is at or past the
+plugin's own. Keep the two in step: after `/plugin update sessionmemory@sessionmemory`,
+run `uv tool upgrade sessionmemory` as well. A plugin newer than the tool falls back to
+a copy of the CLI it carries, in a Python environment of its own that the first such
+session builds.
 
 ### 3. Create a vault
 

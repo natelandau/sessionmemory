@@ -8,7 +8,9 @@ can answer a subprocess call to the facade.
 
 from __future__ import annotations
 
+import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -42,6 +44,16 @@ def _run(
         check=False,
         timeout=30,
     )
+
+
+def _path_with_cli(tmp_path: Path, version: str) -> str:
+    """A PATH whose first `sessionmemory` reports `version`, ahead of the real PATH."""
+    bindir = tmp_path / "pathbin"
+    bindir.mkdir(exist_ok=True)
+    script = bindir / "sessionmemory"
+    script.write_text(f"#!{sys.executable}\nprint({version!r})\n", encoding="utf-8")
+    script.chmod(0o755)
+    return os.pathsep.join([str(bindir), os.environ["PATH"]])
 
 
 def _isolated_home(tmp_path: Path) -> str:
@@ -198,14 +210,37 @@ def test_resolver_prints_the_cli_path(tmp_path: Path) -> None:
     (home / ".claude" / "sessionmemory.toml").write_text(
         f'[vault]\nroot = "{root}"\n', encoding="utf-8"
     )
-    env = {"HOME": str(home), "CLAUDE_PROJECT_DIR": str(proj)}
+    env = {
+        "HOME": str(home),
+        "CLAUDE_PROJECT_DIR": str(proj),
+        "PATH": _path_with_cli(tmp_path, "0.0.0"),
+    }
 
     # When the CLI path is requested
     proc = _run("--cli", cwd=proj, env_overrides=env)
 
-    # Then this repository's own shim is printed, found via the config fallback
+    # Then this repository's own shim is printed, found via the config fallback, since
+    # the only tool on PATH is older than this plugin
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == str(SHIM)
+
+
+def test_resolver_cli_prefers_a_current_tool_on_path(tmp_path: Path) -> None:
+    """Verify --cli prints the `sessionmemory` on PATH when it passes the version handshake."""
+    # Given a project, a vault, and a tool on PATH reporting a version past this plugin's
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    root = tmp_path / "vault"
+    initialize(root)
+    path = _path_with_cli(tmp_path, "99.0.0")
+    env = {"HOME": _isolated_home(tmp_path), "SESSIONMEMORY_VAULT": str(root), "PATH": path}
+
+    # When the CLI path is requested
+    proc = _run("--cli", cwd=proj, env_overrides=env)
+
+    # Then the tool on PATH is printed rather than the shim
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == str(tmp_path / "pathbin" / "sessionmemory")
 
 
 def test_resolver_no_flag_is_usage_error(tmp_path: Path) -> None:

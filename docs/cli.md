@@ -39,6 +39,7 @@ on a directory is its whole job.
 | `--json`          | Print a machine-readable payload instead of prose. Never styled.    |
 | `--cwd <path>`    | Resolve the project from that directory instead of the shell's.     |
 | `-v`, `-vv`       | Increase output verbosity. Repeat for more.                         |
+| `--version`       | Print the installed version bare and exit. The plugin's hooks read it. |
 | `--body-file <p>` | Read a markdown body from a file, or from stdin for `-`.            |
 
 The output below comes from real runs against a vault at `~/repos/my-vault` holding one

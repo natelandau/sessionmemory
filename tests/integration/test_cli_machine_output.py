@@ -96,6 +96,16 @@ def test_json_output_is_parseable_in_a_colored_shell(colored, arguments):
     assert isinstance(payload, dict | list)
 
 
+def test_version_is_unstyled_in_a_colored_shell(colored):
+    """Emit `--version` bare, since the plugin's hooks parse it to pick a CLI."""
+    env, _project = colored
+    result = _run(env, "--version")
+
+    assert result.returncode == 0
+    assert ESCAPE not in result.stdout
+    assert result.stdout.strip().count(b".") == 2
+
+
 def test_doctor_json_output_is_parseable_in_a_colored_shell(colored):
     """Emit `doctor --json` unstyled, even though it takes no `--cwd` to route through.
 

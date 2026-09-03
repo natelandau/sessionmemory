@@ -2,7 +2,7 @@
   "description": "Project memory: SessionStart commits the vault and injects, SessionEnd and PreCompact spawn the headless sweep, SessionEnd commits.",
   "hooks": {
     "SessionStart": [
-      { "hooks": [ { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/sessionstart.py", "timeout": 90 } ] }
+      { "hooks": [ { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/sessionstart.py", "timeout": 100 } ] }
     ],
     "SessionEnd": [
       { "hooks": [ { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/sessionend.py", "timeout": 60 } ] }

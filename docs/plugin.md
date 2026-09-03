@@ -18,11 +18,24 @@ in Claude Code, add this repository as a marketplace and install the plugin from
 ```
 
 Claude Code copies the plugin into
-`~/.claude/plugins/cache/sessionmemory/sessionmemory/<version>/`, with a Python
-environment of its own, and every hook runs the CLI out of that copy. The copy is
-separate from the `sessionmemory` tool on your `PATH`, so upgrading the tool does not
-change the hooks. A release reaches the hooks through
-`/plugin update sessionmemory@sessionmemory`, or a reinstall.
+`~/.claude/plugins/cache/sessionmemory/sessionmemory/<version>/`. A release reaches the
+hooks through `/plugin update sessionmemory@sessionmemory`, or a reinstall.
+
+### Which CLI the hooks run
+
+Every hook, skill, and agent runs the `sessionmemory` on your `PATH` when it passes a
+version handshake, and otherwise the copy of the CLI inside the plugin cache. The
+handshake is one call to `sessionmemory --version` at the start of each hook. It passes
+when the tool's version is at or past the plugin's own, which is the version in the
+`pyproject.toml` beside the cached copy. The hooks hard-code the flags and payloads of the
+CLI they shipped with, and every hook fails open, so an older tool would mean a session
+with no memory and no error. The fallback is that older case: the plugin runs its own
+copy, through `bin/sessionmemory` in the cache, in a Python environment that the first
+such session builds.
+
+The practical rule is to keep the two in step. After `/plugin update`, run
+`uv tool upgrade sessionmemory`. Nothing breaks in between, since the fallback covers the
+gap, but every session in the gap pays for the second environment.
 
 ### Point the hooks at your vault
 
@@ -64,16 +77,17 @@ session log reports the whole span.
 An unregistered repository is told so by name, rather than passed over in silence:
 
 ```
-This project is not registered with the vault, so it has no memory yet. Register it with: ~/.claude/plugins/cache/sessionmemory/sessionmemory/0.1.0/bin/sessionmemory project --register
+This project is not registered with the vault, so it has no memory yet. Register it with: sessionmemory project --register
 ```
 
-The hint names an absolute path, because a session that reached the plugin without
-installing the CLI as a tool has no `sessionmemory` on its `PATH`.
+The hint spells the CLI the way the session can run it: by name when the tool on `PATH`
+passed the handshake, and by the cached copy's absolute path otherwise.
 
-The hook's timeout is 90 seconds, and it budgets its own worst case: resolving the project
-root 5s, reading the head commit 5s, the vault commit 35s, `sessionmemory inject` 25s, and
-one registration check 5s, which is 75 seconds in all. Injection reads no index and loads
-no model, so a first session never waits on the embedding model download.
+The hook's timeout is 100 seconds, and it budgets its own worst case: resolving the
+project root 5s, reading the head commit 5s, two version handshakes 10s, the vault commit
+35s, `sessionmemory inject` 25s, and one registration check 5s, which is 85 seconds in
+all. Injection reads no index and loads no model, so a first session never waits on the
+embedding model download.
 
 ### SessionEnd
 
@@ -236,8 +250,9 @@ run it again. `sessionmemory doctor` reports an index that is behind or unreadab
 
 `bin/sessionmemory` is the only file in this repository that knows the CLI runs through
 `uv`. It resolves its own location through any symlink chain, then runs the CLI from the
-project it belongs to. Every hook, skill, and agent reaches the CLI by running that path,
-which is what keeps the invocation strategy changeable in one place.
+project it belongs to. Every hook, skill, and agent reaches the CLI through one
+resolver, which prefers the tool on `PATH` and falls back to that path, so the invocation
+strategy stays changeable in one place.
 
 The hooks import nothing from `src/`. They are standalone `uv run --script` programs with
 no dependencies of their own, and they reach the CLI the same way you would from a shell.

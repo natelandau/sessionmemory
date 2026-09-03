@@ -1,26 +1,34 @@
-"""Locate the vault and run its CLI.
+"""Locate the vault and the CLI, and run the CLI against the vault.
 
 The vault owns everything that knows what a note is: paths, filenames, frontmatter,
 and the rendering of the session-start block. This plugin owns what a session is.
 That boundary is why nothing here parses or writes a note; every answer comes from
 the CLI.
 
-The CLI ships in this repository, so it is not discovered. `PLUGIN_ROOT` is the
-plugin root and `bin/sessionmemory` beneath it is the entry point. Only the vault
-directory is discovered, from `$SESSIONMEMORY_VAULT` and then the plugin config's
-`[vault] root`, and it is confirmed by the marker `sessionmemory init` writes rather than
-by the directory merely existing: a path that names an empty or wrong directory
-would otherwise read as a usable vault and every command would fail one at a time.
+Two copies of the CLI can exist: the `sessionmemory` a person installed on PATH, and
+`bin/sessionmemory` under `PLUGIN_ROOT`, which runs the copy shipped with this plugin.
+The one on PATH is preferred when it passes a version handshake, since it is what the
+person and their agent type, and its environment is already built. The handshake is
+that its `--version` is at or past this plugin's own version, read from the
+`pyproject.toml` beside the shim: the hooks hard-code the flags and payloads of the CLI
+they ship with, and every hook fails open, so an older CLI would mean a session with no
+memory and no error. Anything short of a passing handshake falls back to the shim.
 
-There is no schema-version check. It existed to catch the plugin and the CLI
-drifting apart across two repositories, and they now version together in one.
+Only the vault directory is discovered, from `$SESSIONMEMORY_VAULT` and then the plugin
+config's `[vault] root`, and it is confirmed by the marker `sessionmemory init` writes
+rather than by the directory merely existing: a path that names an empty or wrong
+directory would otherwise read as a usable vault and every command would fail one at a
+time.
 """
 
 from __future__ import annotations
 
 import json
+import re
+import shutil
 import subprocess
-from dataclasses import dataclass
+import tomllib
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -29,8 +37,13 @@ if TYPE_CHECKING:
 
 ROOT_ENV = "SESSIONMEMORY_VAULT"
 
+CLI_NAME = "sessionmemory"
+
 # hooks/sessionhooks/vaultcli.py -> hooks/sessionhooks -> hooks -> the plugin root.
 PLUGIN_ROOT = Path(__file__).resolve().parents[2]
+
+# `--version` imports no model and touches no index, so it never needs the full budget.
+VERSION_TIMEOUT = 5
 
 # What `sessionmemory init` writes, and the only proof a directory is a vault rather than
 # a path someone mistyped.
@@ -53,15 +66,87 @@ COMMIT_GIT_TIMEOUT = 5
 EXIT_OK = 0
 
 
+def _shim() -> Path:
+    """The CLI shipped with this plugin, run through `bin/sessionmemory`."""
+    return PLUGIN_ROOT / "bin" / CLI_NAME
+
+
+def parse_version(text: str | None) -> tuple[int, int, int] | None:
+    """Read the first dotted triple in `text` as a version, or None when there is none.
+
+    A pre-release suffix is dropped rather than compared, because the handshake only
+    asks whether a CLI is at least as new as the plugin, and no release of this project
+    has ever changed the CLI between a pre-release and its final version.
+    """
+    match = re.search(r"(\d+)\.(\d+)\.(\d+)", text or "")
+    if match is None:
+        return None
+    major, minor, patch = (int(part) for part in match.groups())
+    return (major, minor, patch)
+
+
+def plugin_version() -> tuple[int, int, int] | None:
+    """The version this plugin shipped as, from the `pyproject.toml` beside the shim.
+
+    The plugin and the CLI release from one repository under one version, so the
+    package version is the floor a CLI on PATH has to meet. None when the file is
+    missing or unreadable, which the caller treats as "trust only the shim".
+    """
+    try:
+        data = tomllib.loads((PLUGIN_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError):
+        return None
+    project = data.get("project")
+    if not isinstance(project, dict):
+        return None
+    raw = project.get("version")
+    return parse_version(raw) if isinstance(raw, str) else None
+
+
+def _installed_version(cli: Path, env: Mapping[str, str]) -> tuple[int, int, int] | None:
+    """Ask a CLI for its version, or None when it cannot say."""
+    try:
+        proc = subprocess.run(  # noqa: S603
+            [str(cli), "--version"],
+            capture_output=True,
+            text=True,
+            timeout=VERSION_TIMEOUT,
+            check=False,
+            env=dict(env),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != EXIT_OK:
+        return None
+    return parse_version(proc.stdout)
+
+
+def _cli_on_path(env: Mapping[str, str]) -> Path | None:
+    """The `sessionmemory` on PATH, when it passes the version handshake."""
+    found = shutil.which(CLI_NAME, path=env.get("PATH"))
+    if found is None:
+        return None
+    required = plugin_version()
+    if required is None:
+        return None
+    installed = _installed_version(Path(found), env)
+    if installed is None or installed < required:
+        return None
+    return Path(found)
+
+
 @dataclass(frozen=True, slots=True)
 class VaultCLI:
-    """A resolved vault directory and the shim this plugin runs against it."""
+    """A resolved vault directory and the CLI this plugin runs against it."""
 
     root: Path
+    cli: Path = field(default_factory=_shim)
+    # True when `cli` was found on PATH, so a prompt can spell it by name.
+    on_path: bool = False
 
     @classmethod
     def discover(cls, *, env: Mapping[str, str], configured: str | None = None) -> VaultCLI | None:
-        """Locate the vault, or None when there is not a usable one."""
+        """Locate the vault and a CLI to run against it, or None when there is not one."""
         raw = env.get(ROOT_ENV) or configured
         if not raw:
             return None
@@ -71,13 +156,20 @@ class VaultCLI:
             return None
         if not (root / MARKER).is_file():
             return None
-        cli = cls(root=root)
-        return cli if cli.cli.is_file() else None
+        found = _cli_on_path(env)
+        if found is not None:
+            return cls(root=root, cli=found, on_path=True)
+        shim = _shim()
+        return cls(root=root, cli=shim) if shim.is_file() else None
 
     @property
-    def cli(self) -> Path:
-        """The shim every vault command runs through."""
-        return PLUGIN_ROOT / "bin" / "sessionmemory"
+    def command(self) -> str:
+        """How a prompt spells the CLI: by name when it is on PATH, else the shim's path.
+
+        A reader given a name it cannot run learns nothing, and a reader given an
+        absolute cache path for a tool it has on PATH types something no person would.
+        """
+        return self.cli.name if self.on_path else str(self.cli)
 
     def _child_env(self, env: Mapping[str, str]) -> dict[str, str]:
         """The environment for the CLI, with the vault it must read pinned to ours.
@@ -117,12 +209,10 @@ class VaultCLI:
     def inject(self, *, cwd: Path, env: Mapping[str, str]) -> str:
         """The session-start memory block for `cwd`, or "" when there is none.
 
-        `--command` is the shim's own path rather than the bare name, because a
-        session that reached this plugin without installing the CLI as a tool has
-        no `sessionmemory` on PATH, and guidance naming a command the reader cannot run
-        tells them nothing.
+        `--command` is `command`, so the guidance spells the CLI the way the reader
+        can run it.
         """
-        args = ["inject", "--cwd", str(cwd), "--command", str(self.cli)]
+        args = ["inject", "--cwd", str(cwd), "--command", self.command]
         return (self.output(args, cwd=cwd, env=env) or "").strip()
 
     def project_paths(

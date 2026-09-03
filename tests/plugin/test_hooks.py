@@ -462,6 +462,7 @@ def _fake_vault_cli(*, memory: str, is_registered: bool) -> type:
 
     class _FakeVaultCLI:
         cli = Path("/fake/bin/sessionmemory")
+        command = str(cli)
 
         @classmethod
         def discover(

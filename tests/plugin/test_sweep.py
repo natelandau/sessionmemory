@@ -979,6 +979,7 @@ class _FakeVault:
         self.target = target
         self.root = root or Path("/fake")
         self.cli = self.root / "bin" / "sessionmemory"
+        self.command = str(self.cli)
 
     def project_paths(self, *, cwd: Path, env: dict) -> dict[str, str]:
         return {

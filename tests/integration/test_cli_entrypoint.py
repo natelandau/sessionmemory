@@ -7,11 +7,13 @@ even though `bin/sessionmemory` and the installed console script both call nothi
 
 from __future__ import annotations
 
+import importlib.metadata
 import sys
 
 import pytest
+from typer.testing import CliRunner
 
-from sessionmemory.cli import main
+from sessionmemory.cli import app, main
 
 
 def test_main_runs_the_typer_app(monkeypatch, capsys):
@@ -23,3 +25,11 @@ def test_main_runs_the_typer_app(monkeypatch, capsys):
 
     assert excinfo.value.code == 0
     assert "Usage:" in capsys.readouterr().out
+
+
+def test_version_flag_prints_the_installed_version():
+    """Verify `--version` prints the package version alone, for a caller to compare."""
+    result = CliRunner().invoke(app, ["--version"])
+
+    assert result.exit_code == 0
+    assert result.output.strip() == importlib.metadata.version("sessionmemory")

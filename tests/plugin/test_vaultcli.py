@@ -7,6 +7,8 @@ point of the seam is that it can actually run the CLI.
 from __future__ import annotations
 
 import os
+import sys
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -14,10 +16,11 @@ from sessionhooks.vaultcli import (  # ty: ignore[unresolved-import]
     COMMIT_GIT_TIMEOUT,
     ROOT_ENV,
     VaultCLI,
+    parse_version,
 )
 
 if TYPE_CHECKING:
-    from pathlib import Path
+    from collections.abc import Callable
 
 
 @pytest.fixture
@@ -56,8 +59,50 @@ def stub_cli(tmp_path: Path, monkeypatch) -> Path:
     return script
 
 
+def _path_without_cli() -> str:
+    """The real PATH with every directory holding a `sessionmemory` removed.
+
+    A developer with the tool installed would otherwise have discovery find it, and
+    every case here needs to say which CLI is on PATH.
+    """
+    kept = [
+        d for d in os.environ["PATH"].split(os.pathsep) if not (Path(d) / "sessionmemory").exists()
+    ]
+    return os.pathsep.join(kept)
+
+
 def _env(**extra: str) -> dict[str, str]:
-    return {"PATH": os.environ["PATH"], **extra}
+    return {"PATH": _path_without_cli(), **extra}
+
+
+@pytest.fixture
+def plugin_version(stub_cli: Path) -> str:
+    """Declare the plugin's own version beside the stubbed shim."""
+    (stub_cli.parent.parent / "pyproject.toml").write_text(
+        '[project]\nname = "sessionmemory"\nversion = "1.4.0"\n', encoding="utf-8"
+    )
+    return "1.4.0"
+
+
+@pytest.fixture
+def path_cli(tmp_path: Path) -> Callable[[str], str]:
+    """Put a `sessionmemory` reporting a chosen version on PATH; return that PATH."""
+
+    def install(version: str) -> str:
+        bindir = tmp_path / "pathbin"
+        bindir.mkdir(exist_ok=True)
+        script = bindir / "sessionmemory"
+        body = "import sys\nprint('from-path')\n"
+        if version == "broken":
+            body = "import sys\nsys.exit(1)\n"
+        elif version:
+            body = f"import sys\nprint({version!r} if sys.argv[1:] == ['--version'] else 'from-path')\n"
+        interpreter = "/nonexistent/interpreter" if version == "unrunnable" else sys.executable
+        script.write_text(f"#!{interpreter}\n{body}", encoding="utf-8")
+        script.chmod(0o755)
+        return os.pathsep.join([str(bindir), _path_without_cli()])
+
+    return install
 
 
 def test_discovery_prefers_the_environment(marked_vault, stub_cli, tmp_path):
@@ -124,7 +169,7 @@ def test_a_failing_command_yields_none(marked_vault, stub_cli, tmp_path):
 
 
 def test_inject_tells_the_cli_how_the_reader_must_invoke_it(marked_vault, stub_cli, tmp_path):
-    """Verify guidance names the shim's path, since a plugin-only install has no vault on PATH."""
+    """Verify guidance names the shim's path when no tool on PATH is usable."""
     cli = VaultCLI.discover(env=_env(**{ROOT_ENV: str(marked_vault)}), configured=None)
 
     cli.inject(cwd=tmp_path, env=_env())
@@ -132,6 +177,125 @@ def test_inject_tells_the_cli_how_the_reader_must_invoke_it(marked_vault, stub_c
     recorded = (stub_cli.parent / "args.txt").read_text(encoding="utf-8").split()
     assert "--command" in recorded
     assert recorded[recorded.index("--command") + 1] == str(cli.cli)
+
+
+def test_discovery_uses_the_cli_on_path_when_it_is_recent_enough(
+    marked_vault, stub_cli, plugin_version, path_cli
+):
+    """Verify a tool on PATH at or past the plugin's version is the CLI the hooks run."""
+    env = _env(**{ROOT_ENV: str(marked_vault)}, PATH=path_cli("1.4.0"))
+
+    cli = VaultCLI.discover(env=env, configured=None)
+
+    assert cli.cli != stub_cli
+    assert cli.cli.name == "sessionmemory"
+    assert cli.output(["anything"], cwd=marked_vault, env=env).strip() == "from-path"
+
+
+def test_discovery_prefers_a_newer_cli_on_path(marked_vault, stub_cli, plugin_version, path_cli):
+    """Verify a tool newer than the plugin still passes the handshake."""
+    env = _env(**{ROOT_ENV: str(marked_vault)}, PATH=path_cli("2.0.0"))
+
+    assert VaultCLI.discover(env=env, configured=None).cli != stub_cli
+
+
+@pytest.mark.parametrize(
+    "reported",
+    [
+        pytest.param("1.3.9", id="older"),
+        pytest.param("", id="no-version-flag"),
+        pytest.param("broken", id="version-exits-nonzero"),
+        pytest.param("unrunnable", id="cannot-be-started"),
+    ],
+)
+def test_discovery_falls_back_to_the_shim_when_the_path_cli_fails_the_handshake(
+    marked_vault, stub_cli, plugin_version, path_cli, reported
+):
+    """Verify an older, silent, or failing tool on PATH is passed over for the shim."""
+    env = _env(**{ROOT_ENV: str(marked_vault)}, PATH=path_cli(reported))
+
+    assert VaultCLI.discover(env=env, configured=None).cli == stub_cli
+
+
+def test_discovery_falls_back_to_the_shim_when_nothing_is_on_path(
+    marked_vault, stub_cli, plugin_version
+):
+    """Verify the shim is the CLI when PATH holds no `sessionmemory` at all."""
+    assert (
+        VaultCLI.discover(env=_env(**{ROOT_ENV: str(marked_vault)}), configured=None).cli
+        == stub_cli
+    )
+
+
+def test_discovery_falls_back_to_the_shim_when_the_plugin_version_is_unreadable(
+    marked_vault, stub_cli, path_cli
+):
+    """Verify a plugin that cannot read its own version trusts only its shim."""
+    env = _env(**{ROOT_ENV: str(marked_vault)}, PATH=path_cli("9.9.9"))
+
+    assert VaultCLI.discover(env=env, configured=None).cli == stub_cli
+
+
+def test_discovery_falls_back_to_the_shim_when_the_plugin_manifest_names_no_version(
+    marked_vault, stub_cli, path_cli
+):
+    """Verify a pyproject without a `[project]` table reads as no version at all."""
+    (stub_cli.parent.parent / "pyproject.toml").write_text(
+        "[tool.other]\nx = 1\n", encoding="utf-8"
+    )
+    env = _env(**{ROOT_ENV: str(marked_vault)}, PATH=path_cli("9.9.9"))
+
+    assert VaultCLI.discover(env=env, configured=None).cli == stub_cli
+
+
+def test_command_is_the_bare_name_for_a_cli_on_path(
+    marked_vault, stub_cli, plugin_version, path_cli
+):
+    """Verify prompts spell a PATH tool by name, so a reader types what a person would."""
+    env = _env(**{ROOT_ENV: str(marked_vault)}, PATH=path_cli("1.4.0"))
+
+    assert VaultCLI.discover(env=env, configured=None).command == "sessionmemory"
+
+
+def test_command_is_the_shim_path_otherwise(marked_vault, stub_cli):
+    """Verify prompts spell the shim by absolute path, since nothing on PATH runs it."""
+    cli = VaultCLI.discover(env=_env(**{ROOT_ENV: str(marked_vault)}), configured=None)
+
+    assert cli.command == str(stub_cli)
+
+
+def test_inject_names_the_bare_command_for_a_cli_on_path(
+    marked_vault, stub_cli, plugin_version, path_cli, tmp_path
+):
+    """Verify the guidance block is told to spell a PATH tool by name."""
+    env = _env(**{ROOT_ENV: str(marked_vault)}, PATH=path_cli("1.4.0"))
+    recorder = tmp_path / "pathbin" / "sessionmemory"
+    recorder.write_text(
+        f"#!{sys.executable}\nimport pathlib, sys\n"
+        "pathlib.Path(__file__).with_name('args.txt').write_text(' '.join(sys.argv[1:]))\n"
+        "print('1.4.0' if sys.argv[1:] == ['--version'] else 'block')\n",
+        encoding="utf-8",
+    )
+
+    VaultCLI.discover(env=env, configured=None).inject(cwd=tmp_path, env=env)
+
+    recorded = (tmp_path / "pathbin" / "args.txt").read_text(encoding="utf-8").split()
+    assert recorded[recorded.index("--command") + 1] == "sessionmemory"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        pytest.param("0.2.0\n", (0, 2, 0), id="bare"),
+        pytest.param("sessionmemory 1.10.3", (1, 10, 3), id="prefixed"),
+        pytest.param("2.0.0rc1", (2, 0, 0), id="prerelease"),
+        pytest.param("", None, id="empty"),
+        pytest.param("not a version", None, id="prose"),
+    ],
+)
+def test_parse_version(text, expected):
+    """Verify parse_version reads the first dotted triple and nothing else."""
+    assert parse_version(text) == expected
 
 
 def test_a_root_that_cannot_be_expanded_is_not_a_vault(stub_cli):
