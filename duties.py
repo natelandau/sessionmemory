@@ -22,6 +22,7 @@ PY_SRC_PATHS = (
     Path(_) for _ in ("src/", "tests/", "duties.py", "scripts/", "hooks/") if Path(_).exists()
 )
 PY_SRC_LIST = tuple(str(_) for _ in PY_SRC_PATHS)
+SH_SRC_LIST = tuple(str(_) for _ in sorted(Path("bin").glob("*")) if _.is_file())
 CI = os.environ.get("CI", "0") in {"1", "true", "yes", ""}
 PROJECT_ROOT = Path(__file__).parent
 VERSION = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))["project"]["version"]
@@ -105,6 +106,26 @@ def typos(ctx: Context) -> None:
     )
 
 
+@duty
+def yamllint(ctx: Context) -> None:
+    """Check YAML files with yamllint."""
+    ctx.run(
+        ["yamllint", "--strict", "--config-file", ".yamllint.yml", "."],
+        title=pyprefix("yamllint check"),
+        command="yamllint --strict --config-file .yamllint.yml .",
+    )
+
+
+@duty(skip_if=not SH_SRC_LIST, skip_reason="no shell scripts to check")
+def shellcheck(ctx: Context) -> None:
+    """Check shell scripts with shellcheck."""
+    ctx.run(
+        ["shellcheck", "--check-sourced", "--severity=warning", *SH_SRC_LIST],
+        title=pyprefix("shellcheck"),
+        command=f"shellcheck --check-sourced --severity=warning {' '.join(SH_SRC_LIST)}",
+    )
+
+
 @duty(skip_if=CI, skip_reason="skip prek in CI environments")
 def prek(ctx: Context) -> None:
     """Run prek hooks."""
@@ -114,7 +135,7 @@ def prek(ctx: Context) -> None:
     )
 
 
-@duty(pre=[ruff, format, ty, typos, prek], capture=CI)
+@duty(pre=[ruff, format, ty, typos, yamllint, shellcheck, prek], capture=CI)
 def lint(ctx: Context) -> None:
     """Run all linting duties."""
 
