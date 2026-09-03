@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 OPEN_ITEM = "- [ ]"
+_LEADING_PUNCTUATION = "`'\"([{<*_~"
 
 
 @dataclass(frozen=True)
@@ -29,9 +30,14 @@ class Injection:
     plans: tuple[str, ...]
 
 
+def _sort_key(title: str) -> str:
+    """Order by the first letter or digit, so a title opening with a code span sorts with its word."""
+    return title.lstrip(_LEADING_PUNCTUATION).casefold()
+
+
 def _titles(directory: Path) -> tuple[str, ...]:
     titles = [field.read_page(path).title or path.stem for path in field.iter_pages(directory)]
-    return tuple(sorted(titles, key=str.casefold))
+    return tuple(sorted(titles, key=_sort_key))
 
 
 def _open_backlog(path: Path) -> int:

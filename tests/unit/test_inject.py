@@ -80,6 +80,22 @@ def test_guidance_teaches_the_backlog_line_and_the_project_paths():
     assert "--read" in text
 
 
+def test_titles_sort_by_their_first_word_not_their_first_character(tmp_path):
+    """Verify a title that opens with a code span or a quote sorts with its word rather than ahead of the alphabet."""
+    learnings = tmp_path / "projects" / "demo" / "learnings"
+    for title in ("Beta", "`alpha.module` skips in check mode", '"Gamma" is quoted', "Delta"):
+        field.new_page(learnings, title=title, summary="s", body="", now=NOW)
+
+    result = inject.build(tmp_path, "demo")
+
+    assert result.titles == (
+        "`alpha.module` skips in check mode",
+        "Beta",
+        "Delta",
+        '"Gamma" is quoted',
+    )
+
+
 def test_render_names_an_empty_project_rather_than_an_empty_list(tmp_path):
     """Verify a project with no learnings says so instead of rendering nothing."""
     text = inject.render(inject.build(tmp_path, "demo"), command="sessionmemory")
