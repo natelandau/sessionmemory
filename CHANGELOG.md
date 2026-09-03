@@ -1,3 +1,9 @@
+## v0.3.1 (2026-09-03)
+
+### Fix
+
+- **specs**: name a spec or plan for the day it was created
+
 ## v0.3.0 (2026-09-03)
 
 ### Feat
