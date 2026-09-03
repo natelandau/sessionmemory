@@ -57,18 +57,27 @@ def build(vault: Path, slug: str) -> Injection:
 
 GUIDANCE = """## Using this vault
 
-Durable memory for this project lives in a vault of markdown pages. Below is the
-list of what it already knows; each title is one `{command} search` away.
+Durable memory for this project lives in a vault of markdown pages. Nothing below is
+loaded for you: the titles are what the vault holds, and each is one `{command} search`
+away. The project's folder has `learnings/` and `logs/`, searched by meaning, beside
+`specs/`, `plans/`, and `backlog.md`, which are ordinary files you Read and Edit.
+`{command} project --json` prints every path.
 
-  - A title below matches what you are doing: `{command} search "<words>"` returns
-    the page's path, and you Read it. Search before assuming nothing was written down.
-  - Past sessions: `{command} search "<words>" --logs`. Open work: read `backlog.md`
-    in the project's vault folder (`{command} project --json` prints every path).
-  - Something worth keeping past this session: `{command} new learning --title "..."
-    --summary "..." --cwd .` creates the page and prints the path to write prose into.
-    Keep a page under 8KB; more detail is another page.
-  - Specs and plans: `{command} new spec|plan --title "..." --cwd .` creates the file.
-    Edit `backlog.md`, specs, and plans directly; the CLI only creates pages."""
+  - Before assuming nothing was written down, search: `{command} search "<words>"`
+    prints each hit's path, title, and summary, and `--read` prints every hit's whole
+    page in one call. A paraphrase still matches. No hits means nothing is recorded,
+    not that the query needs loosening.
+  - Past sessions, one page each: `{command} search "<words>" --logs`.
+  - Open work: read `backlog.md`. An item is one line under a `## <kind>` heading
+    (feat, fix, refactor, perf, docs, test, build, ci), sized S, M, or L:
+    `- [ ] [S] <imperative description> - <YYYY-MM-DD> [#topic]`. Add, tick, or
+    delete lines directly. If the file is missing, create it with a `# Backlog` heading.
+  - Specs and plans: `{command} new spec|plan --title "..." --cwd .` creates the file
+    and prints its path. Edit it directly after that.
+  - Learnings are captured at session end, not by you mid-session. When the user asks
+    to keep one now: `{command} new learning --title "..." --summary "..." --cwd .`
+    creates the page and prints the path to write prose into. Title and summary state
+    the fact, not the topic. Keep a page under 8KB; more detail is another page."""
 
 
 def render(injection: Injection, *, command: str = "sessionmemory") -> str:

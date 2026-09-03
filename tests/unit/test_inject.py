@@ -68,6 +68,18 @@ def test_render_leads_with_guidance_and_names_the_command(tmp_path):
     assert "A Spec" in text
 
 
+def test_guidance_teaches_the_backlog_line_and_the_project_paths():
+    """Verify the guidance carries what no skill can be counted on to load: the backlog item shape and where every file lives."""
+    text = inject.GUIDANCE.format(command="sessionmemory")
+
+    assert "`- [ ] [S] <imperative description> - <YYYY-MM-DD> [#topic]`" in text
+    assert "`## <kind>` heading" in text
+    assert "# Backlog" in text
+    assert "sessionmemory project --json" in text
+    assert "--logs" in text
+    assert "--read" in text
+
+
 def test_render_names_an_empty_project_rather_than_an_empty_list(tmp_path):
     """Verify a project with no learnings says so instead of rendering nothing."""
     text = inject.render(inject.build(tmp_path, "demo"), command="sessionmemory")
