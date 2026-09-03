@@ -8,6 +8,7 @@ import pytest
 
 from sessionmemory.lib import field
 from sessionmemory.lib.frontmatter import parse
+from sessionmemory.lib.ids import MAX_ID_LENGTH
 
 NOW = "2026-09-01T14:03:11Z"
 
@@ -143,6 +144,28 @@ def test_new_document_writes_title_and_dates_only(tmp_path):
 
     meta, _ = parse(path.read_text(encoding="utf-8"))
     assert list(meta) == ["title", "created", "updated"]
+
+
+def test_new_document_names_the_file_for_its_creation_date(tmp_path):
+    """Verify a spec or plan is filed under the day it was created."""
+    path = field.new_document(tmp_path, title="A Plan", body="", now=NOW)
+
+    assert path.name == "2026-09-01-a-plan.md"
+
+
+def test_new_document_does_not_repeat_a_date_the_title_carries(tmp_path):
+    """Verify a title that already names its creation date is not dated twice."""
+    path = field.new_document(tmp_path, title="2026-09-01 A Plan", body="", now=NOW)
+
+    assert path.name == "2026-09-01-a-plan.md"
+
+
+def test_new_document_keeps_a_dated_name_within_the_id_limit(tmp_path):
+    """Verify the date is paid for out of the slug's budget rather than added on top."""
+    path = field.new_document(tmp_path, title="word " * 40, body="", now=NOW)
+
+    assert len(path.stem) <= MAX_ID_LENGTH
+    assert path.name.startswith("2026-09-01-word")
 
 
 def test_new_document_honors_an_explicit_stem(tmp_path):

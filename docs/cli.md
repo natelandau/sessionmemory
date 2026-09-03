@@ -191,11 +191,13 @@ sessionmemory new spec --title "Export invoices as UBL 2.1 XML" --cwd .
 ```
 
 ```
-✓ created export-invoices-as-ubl-2-1-xml.md
-  └─ ~/repos/my-vault/projects/invoice-api/specs/export-invoices-as-ubl-2-1-xml.md
+✓ created 2026-09-03-export-invoices-as-ubl-2-1-xml.md
+  └─ ~/repos/my-vault/projects/invoice-api/specs/2026-09-03-export-invoices-as-ubl-2-1-xml.md
 ```
 
-Only `title`, `created`, and `updated` are written. After that the file is yours to edit.
+The filename leads with the creation date, so a listing of `specs/` reads in the order
+the specs were written. Only `title`, `created`, and `updated` are written. After that the
+file is yours to edit.
 
 ## `sessionmemory new plan`
 
@@ -207,8 +209,8 @@ sessionmemory new plan --title "Move PDF rendering to a worker queue" --cwd .
 ```
 
 ```
-✓ created move-pdf-rendering-to-a-worker-queue.md
-  └─ ~/repos/my-vault/projects/invoice-api/plans/move-pdf-rendering-to-a-worker-queue.md
+✓ created 2026-09-03-move-pdf-rendering-to-a-worker-queue.md
+  └─ ~/repos/my-vault/projects/invoice-api/plans/2026-09-03-move-pdf-rendering-to-a-worker-queue.md
 ```
 
 ## `sessionmemory log`

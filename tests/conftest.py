@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from sessionmemory.lib import config
@@ -47,7 +49,14 @@ def _git_identity(tmp_path_factory, monkeypatch) -> None:
     developer's real global config, such as commit signing, out of the suite. The hooks
     strip `GIT_`-prefixed variables before running git, so their tests set a repo-local
     identity themselves.
+
+    Every `GIT_`-prefixed variable is dropped first. Git exports `GIT_INDEX_FILE` and
+    its siblings into a pre-commit hook, and a suite run from one would otherwise point
+    every throwaway repository's git at the index of the repository being committed.
     """
+    for name in list(os.environ):
+        if name.startswith("GIT_"):
+            monkeypatch.delenv(name)
     config = tmp_path_factory.mktemp("git") / "config"
     config.write_text('[user]\n\tname = "Test"\n\temail = "test@example.com"\n')
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))

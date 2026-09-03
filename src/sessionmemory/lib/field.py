@@ -15,7 +15,13 @@ from typing import TYPE_CHECKING, Any
 
 from sessionmemory.lib import atomic
 from sessionmemory.lib.frontmatter import FrontmatterError, parse, serialize
-from sessionmemory.lib.ids import id_candidates, slugify
+from sessionmemory.lib.ids import (
+    DATE_PREFIX_WIDTH,
+    MAX_ID_LENGTH,
+    id_candidates,
+    slugify,
+    strip_date,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -176,6 +182,28 @@ def new_page(directory: Path, *, title: str, summary: str, body: str, now: str) 
 def new_document(
     directory: Path, *, title: str, body: str, now: str, stem: str | None = None
 ) -> Path:
-    """Create a spec, plan, or log: a titled, dated file that is not a memory page."""
+    """Create a spec, plan, or log: a titled, dated file that is not a memory page.
+
+    The filename leads with the creation date unless the caller fixes the stem, so a
+    directory listing reads in the order the documents were written.
+
+    Raises:
+        PageError: If the title yields no slug or no name is free.
+    """
+    if stem is None:
+        stem = dated_stem(title, now[: len("2026-01-01")])
     meta = {"title": title, "created": now, "updated": now}
     return _create(directory, meta, body, stem=stem)
+
+
+def dated_stem(title: str, day: str) -> str:
+    """Return `<day>-<slug>`, with the slug shortened so the whole stem fits the id limit.
+
+    Raises:
+        PageError: If the title yields no slug.
+    """
+    try:
+        slug = slugify(strip_date(title, day), max_length=MAX_ID_LENGTH - DATE_PREFIX_WIDTH)
+    except ValueError as error:
+        raise PageError(str(error)) from error
+    return f"{day}-{slug}"

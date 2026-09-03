@@ -9,6 +9,7 @@ import pytest
 from typer.testing import CliRunner
 
 from sessionmemory.cli import app
+from sessionmemory.lib.config import today
 from sessionmemory.lib.frontmatter import parse
 
 runner = CliRunner()
@@ -80,9 +81,8 @@ def test_new_document_writes_title_and_dates_only(workspace, kind, folder):
     result = runner.invoke(app, ["new", kind, "--title", "A Thing"])
 
     assert result.exit_code == 0, result.output
-    meta, _ = parse(
-        (vault / "projects" / "demo" / folder / "a-thing.md").read_text(encoding="utf-8")
-    )
+    path = vault / "projects" / "demo" / folder / f"{today()}-a-thing.md"
+    meta, _ = parse(path.read_text(encoding="utf-8"))
     assert list(meta) == ["title", "created", "updated"]
 
 

@@ -13,7 +13,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from sessionmemory.lib import field, paths
-from sessionmemory.lib.ids import slugify, strip_date
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -85,10 +84,7 @@ def upsert_log(  # noqa: PLR0913
         return Upserted(path=existing, created=False)
 
     day = log_date(title, today)
-    try:
-        stem = f"{day}-{slugify(strip_date(title, day))}"
-    except ValueError as error:
-        raise field.PageError(str(error)) from error
+    stem = field.dated_stem(title, day)
     path = field.claim_filename(paths.logs_dir(vault, slug), title, stem=stem)
     meta = {
         "title": title,

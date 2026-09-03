@@ -26,8 +26,8 @@ commits the vault when a session starts and again when a session ends.
     logs/                            a second field, one page per session
       <date>-<time>.md
       nomic-embed-text-v1.5.sqlite3
-    specs/<slug>.md                  plain files, not a field, never indexed
-    plans/<slug>.md
+    specs/<date>-<slug>.md           plain files, not a field, never indexed
+    plans/<date>-<slug>.md
     backlog.md                       a checklist, not a page
 ```
 
@@ -87,8 +87,9 @@ by hand under any other name is reported by `sessionmemory doctor` and is never 
 ## Specs, plans, and the backlog
 
 These three sit beside the fields and are never embedded. `sessionmemory new spec` and
-`sessionmemory new plan` write `title`, `created`, and `updated`, and nothing else. After
-that they are ordinary files, so edit them directly.
+`sessionmemory new plan` write `title`, `created`, and `updated`, and nothing else, and
+name the file for its creation date and title, as `2026-09-03-export-invoices-as-ubl.md`.
+After that they are ordinary files, so edit them directly.
 
 `backlog.md` is a checklist. Each open item is one line, grouped under a heading for its
 commit type:
