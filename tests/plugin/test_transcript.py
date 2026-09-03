@@ -357,3 +357,26 @@ def test_entry_text_empty_when_user_message_is_not_a_dict() -> None:
     # When reading its text / Then it is empty
     entry = {"type": "user", "message": "not-a-dict"}
     assert transcript._entry_text(entry) == ""
+
+
+def test_session_url_is_built_from_the_bridge_entry() -> None:
+    """Verify a bridged session's online link is derived from its bridge id."""
+    entries = [
+        {"type": "mode", "mode": "normal"},
+        {"type": "bridge-session", "bridgeSessionId": "cse_01ABCdef"},
+    ]
+
+    assert transcript.session_url(entries) == "https://claude.ai/code/session_01ABCdef"
+
+
+def test_session_url_is_empty_without_a_bridge_entry() -> None:
+    """Verify a session that was never bridged yields no link rather than a guess."""
+    assert transcript.session_url([{"type": "mode", "mode": "normal"}]) == ""
+
+
+@pytest.mark.parametrize("bridge_id", ["", "bogus_01ABC", "cse_", 42, None])
+def test_session_url_rejects_a_bridge_id_of_the_wrong_shape(bridge_id: object) -> None:
+    """Verify an id that is not `cse_<id>` yields no link, since a wrong link is worse than none."""
+    entries = [{"type": "bridge-session", "bridgeSessionId": bridge_id}]
+
+    assert transcript.session_url(entries) == ""

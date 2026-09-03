@@ -115,7 +115,9 @@ the file holds, and nothing more.
 `logs/` is a second field holding one page per session. The end-of-session pass
 writes it, keyed on the session id, and it replaces the page's whole body on every call.
 A long session is swept more than once, so each sweep resends everything the last one
-wrote.
+wrote. The page's frontmatter names the transcript on disk as `transcript` and, when
+the session was reachable from claude.ai, its link as `session_url`, so a reader can
+go from a log to the conversation behind it.
 
 Logs are never injected into a session. Search them on request:
 

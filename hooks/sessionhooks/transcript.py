@@ -54,6 +54,25 @@ def read_entries(transcript_path: str) -> list[dict[str, Any]]:
     return entries
 
 
+# A bridged session's `bridgeSessionId` is `cse_<id>`, and the same id opens the
+# session at claude.ai under a `session_` prefix.
+_BRIDGE_ID_PREFIX = "cse_"
+_SESSION_URL = "https://claude.ai/code/session_{}"
+
+
+def session_url(entries: list[dict[str, Any]]) -> str:
+    """Return where this session can be opened online, or '' when it was never bridged."""
+    for entry in entries:
+        if entry.get("type") != "bridge-session":
+            continue
+        bridge_id = entry.get("bridgeSessionId")
+        if isinstance(bridge_id, str) and bridge_id.startswith(_BRIDGE_ID_PREFIX):
+            suffix = bridge_id.removeprefix(_BRIDGE_ID_PREFIX)
+            if suffix:
+                return _SESSION_URL.format(suffix)
+    return ""
+
+
 def _is_compact_boundary(entry: dict[str, Any]) -> bool:
     """Return whether an entry marks a compaction checkpoint."""
     return bool(

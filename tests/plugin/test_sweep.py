@@ -304,6 +304,22 @@ def test_gate_above_threshold_returns_job_and_holds_lock(tmp_path: Path) -> None
     assert store.lock_path.exists()
 
 
+def test_gate_carries_the_transcript_path_and_online_link(tmp_path: Path) -> None:
+    """Verify the job knows where its transcript lives and how to reach the session online."""
+    # Given a bridged transcript above the threshold
+    store = store_at(tmp_path)
+    entries = [{"type": "bridge-session", "bridgeSessionId": "cse_01XYZ"}, *_meaningful(6)]
+    t_file = tmp_path / "bridged.jsonl"
+    _write_transcript(t_file, entries)
+    sweep = Sweep(store, SessionMemoryConfig(min_exchanges=5), _FakeRunner([]))
+    # When gating
+    result = sweep._gate({"cwd": str(tmp_path), "transcript_path": str(t_file)}, now=1000.0)
+    # Then both are carried on the job
+    assert result is not None
+    assert result.transcript_path == str(t_file)
+    assert result.session_url == "https://claude.ai/code/session_01XYZ"
+
+
 def test_gate_falls_back_to_transcript_pointer(tmp_path: Path) -> None:
     """Verify gate reads the saved pointer when the event transcript path is empty."""
     # Given a store with a saved transcript pointer
@@ -1346,6 +1362,40 @@ def test_run_job_prompt_carries_a_ready_to_run_log_command(tmp_path: Path) -> No
     assert runner.prompt is not None
     assert "bin/sessionmemory log" in runner.prompt
     assert "--session-id sess-xyz" in runner.prompt
+
+
+def test_run_job_log_command_names_the_transcript_and_link(tmp_path: Path) -> None:
+    """Verify the composed log command passes the transcript path and online link."""
+    store = _job_store(tmp_path)
+    runner = _RecordingRunner()
+    sweep = Sweep(store, SessionMemoryConfig(), runner, _FakeVault(_target_at(tmp_path / "vault")))
+
+    sweep._run_job(
+        SweepJob(
+            window=[],
+            cwd=str(tmp_path),
+            session_id="sess-xyz",
+            transcript_path="/t/sess-xyz.jsonl",
+            session_url="https://claude.ai/code/session_01XYZ",
+        )
+    )
+
+    assert runner.prompt is not None
+    assert "--transcript /t/sess-xyz.jsonl" in runner.prompt
+    assert "--url https://claude.ai/code/session_01XYZ" in runner.prompt
+
+
+def test_run_job_log_command_omits_what_the_session_lacks(tmp_path: Path) -> None:
+    """Verify an unbridged session's command carries no empty --url or --transcript."""
+    store = _job_store(tmp_path)
+    runner = _RecordingRunner()
+    sweep = Sweep(store, SessionMemoryConfig(), runner, _FakeVault(_target_at(tmp_path / "vault")))
+
+    sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="sess-xyz"))
+
+    assert runner.prompt is not None
+    assert "--url" not in runner.prompt
+    assert "--transcript" not in runner.prompt
 
 
 def test_run_job_records_a_session_the_model_judged_not_worth_recording(tmp_path: Path) -> None:

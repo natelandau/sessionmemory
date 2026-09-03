@@ -52,3 +52,28 @@ def test_log_with_unusable_title_fails(workspace):
     result = runner.invoke(app, ["log", "--session-id", "s1", "--title", "!!!"])
 
     assert result.exit_code == 1
+
+
+def test_log_records_transcript_and_url(workspace):
+    """Verify --transcript and --url land in the page's frontmatter."""
+    vault, _ = workspace
+    result = runner.invoke(
+        app,
+        [
+            "log",
+            "--session-id",
+            "s2",
+            "--title",
+            "Linked",
+            "--transcript",
+            "/home/me/.claude/projects/x/s2.jsonl",
+            "--url",
+            "https://claude.ai/code/session_01ABC",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    page = next((vault / "projects" / "demo" / "logs").glob("*.md"))
+    text = page.read_text(encoding="utf-8")
+    assert "transcript: /home/me/.claude/projects/x/s2.jsonl" in text
+    assert "session_url: https://claude.ai/code/session_01ABC" in text

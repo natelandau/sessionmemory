@@ -222,6 +222,8 @@ Record this session's work in the one page that belongs to it.
 | `--summary`    | One sentence a search result shows.                 |
 | `--body`       | Markdown body. Replaces what is there.              |
 | `--body-file`  | Read the body from a file, or stdin for `-`.        |
+| `--transcript` | Path to this session's transcript on disk.          |
+| `--url`        | Where this session can be opened online.            |
 | `--cwd`        | Directory to resolve the project from.              |
 | `--json`       | Emit JSON instead of prose.                         |
 
@@ -251,6 +253,10 @@ it already wrote:
 
 CAUTION: The body replaces the page's whole body. Send the complete text every time,
 never a diff and never an addendum.
+
+`--transcript` and `--url` are recorded in the page's frontmatter as `transcript` and
+`session_url`, beside `session_id`. Each is written only when given, and a later call
+that omits one never clears it.
 
 ## `sessionmemory search`
 

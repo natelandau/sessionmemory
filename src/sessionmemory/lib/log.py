@@ -18,6 +18,8 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 SESSION_FIELD = "session_id"
+TRANSCRIPT_FIELD = "transcript"
+URL_FIELD = "session_url"
 
 
 @dataclass(frozen=True)
@@ -46,13 +48,25 @@ def upsert_log(  # noqa: PLR0913
     body: str,
     now: str,
     today: str,
+    transcript: str = "",
+    session_url: str = "",
 ) -> Upserted:
-    """Write this session's log, replacing the page it already has rather than adding one."""
+    """Write this session's log, replacing the page it already has rather than adding one.
+
+    `transcript` and `session_url` are written only when given, and an update never
+    clears one the page already carries, since a later sweep of the same session may
+    be handed less than the first one was.
+    """
+    source = {
+        key: value
+        for key, value in ((TRANSCRIPT_FIELD, transcript), (URL_FIELD, session_url))
+        if value
+    }
     existing = find_session_log(vault, slug, session_id)
     if existing is not None:
         page = field.read_page(existing)
         meta = dict(page.meta)
-        meta.update({"title": title, "summary": summary, "updated": now})
+        meta.update({"title": title, "summary": summary, "updated": now, **source})
         field.write_page(existing, meta, body)
         return Upserted(path=existing, created=False)
 
@@ -68,6 +82,7 @@ def upsert_log(  # noqa: PLR0913
         "created": now,
         "updated": now,
         SESSION_FIELD: session_id,
+        **source,
     }
     field.write_page(path, meta, body)
     return Upserted(path=path, created=True)

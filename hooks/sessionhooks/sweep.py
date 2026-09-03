@@ -63,6 +63,8 @@ class SweepJob:
     window: list[dict[str, Any]]
     cwd: str
     session_id: str
+    transcript_path: str = ""
+    session_url: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -275,6 +277,10 @@ class Sweep:
                 window=window,
                 cwd=str(event.get("cwd") or Path.cwd()),
                 session_id=session_id,
+                transcript_path=str(transcript_path or ""),
+                # Read from every entry rather than the window: the bridge entry is
+                # written at the top of the transcript, before any compaction.
+                session_url=transcript.session_url(entries),
             )
         except Exception:  # noqa: BLE001 - gate must never raise or leak the lock
             lock.release()
@@ -319,6 +325,10 @@ class Sweep:
             "--cwd",
             job.cwd,
         ]
+        if job.transcript_path:
+            args += ["--transcript", job.transcript_path]
+        if job.session_url:
+            args += ["--url", job.session_url]
         return shlex.join(args)
 
     def _changes(self, job: SweepJob) -> str:

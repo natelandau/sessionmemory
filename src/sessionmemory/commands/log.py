@@ -22,16 +22,20 @@ TITLE = typer.Option(..., "--title", help="The log's title.")
 SUMMARY = typer.Option("", "--summary", help="One sentence a search result shows.")
 BODY = typer.Option("", "--body", help="Markdown body. Replaces what is there.")
 BODY_FILE = typer.Option(None, "--body-file", help="Read the body from a file, or stdin for '-'.")
+TRANSCRIPT = typer.Option("", "--transcript", help="Path to this session's transcript on disk.")
+URL = typer.Option("", "--url", help="Where this session can be opened online.")
 CWD = typer.Option(None, "--cwd", help="Directory to resolve the project from.")
 JSON = typer.Option(False, "--json", help="Emit JSON instead of prose.")  # noqa: FBT003
 
 
-def log_command(
+def log_command(  # noqa: PLR0913, PLR0917
     session_id: str = SESSION_ID,
     title: str = TITLE,
     summary: str = SUMMARY,
     body: str = BODY,
     body_file: Path | None = BODY_FILE,
+    transcript: str = TRANSCRIPT,
+    url: str = URL,
     cwd: Path | None = CWD,
     *,
     as_json: bool = JSON,
@@ -54,6 +58,8 @@ def log_command(
             body=body,
             now=now(),
             today=today(),
+            transcript=transcript,
+            session_url=url,
         )
     except field.PageError as error:
         fail(str(error))

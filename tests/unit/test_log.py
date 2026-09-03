@@ -68,3 +68,46 @@ def test_a_date_in_the_title_is_not_written_twice(tmp_path):
     result = _upsert(tmp_path, title="2026-09-01 shared-context")
 
     assert result.path.name == "2026-09-01-shared-context.md"
+
+
+def test_upsert_records_transcript_and_session_url_when_given(tmp_path):
+    """Verify the transcript path and online link land in frontmatter beside the session id."""
+    result = _upsert(
+        tmp_path,
+        transcript="/home/me/.claude/projects/x/abc.jsonl",
+        session_url="https://claude.ai/code/session_01ABC",
+    )
+
+    meta, _ = parse(result.path.read_text(encoding="utf-8"))
+    assert meta["transcript"] == "/home/me/.claude/projects/x/abc.jsonl"
+    assert meta["session_url"] == "https://claude.ai/code/session_01ABC"
+
+
+def test_upsert_omits_empty_transcript_and_session_url(tmp_path):
+    """Verify a session with no link writes no empty key, so the page stays at six fields."""
+    result = _upsert(tmp_path)
+
+    meta, _ = parse(result.path.read_text(encoding="utf-8"))
+    assert "transcript" not in meta
+    assert "session_url" not in meta
+
+
+def test_upsert_keeps_a_recorded_link_when_a_later_call_omits_it(tmp_path):
+    """Verify an update never clears a transcript or link a first write recorded."""
+    _upsert(tmp_path, transcript="/t/abc.jsonl", session_url="https://claude.ai/code/session_1")
+
+    second = _upsert(tmp_path, body="New body.")
+
+    meta, _ = parse(second.path.read_text(encoding="utf-8"))
+    assert meta["transcript"] == "/t/abc.jsonl"
+    assert meta["session_url"] == "https://claude.ai/code/session_1"
+
+
+def test_upsert_fills_a_link_a_first_write_lacked(tmp_path):
+    """Verify a session bridged after its first sweep gains the link on the next one."""
+    _upsert(tmp_path)
+
+    second = _upsert(tmp_path, session_url="https://claude.ai/code/session_2")
+
+    meta, _ = parse(second.path.read_text(encoding="utf-8"))
+    assert meta["session_url"] == "https://claude.ai/code/session_2"
