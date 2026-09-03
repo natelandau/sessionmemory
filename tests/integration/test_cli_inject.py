@@ -59,7 +59,7 @@ def test_inject_tolerates_a_page_with_invalid_utf8(workspace):
     """Verify inject exits 0 rather than crashing on a page saved with invalid UTF-8."""
     vault, _ = workspace
     learnings = vault / "projects" / "demo" / "learnings"
-    learnings.mkdir(parents=True)
+    learnings.mkdir(parents=True, exist_ok=True)
     (learnings / "invalid.md").write_bytes(b"---\ntitle: t\nsummary: s\n---\n\xff\xfe\n")
 
     result = runner.invoke(app, ["inject"])

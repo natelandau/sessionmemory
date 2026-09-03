@@ -1703,3 +1703,37 @@ def test_spawn_detached_grandchild_runs_the_job_then_exits(
     # Then stdio is redirected, the job runs, and the daemon exits cleanly
     assert ran == ["redirect", "run"]
     assert excinfo.value.code == 0
+
+
+class _CwdCheckingRunner:
+    """Records whether the working directory existed when the sweep handed it over."""
+
+    def __init__(self) -> None:
+        self.cwd_existed: bool | None = None
+
+    def run(self, prompt: str, *, cwd: str) -> RunResult:
+        self.cwd_existed = Path(cwd).is_dir()
+        return RunResult(success=True, exit_code=0, changed_files=[], text="done", stderr="")
+
+
+def test_run_job_creates_the_project_folder_before_running(tmp_path: Path) -> None:
+    """Verify a freshly registered project, with no folder yet, is swept in its first session."""
+    # Given a target whose project folder does not exist on disk
+    store = _job_store(tmp_path)
+    project = tmp_path / "vault" / "projects" / "proj"
+    target = Target(
+        project_dir=project,
+        learnings_dir=project / "learnings",
+        backlog_path=project / "backlog.md",
+        logs_dir=project / "logs",
+    )
+    runner = _CwdCheckingRunner()
+    sweep = Sweep(store, SessionMemoryConfig(), runner, _FakeVault(target))
+    job = SweepJob(window=[_user("remember this")], cwd=str(tmp_path), session_id="s1")
+
+    # When running the job
+    sweep._run_job(job)
+
+    # Then the folder existed by the time the model was run inside it
+    assert runner.cwd_existed is True
+    assert project.is_dir()

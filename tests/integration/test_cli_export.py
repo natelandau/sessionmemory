@@ -71,8 +71,13 @@ def test_export_honors_an_explicit_output_path(workspace, tmp_path):
 
 
 def test_export_warns_prose_when_the_field_does_not_exist(workspace):
-    """Verify prose mode warns when the field was never created, rather than staying silent."""
+    """Verify prose mode warns when the field is missing, rather than staying silent.
+
+    Registration creates the field, but an empty directory does not survive a git clone,
+    so a vault restored from its history has none until the first page is written.
+    """
     vault, _ = workspace
+    (vault / "projects" / "demo" / "learnings").rmdir()
 
     result = runner.invoke(app, ["export"])
 

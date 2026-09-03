@@ -284,6 +284,12 @@ def _register(
     )
     registry.save(vault, projects)
 
+    # The folder is created here rather than on the first page write because the
+    # plugin's sweep runs inside it, and a project's first sweep is what writes its
+    # first page.
+    for field in paths_lib.FIELD_DIRS:
+        (paths_lib.project_dir(vault, resolved_slug) / field).mkdir(parents=True, exist_ok=True)
+
     # Registering inside another project is legitimate, but an accidental one looks
     # exactly like a deliberate one, so the nesting is reported rather than assumed.
     if enclosing is not None:

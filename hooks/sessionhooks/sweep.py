@@ -381,6 +381,9 @@ class Sweep:
                 self._log_run(session=job.session_id, ok=False, changed=[], notes=["no-vault"])
                 return []
             target, log_command = prepared
+            # A project registered on another machine has no folder until its first
+            # page is written, and the model runs inside the folder.
+            target.project_dir.mkdir(parents=True, exist_ok=True)
             started_at = time.time()
             prompt = _render_template(
                 PROMPT_PATH,

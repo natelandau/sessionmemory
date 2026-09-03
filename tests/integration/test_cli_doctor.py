@@ -52,7 +52,7 @@ def test_doctor_prose_reports_a_bad_filename(workspace):
     vault, _ = workspace
 
     directory = vault / "projects" / "demo" / "learnings"
-    directory.mkdir(parents=True)
+    directory.mkdir(parents=True, exist_ok=True)
     (directory / "Bad Name.md").write_text("x")
 
     result = runner.invoke(app, ["doctor"])
@@ -68,7 +68,7 @@ def test_doctor_json_reports_a_bad_filename(workspace):
     vault, _ = workspace
 
     directory = vault / "projects" / "demo" / "learnings"
-    directory.mkdir(parents=True)
+    directory.mkdir(parents=True, exist_ok=True)
     (directory / "Bad Name.md").write_text("x")
 
     result = runner.invoke(app, ["doctor", "--json"])

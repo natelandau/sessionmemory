@@ -94,8 +94,9 @@ sessionmemory project --json
   └─ root: ~/repos/invoice-api
 ```
 
-`--register` reads the git remote and the repository root, and derives the slug from the
-remote name. It refuses a directory that is already registered, a bare repository, and a
+`--register` reads the git remote and the repository root, derives the slug from the
+remote name, and creates the project's folder with an empty `learnings/` and `logs/`
+inside it. It refuses a directory that is already registered, a bare repository, and a
 slug another project holds. A slug is permanent once pages carry it, so moving a project
 to a different slug is manual work. The plugin runs this command for a git repository at
 session start. By hand, it registers a directory outside git or applies a chosen `--slug`.

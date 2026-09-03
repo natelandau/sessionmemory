@@ -223,7 +223,6 @@ def test_an_unregistered_repository_is_never_absorbed_by_a_registered_ancestor(v
     resolved = runner.invoke(app, ["project", "--cwd", str(nested), "--json"])
     assert resolved.exit_code != 0
     assert json.loads(resolved.stdout)["registered"] is False
-    assert not (vault / "projects" / "outer").exists()
 
 
 def test_a_subdirectory_of_a_repository_is_never_absorbed_either(vault, tmp_path):
@@ -568,3 +567,13 @@ def test_project_prose_reports_the_registered_root_not_the_directory_asked_about
 
     assert result.exit_code == 0
     assert f"root: {plain}" in result.output
+
+
+def test_project_register_creates_the_project_folder_and_its_fields(vault, repo):
+    """Create the folder at registration, since the sweep runs inside it before any page exists."""
+    result = runner.invoke(app, ["project", "--register", "--cwd", str(repo)])
+
+    assert result.exit_code == 0
+    assert paths_lib.project_dir(vault, "demo").is_dir()
+    assert paths_lib.learnings_dir(vault, "demo").is_dir()
+    assert paths_lib.logs_dir(vault, "demo").is_dir()
