@@ -396,3 +396,22 @@ def test_run_builds_a_result_from_a_successful_subprocess(monkeypatch) -> None:
     assert result.changed_files == ["/vault/note.md"]
     assert result.text == "done"
     assert result.stderr == ""
+
+
+def test_run_names_a_missing_working_directory_rather_than_the_binary(monkeypatch) -> None:
+    """Verify a missing cwd is reported as such, since Python raises the same error for both."""
+
+    # Given subprocess.run replaced with one that fails the way a missing cwd does
+    def _raise(*_args, **kwargs) -> None:
+        raise FileNotFoundError(2, "No such file or directory", kwargs["cwd"])
+
+    monkeypatch.setattr(runner_mod.subprocess, "run", _raise)
+
+    # When running the prompt in a directory that does not exist
+    result = ClaudeRunner().run("prompt", cwd="/vault/projects/gone")
+
+    # Then the failure names the directory, not the claude binary
+    assert result.success is False
+    assert result.exit_code == -4
+    assert "/vault/projects/gone" in result.stderr
+    assert "claude" not in result.stderr

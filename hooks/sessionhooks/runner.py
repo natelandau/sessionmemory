@@ -178,7 +178,7 @@ class ClaudeRunner:
         """Execute `claude -p` and return a RunResult, never raising.
 
         Failures map to negative exit codes: timeout -2, claude-not-found -3,
-        OSError -5. On any failure `changed_files` is empty and `success` is False.
+        cwd-not-found -4, OSError -5. On any failure `changed_files` is empty and `success` is False.
         """
         args = self._build_args()
         env = build_env(base=os.environ, extra=self.extra_env)
@@ -201,7 +201,17 @@ class ClaudeRunner:
                 text="",
                 stderr=f"timed out after {self.timeout}s",
             )
-        except FileNotFoundError:
+        except FileNotFoundError as exc:
+            # A missing cwd raises the same error as a missing binary, and the
+            # directory is what the exception names in that case.
+            if exc.filename == cwd:
+                return RunResult(
+                    success=False,
+                    exit_code=-4,
+                    changed_files=[],
+                    text="",
+                    stderr=f"working directory not found: {cwd}",
+                )
             return RunResult(
                 success=False,
                 exit_code=-3,
