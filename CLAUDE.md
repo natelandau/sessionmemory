@@ -371,9 +371,9 @@ page, and a page the model deletes through Bash is committed as a deletion.
 `hooks.json` budgets each hook's own worst case. `SessionStart` runs `Store.for_cwd` (one
 git call, `_GIT_TIMEOUT` 5s), `head_commit` (5s), two `VaultCLI.discover` handshakes
 (`VERSION_TIMEOUT` 5s each), the vault commit (`COMMIT_GIT_TIMEOUT` 5s across up to seven
-git calls, so 35s), `VaultCLI.inject` (`TIMEOUT` 25s), and `VaultCLI.registered`
-(`RESOLVE_TIMEOUT` 5s): a worst case of 85s under a timeout of 100. `SessionEnd` runs one
-handshake and then commits, so its 60 covers 40s with headroom.
+git calls, so 35s), `VaultCLI.resolve` and `VaultCLI.register` (`RESOLVE_TIMEOUT` 5s
+each), and `VaultCLI.inject` (`TIMEOUT` 25s): a worst case of 90s under a timeout of
+100. `SessionEnd` runs one handshake and then commits, so its 60 covers 40s with headroom.
 `PreCompact` only gates and spawns, and its timeout is 10. Raising any of those constants
 means raising the timeout that covers them.
 

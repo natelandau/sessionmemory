@@ -1,5 +1,5 @@
 {
-  "description": "Project memory: SessionStart commits the vault and injects, SessionEnd and PreCompact spawn the headless sweep, SessionEnd commits.",
+  "description": "Project memory: SessionStart commits the vault, registers a git repository, and injects, SessionEnd and PreCompact spawn the headless sweep, SessionEnd commits.",
   "hooks": {
     "SessionStart": [
       { "hooks": [ { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/sessionstart.py", "timeout": 100 } ] }

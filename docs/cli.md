@@ -97,7 +97,8 @@ sessionmemory project --json
 `--register` reads the git remote and the repository root, and derives the slug from the
 remote name. It refuses a directory that is already registered, a bare repository, and a
 slug another project holds. A slug is permanent once pages carry it, so moving a project
-to a different slug is manual work.
+to a different slug is manual work. The plugin runs this command for a git repository at
+session start. By hand, it registers a directory outside git or applies a chosen `--slug`.
 
 With no `--register`, the command prints the entry as it stands and exits 1 when there is
 none:
