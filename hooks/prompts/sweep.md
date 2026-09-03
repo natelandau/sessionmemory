@@ -52,7 +52,9 @@ Silence beats clutter.
 ### 1. Learnings
 
 Read `<existing-memory>` first. A fact already recorded is refined in place with
-Edit, never written a second time. For each new candidate that passes BOTH gates:
+Edit, never written a second time. Refining replaces the old condition with the
+one that holds now; a page never says "formerly" or "used to", since git holds
+what it used to say. For each new candidate that passes BOTH gates:
 
 ```
 {{vault_cli}} new learning --title "<short, specific title>" \
@@ -63,7 +65,11 @@ The command prints the path it created; Edit that file to write the body. The
 title is what every future session sees at start, and the summary is what a
 search returns, so both must say the fact itself, not the topic. "Pytest-cov
 overrides a generic ResourceWarning filter" is a title; "pytest warnings" is not.
-Cite the file, commit, or URL the fact came from wherever there is one.
+A title leads with its subject, the tool or component the fact is about, so the
+sorted list a session starts with keeps one tool's facts together: "Nomad task
+user field is not interpolated", not "In Nomad, the task user field...". A fact
+that holds only under a version, platform, or mode names it in the title. Cite
+the file, commit, or URL the fact came from wherever there is one.
 
 ### 2. Deferred work
 

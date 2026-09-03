@@ -33,8 +33,8 @@ altitude or go stale, and you are the check against that.
 Apply the same gates the sweep uses to decide whether the entry still earns its
 place:
 
-1. **Generality** - does this help work on parts of the app OTHER than the one
-   that produced it? Open the referenced code: if the entry just narrates one
+1. **Generality** - does this help work on parts of the repository OTHER than
+   the one that produced it? Open the referenced code: if the entry just narrates one
    subsystem's current implementation, it fails.
 2. **Non-recoverability** - read the cited files. If the code, tests, types, or
    config already make this obvious, the entry is redundant. **Carve-out:** durable
@@ -54,9 +54,43 @@ The title is what every session start lists, and the summary is what a search
 result shows. Neither is read alongside the body. Each must state the fact
 itself, specifically enough that a reader who sees only that line knows whether
 to open the page. "pytest warnings" fails; "pytest-cov overrides a generic
-ResourceWarning filter, so a message-specific one is required" passes. Propose a
-replacement whenever the existing one names a topic rather than a fact, is
-longer than one sentence, or would not tell the reader what the page decides.
+ResourceWarning filter, so a message-specific one is required" passes.
+
+A title leads with its subject: the tool, component, or setting the fact is about.
+The list a session starts with is sorted by title, so a subject-first title keeps
+every fact about one tool together and a title that opens with "In", "On", or a
+verb scatters them. "In Nomad docker tasks, /tmp is on-disk overlay" scatters;
+"Nomad docker tasks put /tmp on on-disk overlay" clusters.
+
+A fact that holds only under a condition carries that condition in the title: a
+version, a kernel, a platform, a mode. "Syncthing v2.x flags Receive-Only folders
+as Local Additions after a rescan" tells a reader when it stops being true, and the
+same title without "v2.x" does not. When the body names the condition and the
+title omits it, propose a title that carries it.
+
+A title or summary that narrates how the fact came to be ("formerly", "used to",
+"no longer") is judged by what it says holds now. If the present condition is the
+fact, propose a title that states it and drops the history. If the history IS the
+fact, the page is DELETE, below.
+
+Propose a replacement whenever the existing title or summary names a topic rather
+than a fact, leads with something other than its subject, omits a condition the
+body states, carries history, is longer than one sentence, or would not tell the
+reader what the page decides.
+
+## Facts about external tools, check them locally and only locally
+
+Many pages record a trap in a tool the repository uses rather than in the
+repository itself. Judge those against what the repository pins: a lockfile, a
+container image tag, a version variable, a dependency file, a role or module
+version. A fact scoped to a version the repository has moved past is DELETE. A
+fact whose scope the repository still pins is KEEP.
+
+Never fetch documentation, changelogs, or issue trackers from the network, and
+never run the tool to find out. A review of fifty pages cannot afford a network
+round-trip per page, and a fact you cannot verify locally is not thereby wrong.
+When the repository pins nothing you can compare against, return KEEP with low
+confidence and say what you looked for.
 
 ## Backlog routing - judge this independently of the verdict
 
@@ -113,8 +147,13 @@ user-confirmed step retires it.
 - **UPDATE** - worth keeping, but the text is stale, partly wrong, or vague.
   Provide the corrected text.
 - **DELETE** - fails a gate (recoverable from code/tests/types/config, or narrates
-  one subsystem with no cross-cutting value) or is demonstrably wrong / describes
-  behavior, tools, or files that no longer exist. (the caller deletes the page)
+  one subsystem with no cross-cutting value); is demonstrably wrong or describes
+  behavior, tools, or files that no longer exist; is scoped to a version the
+  repository has moved past; or records history rather than a present condition.
+  A page whose fact is "X used to be Y" or "before vN, X did Z" is a changelog
+  entry, and the vault is not a changelog. A future agent needs the condition that
+  holds now, which is a page of its own, never an edit that keeps the old one
+  beside it. (the caller deletes the page)
 
 A verdict survives on cited evidence, not preference: name the specific file, line,
 commit, or concrete fact that proves it.
@@ -157,7 +196,8 @@ entries and nothing else. Each object contains:
     `CLAUDE.md` and the point is absent.
   - `suggested_entry` - a one or two line phrasing the user could paste into
     `CLAUDE.md`.
-- `confidence` - high / medium / low. Be honest: the caller uses this to decide
-  which DELETE/UPDATE proposals to act on versus surface for the user to confirm.
+- `confidence` - high / medium / low. Be honest: the caller applies every verdict
+  and lists the low-confidence deletes in its report, so the user can see what was
+  retired on thin evidence.
 
 Do not propose applying anything and do not edit files; you only judge and report.
