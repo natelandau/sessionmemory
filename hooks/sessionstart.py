@@ -39,8 +39,9 @@ The schema version is deliberately not checked here. This path only reads, and a
 block rendered by a vault one version ahead is still readable text; it is the
 writing paths that must refuse a schema they do not speak.
 
-No-ops when running inside the headless sweep agent, and when no vault is
-reachable. Fail-open: any error exits 0 rather than wedging session start.
+No-ops when running inside the headless sweep agent. When no vault is reachable it
+injects a hint saying so, since every hook fails open and the session would otherwise
+learn nothing. Fail-open: any error exits 0 rather than wedging session start.
 
 The hook's timeout budgets its worst case: `Store.for_cwd` 5s, `head_commit` 5s,
 two `VaultCLI.discover` handshakes 10s, the vault commit 35s, `VaultCLI.resolve` 5s,
@@ -80,6 +81,17 @@ CONTINUATION_SOURCES = frozenset({"resume", "compact"})
 # no such skill, so a reference from there would point at nothing.
 SKILL_POINTER = "The `cli` skill carries the full command surface for this vault."
 
+# Every hook fails open, so a missing vault would otherwise mean session after session
+# with no memory and no error. Both ways to name a vault are spelled out because the
+# environment one silently fails to reach a session whose launching shell never sourced
+# the export.
+NO_VAULT_HINT = (
+    "No vault is reachable, so this session has no memory and nothing it does will be "
+    "recorded. Set SESSIONMEMORY_VAULT to the vault directory, or set root under [vault] "
+    "in ~/.claude/sessionmemory.toml, then start a new session. A variable exported in a "
+    "shell profile reaches only sessions launched from a shell that sourced it."
+)
+
 
 def _unregistered_hint(vault: VaultCLI) -> str:
     """The line a session in an unregistered project receives instead of memory."""
@@ -114,12 +126,12 @@ def _record_session_state(store: Store, *, payload: dict[str, Any], cwd: Path) -
 
 
 def _memory_block(cfg: SessionMemoryConfig, *, cwd: Path) -> str | None:
-    """The project's memory block, the unregistered hint, or None when inject is off."""
+    """The project's memory block, a hint about why there is none, or None when inject is off."""
     if not cfg.inject_enabled:
         return None
     vault = VaultCLI.discover(env=os.environ, configured=cfg.vault_root)
     if vault is None:
-        return None
+        return NO_VAULT_HINT
     resolution = vault.resolve(cwd=cwd, env=os.environ)
     registered = resolution is not None and resolution.get("registered") is True
     slug: str | None = None
