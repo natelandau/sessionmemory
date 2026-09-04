@@ -1,3 +1,14 @@
+## v0.4.0 (2026-09-04)
+
+### Feat
+
+- **new**: add a backlog item with sessionmemory new backlog
+
+### Fix
+
+- **backlog**: delete a finished backlog item instead of ticking it
+- **new**: date a spec, plan, or backlog item by the local calendar
+
 ## v0.3.1 (2026-09-03)
 
 ### Fix
