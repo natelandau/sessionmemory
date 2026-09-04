@@ -72,7 +72,7 @@ def new_learning(
 
 def _new_document(folder: Path, title: str, body: str, *, as_json: bool) -> None:
     try:
-        path = field.new_document(folder, title=title, body=body, now=now())
+        path = field.new_document(folder, title=title, body=body, now=now(), day=today())
     except field.PageError as error:
         fail(str(error))
     _report(path, as_json=as_json)

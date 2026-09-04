@@ -11,6 +11,7 @@ from sessionmemory.lib.frontmatter import parse
 from sessionmemory.lib.ids import MAX_ID_LENGTH
 
 NOW = "2026-09-01T14:03:11Z"
+DAY = "2026-09-01"
 
 
 @pytest.mark.parametrize(
@@ -140,7 +141,7 @@ def test_create_removes_the_claimed_file_when_writing_content_fails(tmp_path, mo
 
 def test_new_document_writes_title_and_dates_only(tmp_path):
     """Verify a spec or plan carries no uuid and no summary."""
-    path = field.new_document(tmp_path, title="A Plan", body="Steps.", now=NOW)
+    path = field.new_document(tmp_path, title="A Plan", body="Steps.", now=NOW, day=DAY)
 
     meta, _ = parse(path.read_text(encoding="utf-8"))
     assert list(meta) == ["title", "created", "updated"]
@@ -148,32 +149,33 @@ def test_new_document_writes_title_and_dates_only(tmp_path):
 
 def test_new_document_names_the_file_for_its_creation_date(tmp_path):
     """Verify a spec or plan is filed under the day it was created."""
-    path = field.new_document(tmp_path, title="A Plan", body="", now=NOW)
+    path = field.new_document(tmp_path, title="A Plan", body="", now=NOW, day=DAY)
 
     assert path.name == "2026-09-01-a-plan.md"
 
 
 def test_new_document_does_not_repeat_a_date_the_title_carries(tmp_path):
     """Verify a title that already names its creation date is not dated twice."""
-    path = field.new_document(tmp_path, title="2026-09-01 A Plan", body="", now=NOW)
+    path = field.new_document(tmp_path, title="2026-09-01 A Plan", body="", now=NOW, day=DAY)
 
     assert path.name == "2026-09-01-a-plan.md"
 
 
 def test_new_document_keeps_a_dated_name_within_the_id_limit(tmp_path):
     """Verify the date is paid for out of the slug's budget rather than added on top."""
-    path = field.new_document(tmp_path, title="word " * 40, body="", now=NOW)
+    path = field.new_document(tmp_path, title="word " * 40, body="", now=NOW, day=DAY)
 
     assert len(path.stem) <= MAX_ID_LENGTH
     assert path.name.startswith("2026-09-01-word")
 
 
-def test_new_document_honors_an_explicit_stem(tmp_path):
-    """Verify a caller can fix the filename, which a dated log needs."""
+def test_new_document_names_the_file_for_the_day_given_not_the_timestamp(tmp_path):
+    """Verify the filename follows the caller's local day even when the UTC timestamp has rolled over."""
     path = field.new_document(
-        tmp_path, title="Session", body="", now=NOW, stem="2026-09-01-session"
+        tmp_path, title="A Plan", body="", now="2026-09-02T01:00:00Z", day="2026-09-01"
     )
-    assert path.name == "2026-09-01-session.md"
+
+    assert path.name == "2026-09-01-a-plan.md"
 
 
 def test_read_page_exposes_fields_and_size(tmp_path):

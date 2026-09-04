@@ -136,3 +136,22 @@ def test_is_initialized_false_for_a_corrupt_marker(tmp_path):
     (system_dir / "vault.toml").write_text("this is not [ valid toml", encoding="utf-8")
 
     assert is_initialized(tmp_path) is False
+
+
+def test_today_is_the_local_date(monkeypatch):
+    """Verify today() follows the process's time zone rather than UTC."""
+    import datetime
+    import time
+    import zoneinfo
+
+    dates = {}
+    # UTC-12 and UTC+14 are 26 hours apart, so they never share a calendar date.
+    for zone in ("Etc/GMT+12", "Pacific/Kiritimati"):
+        monkeypatch.setenv("TZ", zone)
+        time.tzset()
+        dates[zone] = config.today()
+        assert dates[zone] == datetime.datetime.now(tz=zoneinfo.ZoneInfo(zone)).date().isoformat()
+    monkeypatch.delenv("TZ")
+    time.tzset()
+
+    assert dates["Etc/GMT+12"] != dates["Pacific/Kiritimati"]

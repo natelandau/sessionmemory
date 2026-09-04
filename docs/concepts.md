@@ -88,7 +88,7 @@ by hand under any other name is reported by `sessionmemory doctor` and is never 
 
 These three sit beside the fields and are never embedded. `sessionmemory new spec` and
 `sessionmemory new plan` write `title`, `created`, and `updated`, and nothing else, and
-name the file for its creation date and title, as `2026-09-03-export-invoices-as-ubl.md`.
+name the file for its local creation date and title, as `2026-09-03-export-invoices-as-ubl.md`.
 After that they are ordinary files, so edit them directly.
 
 `backlog.md` is a checklist. Each open item is one line, grouped under a heading for its

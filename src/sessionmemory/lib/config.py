@@ -83,12 +83,15 @@ def _configured_root() -> str | None:
 
 
 def today() -> str:
-    """Return today's date as an ISO string.
+    """Return today's local date as an ISO string.
+
+    A date a person reads, in a filename or a checklist line, follows their clock; only
+    the frontmatter timestamps from `now` are UTC, which the memoryfield spec asks for.
 
     Returns:
         str: Today's date.
     """
-    return datetime.datetime.now(tz=datetime.UTC).date().isoformat()
+    return datetime.datetime.now().astimezone().date().isoformat()
 
 
 def now() -> str:

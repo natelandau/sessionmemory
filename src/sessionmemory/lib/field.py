@@ -179,21 +179,18 @@ def new_page(directory: Path, *, title: str, summary: str, body: str, now: str) 
     return _create(directory, meta, body, stem=None)
 
 
-def new_document(
-    directory: Path, *, title: str, body: str, now: str, stem: str | None = None
-) -> Path:
-    """Create a spec, plan, or log: a titled, dated file that is not a memory page.
+def new_document(directory: Path, *, title: str, body: str, now: str, day: str) -> Path:
+    """Create a spec or plan: a titled, dated file that is not a memory page.
 
-    The filename leads with the creation date unless the caller fixes the stem, so a
-    directory listing reads in the order the documents were written.
+    The filename leads with `day`, so a directory listing reads in the order the
+    documents were written. `day` is passed rather than sliced from `now` because the
+    timestamp is UTC and the date a person reads in a filename follows their own clock.
 
     Raises:
         PageError: If the title yields no slug or no name is free.
     """
-    if stem is None:
-        stem = dated_stem(title, now[: len("2026-01-01")])
     meta = {"title": title, "created": now, "updated": now}
-    return _create(directory, meta, body, stem=stem)
+    return _create(directory, meta, body, stem=dated_stem(title, day))
 
 
 def dated_stem(title: str, day: str) -> str:

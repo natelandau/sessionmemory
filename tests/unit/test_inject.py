@@ -28,7 +28,7 @@ def _project(vault: Path) -> Path:
         body="BODY-SENTINEL-alpha",
         now=NOW,
     )
-    field.new_document(root / "specs", title="A Spec", body="", now=NOW)
+    field.new_document(root / "specs", title="A Spec", body="", now=NOW, day=NOW[:10])
     (root / "backlog.md").write_text(
         "# Backlog\n\n- [ ] one\n- [x] done\n- [ ] two\n", encoding="utf-8"
     )
