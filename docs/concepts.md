@@ -28,12 +28,12 @@ commits the vault when a session starts and again when a session ends.
       nomic-embed-text-v1.5.sqlite3
     specs/<date>-<slug>.md           plain files, not a field, never indexed
     plans/<date>-<slug>.md
-    backlog.md                       a checklist, not a page
+    backlog.md                       a list of open work, not a page
 ```
 
 `learnings/` and `logs/` are fields: flat directories of pages, each with its own
 index file. The format forbids indexing a page in a sub-directory, so `specs/`, `plans/`,
-and `backlog.md` sit outside both fields. That is what keeps a spec or a checklist from
+and `backlog.md` sit outside both fields. That is what keeps a spec or the backlog from
 being embedded as memory.
 
 A project's files are found by its slug and nothing else. There is no global folder, and
@@ -91,27 +91,29 @@ These three sit beside the fields and are never embedded. `sessionmemory new spe
 name the file for its local creation date and title, as `2026-09-03-export-invoices-as-ubl.md`.
 After that they are ordinary files, so edit them directly.
 
-`backlog.md` is a checklist. Each open item is one line, grouped under a heading for its
-commit type:
+`backlog.md` is a list of open work. Each item is one line, grouped under a heading for
+its commit type:
 
 ```markdown
 # Backlog
 
 ## feat
 
-- [ ] [M] cache the embedding model between reindex runs - 2026-09-02 [#index]
+- [M] cache the embedding model between reindex runs - 2026-09-02 [#index]
 
 ## docs
 
-- [x] [S] document the five doctor checks - 2026-09-01 [#doctor]
+- [S] document the seven doctor checks - 2026-09-01 [#doctor]
 ```
 
 The size is `S`, `M`, or `L`. The heading is one of `feat`, `fix`, `refactor`, `perf`,
 `docs`, `test`, `build`, or `ci`. `sessionmemory new backlog` writes an item in exactly
 that shape, dated, under its heading, and creates the file or the heading when either is
-missing. Finished work becomes `- [x]` on its existing line, and work that will never
-happen is deleted; both are edits to the file. A session start reports how many `- [ ]`
-lines the file holds, and nothing more.
+missing. There is no checkbox: finished work is deleted from the file, the same as work
+that will never happen, and git history is the record of what was done. A session start
+reports how many lines in that shape the file holds, and nothing more; a line in any
+other shape, a ticked `- [x]` line included, is not counted, and `sessionmemory doctor`
+reports it.
 
 ## Logs
 

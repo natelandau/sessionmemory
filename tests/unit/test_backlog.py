@@ -27,9 +27,9 @@ def test_add_item_creates_the_file_with_the_heading_when_missing(tmp_path):
 
     line = _add(path)
 
-    assert line == "- [ ] [S] cache the model - 2026-09-03 [#index]"
+    assert line == "- [S] cache the model - 2026-09-03 [#index]"
     assert path.read_text(encoding="utf-8") == (
-        "# Backlog\n\n## feat\n\n- [ ] [S] cache the model - 2026-09-03 [#index]\n"
+        "# Backlog\n\n## feat\n\n- [S] cache the model - 2026-09-03 [#index]\n"
     )
 
 
@@ -37,70 +37,68 @@ def test_add_item_appends_after_the_last_item_of_its_section(tmp_path):
     """Verify the line lands at the end of its section, and the following section is untouched."""
     path = tmp_path / "backlog.md"
     path.write_text(
-        "# Backlog\n\n## feat\n\n- [ ] [M] first - 2026-09-01 [#a]\n\n## docs\n\n- [x] [S] done - 2026-09-01 [#b]\n",
+        "# Backlog\n\n## feat\n\n- [M] first - 2026-09-01 [#a]\n\n## docs\n\n- [S] second - 2026-09-01 [#b]\n",
         encoding="utf-8",
     )
 
     _add(path)
 
     assert path.read_text(encoding="utf-8") == (
-        "# Backlog\n\n## feat\n\n- [ ] [M] first - 2026-09-01 [#a]\n"
-        "- [ ] [S] cache the model - 2026-09-03 [#index]\n\n"
-        "## docs\n\n- [x] [S] done - 2026-09-01 [#b]\n"
+        "# Backlog\n\n## feat\n\n- [M] first - 2026-09-01 [#a]\n"
+        "- [S] cache the model - 2026-09-03 [#index]\n\n"
+        "## docs\n\n- [S] second - 2026-09-01 [#b]\n"
     )
 
 
 def test_add_item_fills_an_empty_section(tmp_path):
     """Verify a heading with no items gets a blank line and then the item."""
     path = tmp_path / "backlog.md"
-    path.write_text(
-        "# Backlog\n\n## feat\n\n## docs\n\n- [ ] [S] d - 2026-09-01\n", encoding="utf-8"
-    )
+    path.write_text("# Backlog\n\n## feat\n\n## docs\n\n- [S] d - 2026-09-01\n", encoding="utf-8")
 
     _add(path)
 
     assert path.read_text(encoding="utf-8") == (
-        "# Backlog\n\n## feat\n\n- [ ] [S] cache the model - 2026-09-03 [#index]\n\n"
-        "## docs\n\n- [ ] [S] d - 2026-09-01\n"
+        "# Backlog\n\n## feat\n\n- [S] cache the model - 2026-09-03 [#index]\n\n"
+        "## docs\n\n- [S] d - 2026-09-01\n"
     )
 
 
 def test_add_item_appends_a_missing_section_at_the_end(tmp_path):
     """Verify an absent kind heading is added last, leaving the existing order alone."""
     path = tmp_path / "backlog.md"
-    path.write_text("# Backlog\n\n## docs\n\n- [ ] [S] d - 2026-09-01 [#b]\n", encoding="utf-8")
+    path.write_text("# Backlog\n\n## docs\n\n- [S] d - 2026-09-01 [#b]\n", encoding="utf-8")
 
     _add(path, kind="fix")
 
     assert path.read_text(encoding="utf-8") == (
-        "# Backlog\n\n## docs\n\n- [ ] [S] d - 2026-09-01 [#b]\n\n"
-        "## fix\n\n- [ ] [S] cache the model - 2026-09-03 [#index]\n"
+        "# Backlog\n\n## docs\n\n- [S] d - 2026-09-01 [#b]\n\n"
+        "## fix\n\n- [S] cache the model - 2026-09-03 [#index]\n"
     )
 
 
 def test_add_item_matches_the_heading_exactly(tmp_path):
     """Verify `## fix` is not mistaken for `## fixtures`."""
     path = tmp_path / "backlog.md"
-    path.write_text("# Backlog\n\n## fixtures\n\n- [ ] [S] x - 2026-09-01\n", encoding="utf-8")
+    path.write_text("# Backlog\n\n## fixtures\n\n- [S] x - 2026-09-01\n", encoding="utf-8")
 
     _add(path, kind="fix")
 
     assert path.read_text(encoding="utf-8").endswith(
-        "## fixtures\n\n- [ ] [S] x - 2026-09-01\n\n"
-        "## fix\n\n- [ ] [S] cache the model - 2026-09-03 [#index]\n"
+        "## fixtures\n\n- [S] x - 2026-09-01\n\n"
+        "## fix\n\n- [S] cache the model - 2026-09-03 [#index]\n"
     )
 
 
 def test_add_item_normalizes_a_file_with_no_trailing_newline(tmp_path):
     """Verify an item appended to a file lacking a final newline still lands on its own line."""
     path = tmp_path / "backlog.md"
-    path.write_text("# Backlog\n\n## feat\n\n- [ ] [S] a - 2026-09-01", encoding="utf-8")
+    path.write_text("# Backlog\n\n## feat\n\n- [S] a - 2026-09-01", encoding="utf-8")
 
     _add(path)
 
     assert path.read_text(encoding="utf-8") == (
-        "# Backlog\n\n## feat\n\n- [ ] [S] a - 2026-09-01\n"
-        "- [ ] [S] cache the model - 2026-09-03 [#index]\n"
+        "# Backlog\n\n## feat\n\n- [S] a - 2026-09-01\n"
+        "- [S] cache the model - 2026-09-03 [#index]\n"
     )
 
 
@@ -112,7 +110,7 @@ def test_add_item_leaves_a_file_without_the_backlog_heading_alone(tmp_path):
     _add(path)
 
     assert path.read_text(encoding="utf-8") == (
-        "Some notes.\n\n## feat\n\n- [ ] [S] cache the model - 2026-09-03 [#index]\n"
+        "Some notes.\n\n## feat\n\n- [S] cache the model - 2026-09-03 [#index]\n"
     )
 
 
@@ -120,7 +118,7 @@ def test_add_item_omits_the_topic_when_none_is_given(tmp_path):
     """Verify the trailing bracket is dropped rather than rendered empty."""
     line = _add(tmp_path / "backlog.md", topic=None)
 
-    assert line == "- [ ] [S] cache the model - 2026-09-03"
+    assert line == "- [S] cache the model - 2026-09-03"
 
 
 def test_add_item_strips_a_leading_hash_from_the_topic(tmp_path):
@@ -134,7 +132,7 @@ def test_add_item_strips_the_description(tmp_path):
     """Verify surrounding whitespace never reaches the line."""
     line = _add(tmp_path / "backlog.md", description="  trim me  ")
 
-    assert line == "- [ ] [S] trim me - 2026-09-03 [#index]"
+    assert line == "- [S] trim me - 2026-09-03 [#index]"
 
 
 @pytest.mark.parametrize(
@@ -156,3 +154,36 @@ def test_add_item_rejects_a_malformed_item_and_writes_nothing(tmp_path, override
         _add(path, **overrides)
 
     assert not path.exists()
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        pytest.param("- [S] cache the model - 2026-09-03 [#index]", id="with-topic"),
+        pytest.param("- [M] cache the model - 2026-09-03", id="without-topic"),
+        pytest.param("- [L] a - b - c - 2026-09-03 [#x-y_z]", id="hyphens-in-description"),
+        pytest.param("  - [S] indented - 2026-09-03", id="indented"),
+    ],
+)
+def test_is_item_accepts_the_line_the_writer_produces(line):
+    """Verify every shape `format_item` can write, and an indented copy of one, counts."""
+    assert backlog.is_item(line)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        pytest.param("- [ ] [S] old open item - 2026-09-03 [#index]", id="ticked-box-open"),
+        pytest.param("- [x] [S] finished item - 2026-09-03 [#index]", id="ticked-box-done"),
+        pytest.param("- [S] undated item [#index]", id="no-date"),
+        pytest.param("- [XL] wrong size - 2026-09-03", id="unknown-size"),
+        pytest.param("- [S] - 2026-09-03", id="empty-description"),
+        pytest.param("- [S] two words topic - 2026-09-03 [#a b]", id="topic-with-whitespace"),
+        pytest.param("- plain bullet", id="plain-bullet"),
+        pytest.param("## feat", id="heading"),
+        pytest.param("", id="blank"),
+    ],
+)
+def test_is_item_rejects_a_line_outside_the_shape(line):
+    """Verify a checkbox, a missing field, or a bad field keeps a line from counting."""
+    assert not backlog.is_item(line)

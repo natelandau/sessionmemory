@@ -8,11 +8,12 @@ sessionmemory doctor
 ```
 
 ```
-5 suggestions
+6 suggestions
   ├─ filename: ~/repos/my-vault/projects/invoice-api/learnings/Bad Name.md: not lowercase ascii letters, digits, and hyphens
   ├─ size: ~/repos/my-vault/projects/invoice-api/learnings/an-oversized-page.md: 9764 bytes; split it, the limit is 8192
   ├─ datetime: ~/repos/my-vault/projects/invoice-api/learnings/an-undated-page.md: created, updated: unquoted; quote the value
   ├─ project: old-service: root ~/repos/old-service does not exist
+  ├─ backlog: ~/repos/my-vault/projects/invoice-api/backlog.md: line 10: ticked; finished work is deleted, not ticked
   └─ index: ~/repos/my-vault/projects/invoice-api/learnings: index is behind its pages; run: sessionmemory reindex
 ```
 
@@ -36,7 +37,7 @@ A clean vault says so:
 ]
 ```
 
-## The six checks
+## The seven checks
 
 Each finding names the check that produced it.
 
@@ -98,6 +99,26 @@ This check also reports a `registry` finding when `_system/registry.toml` cannot
 at all. Correct the file by hand: with the registry unreadable, no directory resolves to
 a project and every other command fails.
 
+### `backlog`
+
+A top-level bullet in a project's `backlog.md` is not in the shape a session start
+counts as an open item: `- [S|M|L] <description> - <YYYY-MM-DD> [#topic]`, with the
+topic optional.
+
+```
+2 suggestions
+  ├─ backlog: ~/repos/my-vault/projects/invoice-api/backlog.md: line 10: ticked; finished work is deleted, not ticked
+  └─ backlog: ~/repos/my-vault/projects/invoice-api/backlog.md: line 11: not counted as open; the shape is `- [S|M|L] <description> - <YYYY-MM-DD> [#topic]`
+```
+
+A ticked `- [x]` line is finished work. Delete it: the backlog has no checkbox, and git
+history is the record of what was done. Any other bullet is a line the session start
+silently leaves out of its count, most often one written by hand without a size or a
+date, or one from before the format dropped its checkbox, as `- [ ] [S] ...`. Rewrite it
+in the shape above, or run `/sessionmemory:backlog`, which deletes ticked lines and
+rewrites checkbox lines before it triages. An indented bullet is a note under an item
+and is not reported.
+
 ### `index`
 
 A field's index file cannot be opened as a database, or it disagrees with the pages
@@ -117,4 +138,5 @@ failed one would fail it forever.
 There is no `--fix`. Each finding above forks on a judgment the command cannot make: a
 new filename, where to split a page, what a missing summary says, whether a repository
 moved or died. Repair that guessed at any of those would destroy the signal that made the
-finding worth reporting.
+finding worth reporting. The ticked backlog line is the one with a fixed remedy, and
+`/sessionmemory:backlog` applies it, since curating that file is what the skill is for.

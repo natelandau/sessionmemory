@@ -135,9 +135,9 @@ def test_new_backlog_writes_a_dated_item_under_its_kind_heading(workspace):
     assert result.exit_code == 0, result.output
     path = vault / "projects" / "demo" / "backlog.md"
     assert path.read_text(encoding="utf-8") == (
-        f"# Backlog\n\n## feat\n\n- [ ] [S] cache the model - {today()} [#index]\n"
+        f"# Backlog\n\n## feat\n\n- [S] cache the model - {today()} [#index]\n"
     )
-    assert "- [ ] [S] cache the model" in result.output
+    assert "- [S] cache the model" in result.output
 
 
 def test_new_backlog_json_names_path_and_line(workspace):
@@ -150,7 +150,7 @@ def test_new_backlog_json_names_path_and_line(workspace):
     payload = json.loads(result.stdout)
     assert set(payload) == {"path", "line"}
     assert payload["path"].endswith("/demo/backlog.md")
-    assert payload["line"] == f"- [ ] [M] t - {today()}"
+    assert payload["line"] == f"- [M] t - {today()}"
 
 
 def test_new_backlog_rejects_an_unknown_kind_and_names_the_allowed_set(workspace):

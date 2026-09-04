@@ -236,7 +236,7 @@ sessionmemory new backlog --kind feat --size M \
 
 ```
 ✓ added to backlog.md
-  ├─ - [ ] [M] cache the embedding model between reindex runs - 2026-09-03 [#index]
+  ├─ - [M] cache the embedding model between reindex runs - 2026-09-03 [#index]
   └─ ~/repos/my-vault/projects/invoice-api/backlog.md
 ```
 
@@ -245,7 +245,7 @@ With `--json`, the payload names the file and the exact line written:
 ```json
 {
   "path": "~/repos/my-vault/projects/invoice-api/backlog.md",
-  "line": "- [ ] [M] cache the embedding model between reindex runs - 2026-09-03 [#index]"
+  "line": "- [M] cache the embedding model between reindex runs - 2026-09-03 [#index]"
 }
 ```
 
@@ -256,8 +256,9 @@ Invalid value for '--kind': 'chore' is not one of 'feat', 'fix', 'refactor',
 'perf', 'docs', 'test', 'build', 'ci'.
 ```
 
-The command only adds. Ticking a finished item to `- [x]` and deleting one that will
-never be done are edits to the file.
+The command only adds. A finished item, and one that will never be done, is deleted
+from the file; the line has no checkbox to tick, and git history is the record of what
+was finished.
 
 ## `sessionmemory log`
 
@@ -451,9 +452,11 @@ away. The project's folder has `learnings/` and `logs/`, searched by meaning, be
   - Past sessions, one page each: `sessionmemory search "<words>" --logs`.
   - Open work: read `backlog.md`. An item is one line under a `## <kind>` heading
     (feat, fix, refactor, perf, docs, test, build, ci), sized S, M, or L:
-    `- [ ] [S] <imperative description> - <YYYY-MM-DD> [#topic]`. Add one with
+    `- [S] <imperative description> - <YYYY-MM-DD> [#topic]`. Add one with
     `sessionmemory new backlog --kind <kind> --size <S|M|L> --title "..." --topic <topic> --cwd .`,
-    which creates the file or heading when missing. Tick or delete lines directly.
+    which creates the file or heading when missing. Delete a finished line, and one
+    that will never be done, directly; never tick or annotate it. Git history is the
+    record of what was finished.
   - Specs and plans: `sessionmemory new spec|plan --title "..." --cwd .` creates the file
     and prints its path. Edit it directly after that.
   - Learnings are captured at session end, not by you mid-session. When the user asks
@@ -574,7 +577,7 @@ sessionmemory doctor
 ]
 ```
 
-See [Vault health](vault-health.md) for the six checks and what to do about each one.
+See [Vault health](vault-health.md) for the seven checks and what to do about each one.
 
 ## `sessionmemory export`
 

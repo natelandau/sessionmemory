@@ -1,4 +1,4 @@
-"""Tests for the six doctor checks."""
+"""Tests for the seven doctor checks."""
 
 from __future__ import annotations
 
@@ -206,3 +206,40 @@ def test_unquoted_datetimes_stays_quiet_for_quoted_dates_and_unparsable_blocks(t
 def test_run_includes_the_datetime_check(tmp_path):
     """Verify the check runs as part of doctor rather than only when called by name."""
     assert doctor.unquoted_datetimes in doctor.CHECKS
+
+
+def test_uncounted_backlog_lines_reports_a_bullet_outside_the_item_shape(tmp_path):
+    """Verify a ticked line, an old checkbox line, and an undated bullet are reported with their line numbers, and an item is not."""
+    directory = _learnings(tmp_path)
+    backlog = directory.parent / "backlog.md"
+    backlog.write_text(
+        "# Backlog\n\n## feat\n\n- [S] open - 2026-09-01 [#a]\n- [x] [S] finished - 2026-09-01\n"
+        "- [ ] [M] old shape - 2026-09-01\n- undated bullet\n  - an indented note\n",
+        encoding="utf-8",
+    )
+
+    findings = doctor.uncounted_backlog_lines(tmp_path, StubEmbedder())
+
+    assert [(f.check, f.path) for f in findings] == [("backlog", str(backlog))] * 3
+    assert findings[0].message.startswith("line 6: ")
+    assert "delete" in findings[0].message
+    assert findings[1].message.startswith("line 7: ")
+    assert findings[2].message.startswith("line 8: ")
+    assert "not counted" in findings[2].message
+
+
+def test_uncounted_backlog_lines_stays_quiet_without_a_backlog(tmp_path):
+    """Verify a project with no backlog.md is not a finding."""
+    _learnings(tmp_path)
+
+    assert doctor.uncounted_backlog_lines(tmp_path, StubEmbedder()) == []
+
+
+def test_run_includes_the_backlog_check(tmp_path):
+    """Verify a ticked backlog line surfaces through `run`."""
+    directory = _learnings(tmp_path)
+    (directory.parent / "backlog.md").write_text("- [x] [S] done - 2026-09-01\n", encoding="utf-8")
+
+    findings = doctor.run(tmp_path, StubEmbedder())
+
+    assert [f.check for f in findings] == ["backlog"]

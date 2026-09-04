@@ -30,13 +30,15 @@ def _project(vault: Path) -> Path:
     )
     field.new_document(root / "specs", title="A Spec", body="", now=NOW, day=NOW[:10])
     (root / "backlog.md").write_text(
-        "# Backlog\n\n- [ ] one\n- [x] done\n- [ ] two\n", encoding="utf-8"
+        "# Backlog\n\n## feat\n\n- [S] one - 2026-09-01 [#a]\n- [x] [S] done - 2026-09-01\n"
+        "- [ ] [S] old open shape - 2026-09-01\n- [M] two - 2026-09-01\n",
+        encoding="utf-8",
     )
     return root
 
 
 def test_build_lists_titles_sorted_and_counts_open_backlog(tmp_path):
-    """Verify titles come from the pages, sorted, and the backlog count skips checked items."""
+    """Verify titles come from the pages, sorted, and only lines in the item shape count as open."""
     _project(tmp_path)
 
     result = inject.build(tmp_path, "demo")
@@ -72,7 +74,9 @@ def test_guidance_teaches_the_backlog_line_and_the_project_paths():
     """Verify the guidance carries what no skill can be counted on to load: the backlog item shape and where every file lives."""
     text = inject.GUIDANCE.format(command="sessionmemory")
 
-    assert "`- [ ] [S] <imperative description> - <YYYY-MM-DD> [#topic]`" in text
+    assert "`- [S] <imperative description> - <YYYY-MM-DD> [#topic]`" in text
+    assert "- [ ]" not in text
+    assert "Delete a finished line" in text
     assert "`## <kind>` heading" in text
     assert "sessionmemory new backlog --kind <kind> --size <S|M|L>" in text
     assert "# Backlog" not in text

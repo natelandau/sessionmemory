@@ -7,7 +7,7 @@ description: Use when writing a spec, a plan, or a learning that should outlive 
 
 Durable memory for this repository lives in its own folder of a vault: a flat
 `learnings/` field of markdown pages, a `logs/` field with one page per session,
-`specs/`, `plans/`, and a `backlog.md` checklist. The CLI does only what you cannot
+`specs/`, `plans/`, and a `backlog.md` list of open work. The CLI does only what you cannot
 do with Read, Grep, and Write: it searches pages by meaning, it creates pages, and
 it writes a backlog item in the one shape the session start counts.
 
@@ -85,8 +85,9 @@ when either is missing, so the line is always the shape the session start counts
 "$CLI" new backlog --kind feat --size S --title "cache the model between reindex runs" --topic index --cwd .
 ```
 
-Kind is one of feat, fix, refactor, perf, docs, test, build, ci. Ticking a finished
-item and deleting one that will never be done are direct edits to `backlog.md`.
+Kind is one of feat, fix, refactor, perf, docs, test, build, ci. A finished item, and
+one that will never be done, is deleted from `backlog.md` directly. The line has no
+checkbox to tick; git history is the record of what was finished.
 
 ## Deleting
 

@@ -1,4 +1,4 @@
-"""The six things that can be wrong with a vault, stated without severity.
+"""The seven things that can be wrong with a vault, stated without severity.
 
 Every check is a suggestion. The article's argument holds: an irrelevant or imperfect
 page is never surfaced by semantic search, so nothing here fails a build. There is no
@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from sessionmemory.lib import field, fieldindex, paths, registry
+from sessionmemory.lib import backlog, field, fieldindex, paths, registry
 from sessionmemory.lib.frontmatter import (
     FrontmatterError,
     MissingFrontmatterError,
@@ -139,6 +139,33 @@ def dead_projects(vault: Path, _embedder: Embedder) -> list[Finding]:
     ]
 
 
+_TICKED = "- [x]"
+_SHAPE = "- [S|M|L] <description> - <YYYY-MM-DD> [#topic]"
+
+
+def uncounted_backlog_lines(vault: Path, _embedder: Embedder) -> list[Finding]:
+    """Report a top-level bullet in a backlog that the session start does not count.
+
+    A ticked line is finished work that should have been deleted; anything else is a
+    line that does not match the item shape. An indented bullet is a note under an
+    item and is left alone.
+    """
+    findings = []
+    for slug in paths.iter_project_slugs(vault):
+        path = paths.backlog_path(vault, slug)
+        if not path.is_file():
+            continue
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            if not line.startswith("- ") or backlog.is_item(line):
+                continue
+            if line.startswith(_TICKED):
+                message = f"line {number}: ticked; finished work is deleted, not ticked"
+            else:
+                message = f"line {number}: not counted as open; the shape is `{_SHAPE}`"
+            findings.append(Finding("backlog", str(path), message))
+    return findings
+
+
 def _is_stale(directory: Path, embedder: Embedder) -> str | None:
     index = fieldindex.index_path(directory, embedder)
     if not index.is_file():
@@ -177,6 +204,7 @@ CHECKS: tuple[Callable[[Path, Embedder], list[Finding]], ...] = (
     malformed_frontmatter,
     unquoted_datetimes,
     dead_projects,
+    uncounted_backlog_lines,
     stale_indexes,
 )
 

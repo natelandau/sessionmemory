@@ -1,6 +1,6 @@
 ---
 name: backlog
-description: Triage and curate this project's backlog.md - validate the open items against the current repository, tick, remove, or amend them, then rank what remains by impact and effort to recommend what to do next.
+description: Triage and curate this project's backlog.md - validate the open items against the current repository, remove or amend them, then rank what remains by impact and effort to recommend what to do next.
 disable-model-invocation: true
 argument-hint: "[--yes]"
 ---
@@ -20,16 +20,30 @@ the report instead, for a run nobody is watching.
 
 ```bash
 BACKLOG="$("${CLAUDE_SKILL_DIR}/../../hooks/vault-path.py" --backlog)"
-grep -n '^- \[ \]' "$BACKLOG"
+grep -nE '^- \[[SML]\]' "$BACKLOG"
 ```
 
 A non-zero exit from the resolver means no vault is reachable; say so and stop.
 If the file does not exist, report "No backlog found for this project." and stop.
-If no line is open, report "The backlog has no open items." and stop.
 
-An item is one line: `- [ ] [S|M|L] <description> - <date> [#topic]`, under a
-`## <kind>` heading. Pass lines to the reviewers verbatim; they key their answers
-by the line text.
+An item is one line: `- [S|M|L] <description> - <date> [#topic]`, under a
+`## <kind>` heading. There is no checkbox: a finished item is deleted, and git
+history is the record of it. Pass lines to the reviewers verbatim; they key their
+answers by the line text.
+
+## Clear finished and misshapen lines first
+
+Before dispatching anything, look for lines the session start does not count:
+
+```bash
+grep -nE '^- \[[ x]\]' "$BACKLOG"
+```
+
+Delete every `- [x]` line: its author already marked it done. Rewrite every
+`- [ ] [S|M|L] ...` line to `- [S|M|L] ...`, keeping the rest of it, and treat it
+as open from here on. Both are Edits, applied without asking, and both are listed
+in the report. Then re-run the first grep. If no line is open, report "The backlog
+has no open items." and stop.
 
 Both reviewers run on Sonnet, take a batch of about 5 lines, and return one result
 per line. Run batches in parallel; a single batch when there are only a handful.
@@ -50,7 +64,7 @@ lines. It returns `impact`, `effort`, `recommend_now`, and a reason, keyed by `i
 
 Every disposition is an Edit to `backlog.md`; git history keeps all of them.
 
-- **`CLOSE`**: change the line's `- [ ]` to `- [x]`.
+- **`CLOSE`**: delete the line.
 - **`REMOVE`**: delete the line.
 - **`AMEND`**: rewrite the line's description, size, or move it to the right
   `## <kind>` section. Keep the date.
@@ -63,7 +77,7 @@ was passed. This skill never adds an item and never touches the learnings field.
 
 1. **Changes applied**: one line with the counts, then the closed and removed
    lines with their evidence, marking each one applied under `--yes` on low
-   confidence.
+   confidence, then any ticked line deleted and any checkbox line rewritten.
 2. **Open backlog at a glance**: a count, then a table of open lines by kind and
    size.
 3. **Work on next**: the open lines where `recommend_now` is yes, best first, each

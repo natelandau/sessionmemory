@@ -1,13 +1,16 @@
-"""Append an item to a project's backlog checklist.
+"""Append an item to a project's backlog and recognize one.
 
 This is the one place the item line's shape is known. A backlog line carries a kind that
 must match a `## <kind>` heading, a size from a fixed set, a date, and a topic tag, and
-the inject count and the backlog skill both depend on that shape being exact. Ticking
-and deleting a line need no validation and stay direct edits.
+the inject count, the doctor check, and the backlog skill all depend on that shape being
+exact. The line has no checkbox: finished work is deleted, and git history is the
+record of it, so there is nothing to tick. Deleting a line needs no validation and
+stays a direct edit.
 """
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
 from sessionmemory.lib import atomic
@@ -17,8 +20,10 @@ if TYPE_CHECKING:
 
 KINDS = ("feat", "fix", "refactor", "perf", "docs", "test", "build", "ci")
 SIZES = ("S", "M", "L")
-OPEN_ITEM = "- [ ]"
 HEADING = "# Backlog"
+ITEM_PATTERN = re.compile(
+    rf"^- \[(?:{'|'.join(SIZES)})\] \S.* - \d{{4}}-\d{{2}}-\d{{2}}(?: \[#[^\s\]]+\])?$"
+)
 _SECTION_PREFIX = "## "
 
 
@@ -57,7 +62,7 @@ def format_item(*, kind: str, size: str, description: str, topic: str | None, to
     if "\n" in description:
         msg = "the description must be a single line"
         raise BacklogError(msg)
-    line = f"{OPEN_ITEM} [{size}] {description} - {today}"
+    line = f"- [{size}] {description} - {today}"
     if topic is None:
         return line
     topic = topic.strip().removeprefix("#")
@@ -68,6 +73,19 @@ def format_item(*, kind: str, size: str, description: str, topic: str | None, to
         msg = "the topic cannot contain whitespace"
         raise BacklogError(msg)
     return f"{line} [#{topic}]"
+
+
+def is_item(line: str) -> bool:
+    """Return whether `line` is an open item, the only shape the session start counts.
+
+    Args:
+        line (str): One line of `backlog.md`; leading whitespace is ignored.
+
+    Returns:
+        bool: True for `- [S|M|L] <description> - <YYYY-MM-DD>` with an optional
+            `[#topic]`, and False for anything else, a checkbox included.
+    """
+    return ITEM_PATTERN.match(line.lstrip()) is not None
 
 
 def _insert(lines: list[str], kind: str, item: str) -> list[str]:

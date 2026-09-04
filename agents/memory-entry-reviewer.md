@@ -179,7 +179,7 @@ entries and nothing else. Each object contains:
 - `backlog_candidate` - whether this learning names a fixable defect that belongs in
   the backlog. Omit (or `needed: no`) when it doesn't. When it does, return:
   - `needed` - yes.
-  - `item` - the checklist line's description, phrased as deferred work, e.g.
+  - `item` - the backlog line's description, phrased as deferred work, e.g.
     "remove the vestigial `@pytest.mark.clean_db` marker".
   - `kind` - the conventional-commit type the item files under
     (feat/fix/refactor/perf/docs/test/build/ci).

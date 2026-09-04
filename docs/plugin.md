@@ -140,7 +140,7 @@ is recorded as nothing at all. Then it does three jobs, in order:
    a second time.
 2. **Deferred work.** Concrete work that was decided and not done becomes one line in
    `backlog.md`, written through `sessionmemory new backlog`. Work the transcript shows
-   was finished is ticked on its existing line.
+   was finished has its line deleted.
 3. **The session log.** One page per session, written through `sessionmemory log`, which
    replaces the page's whole body on every call. The page is titled with the date and
    clock time the session began, in local time, so two sessions on one day are told

@@ -169,7 +169,7 @@ from a scratch copy.
 
 A project's `learnings/` and `logs/` are fields: flat directories of pages, each
 with its own index file. `specs/`, `plans/`, and `backlog.md` sit beside them and are
-never indexed, which is what keeps a spec or a checklist from being embedded as memory.
+never indexed, which is what keeps a spec or the backlog from being embedded as memory.
 There is no global scope and no cross-project read; `lib/paths.py` finds a project's
 files by its slug and nothing else.
 
@@ -205,13 +205,16 @@ rather than beside it.
 writers racing for one title get two files rather than one overwritten page.
 
 **`lib/backlog.py` is the one place a backlog item's shape is known.** `KINDS`, `SIZES`,
-and the `OPEN_ITEM` prefix that `inject` counts live there, and `sessionmemory new backlog`
-is the CLI's one exception to leaving `backlog.md` to Read and Edit. It earns that because a
-line carries a heading from a fixed set, a size from a fixed set, and a date, none of which
-Edit validates, and a malformed line is silently not counted. The command only appends:
-ticking and deleting need no validation and stay direct edits, and `add_item` never inserts
-the `# Backlog` heading into an existing file, since a file someone else structured is
-theirs.
+and the `is_item` predicate that `inject` counts by and `doctor` checks against live
+there, and `sessionmemory new backlog` is the CLI's one exception to leaving `backlog.md`
+to Read and Edit. It earns that because a line carries a heading from a fixed set, a size
+from a fixed set, and a date, none of which Edit validates, and a malformed line is
+silently not counted. The line has no checkbox: finished work is deleted, and git history
+is the record of it. A `- [ ]` prefix is an affordance, and an agent that sees one ticks
+it however the prompt reads, so the shape itself is what keeps a done item from lingering
+as `- [x]`. The command only appends: deleting needs no validation and stays a direct
+edit, and `add_item` never inserts the `# Backlog` heading into an existing file, since a
+file someone else structured is theirs.
 
 ### The index
 
@@ -421,24 +424,27 @@ retrying automatic.
 
 ### Doctor
 
-`lib/doctor.py` holds six checks and the `CHECKS` tuple that runs them. There are no
+`lib/doctor.py` holds seven checks and the `CHECKS` tuple that runs them. There are no
 tiers: every finding is a suggestion, `doctor_command` always exits 0, and nothing here
 can fail a build. Semantic retrieval never surfaces a page that does not match, so an
 imperfect page costs nothing, and a check that failed a build over one would fail it
 forever.
 
-The six are a nonconformant filename, a page over `PAGE_LIMIT`, frontmatter that cannot
+The seven are a nonconformant filename, a page over `PAGE_LIMIT`, frontmatter that cannot
 be parsed or a learnings page missing `title` or `summary`, a bare date or datetime in
-frontmatter, a registered project whose root no longer exists, and an index that is
-unreadable or behind its pages. A file that is not valid UTF-8 is reported by the
-frontmatter check. A logs page with no frontmatter block at all is fine, since a log has
+frontmatter, a registered project whose root no longer exists, a top-level bullet in a
+`backlog.md` that `backlog.is_item` does not count (a ticked `- [x]` line foremost), and
+an index that is unreadable or behind its pages. A file that is not valid UTF-8 is
+reported by the frontmatter check. A logs page with no frontmatter block at all is fine, since a log has
 nothing a search result would show. The datetime check has its own reader,
 `frontmatter.unquoted_datetime_keys`, because `frontmatter.parse` stringifies a date
 PyYAML typed and nothing downstream can then tell a quoted value from a bare one.
 
 **There is no `--fix`, and repair is not coming back.** Every finding above forks on a
 judgment the command cannot make: which name to rename a file to, where to split a page,
-what a missing summary should say, whether a repository moved or died. The previous
+what a missing summary should say, whether a repository moved or died. The ticked
+backlog line is the one whose remedy is fixed, a deletion, and the `backlog` skill makes
+it, since the backlog is the skill's file to curate rather than a page. The previous
 version of this project grew a 294-line repair module by adding one plausible case at a
 time, and a repair that guesses destroys the signal that made the finding worth reporting.
 
@@ -468,7 +474,7 @@ Four pages sit under `docs/`, and a change to behavior belongs in whichever ones
 - `cli.md`: every command, its options, and its real output.
 - `plugin.md`: the hooks, the sweep, every setting key and default, the slash commands,
   the review subagents.
-- `vault-health.md`: the six `doctor` checks and what to do about each.
+- `vault-health.md`: the seven `doctor` checks and what to do about each.
 
 A new command, a new option, a new `doctor` check, a new settings key, or a changed
 default is a documentation change as much as a code change. The output in those pages is

@@ -21,7 +21,7 @@ pruned, so it holds work that has since been done or abandoned.
 ## What the caller gives you
 
 - The absolute path to this project's `backlog.md`, and one or more item lines
-  from it, verbatim. An item is one line: `- [ ] [S|M|L] <description> - <date>
+  from it, verbatim. An item is one line: `- [S|M|L] <description> - <date>
   [#topic]`, under a `## <kind>` heading naming its conventional-commit type.
   Read the file yourself for the section each line sits in.
 - You run in the project's repo, so you can read code and inspect git history.
@@ -29,7 +29,7 @@ pruned, so it holds work that has since been done or abandoned.
 ## Verdict - return exactly one per item
 
 - **CLOSE** - the work is done. Cite the commit, file, test, or code that
-  implements it. (the caller ticks the line's checkbox)
+  implements it. (the caller deletes the line)
 - **REMOVE** - no longer relevant: the feature was dropped, the approach was
   abandoned or superseded, or it no longer makes sense against the current design.
   Cite why. (the caller deletes the line)
