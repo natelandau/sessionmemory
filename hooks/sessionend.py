@@ -3,6 +3,10 @@
 # /// script
 # requires-python = ">=3.13"
 # dependencies = []
+#
+# # ty checks a script as its own project, so the repo's extra-paths do not reach it.
+# [tool.ty.environment]
+# extra-paths = ["."]
 # ///
 
 """SessionEnd hook: trigger the end-of-session memory sweep and commit the vault.
