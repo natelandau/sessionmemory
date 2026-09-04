@@ -117,8 +117,8 @@ def _seed_handoff(tmp_path: Path, proj: Path, text: str = "# Handoff\nthe baton"
 # ---------------------------------------------------------------------------
 
 
-def test_sessionstart_empty_store_exits_silently(tmp_path: Path) -> None:
-    """Verify SessionStart on an empty store exits 0 with empty stdout."""
+def test_sessionstart_empty_store_exits_cleanly(tmp_path: Path) -> None:
+    """Verify SessionStart on an empty store exits 0 and leaves the store empty."""
     # Given an isolated, empty store
     proj = tmp_path / "proj"
     proj.mkdir()
@@ -126,9 +126,9 @@ def test_sessionstart_empty_store_exits_silently(tmp_path: Path) -> None:
     proc = _run(
         "sessionstart", {"cwd": str(proj), "source": "startup"}, _isolated_env(tmp_path, proj)
     )
-    # Then it exits cleanly and injects nothing
+    # Then it exits cleanly and, with no transcript and no repository, records nothing
     assert proc.returncode == 0, proc.stderr
-    assert proc.stdout.strip() == ""
+    assert not _store(tmp_path, proj).state_dir.exists()
 
 
 def test_sessionstart_injects_the_block_the_vault_renders(tmp_path: Path) -> None:
@@ -146,8 +146,8 @@ def test_sessionstart_injects_the_block_the_vault_renders(tmp_path: Path) -> Non
     assert TITLE in context
 
 
-def test_sessionstart_without_a_vault_injects_nothing(tmp_path: Path) -> None:
-    """Verify an unreachable vault is a silent no-op, never an error at session start."""
+def test_sessionstart_without_a_vault_injects_the_hint(tmp_path: Path) -> None:
+    """Verify an unreachable vault is reported to the session, never an error at session start."""
     # Given no vault root anywhere
     proj = tmp_path / "proj"
     proj.mkdir()
@@ -155,9 +155,10 @@ def test_sessionstart_without_a_vault_injects_nothing(tmp_path: Path) -> None:
     proc = _run(
         "sessionstart", {"cwd": str(proj), "source": "startup"}, _isolated_env(tmp_path, proj)
     )
-    # Then it exits cleanly with nothing to say
+    # Then it exits cleanly and the hint is the whole injected context
     assert proc.returncode == 0, proc.stderr
-    assert proc.stdout.strip() == ""
+    context = json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert context == sessionstart.NO_VAULT_HINT
 
 
 def test_sessionstart_records_the_starting_commit(tmp_path: Path) -> None:
@@ -560,14 +561,29 @@ def test_memory_block_none_when_inject_is_disabled(tmp_path: Path) -> None:
     assert result is None
 
 
-def test_memory_block_none_when_no_vault_is_discovered(
+def test_memory_block_hints_when_no_vault_is_discovered(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Verify no vault reachable yields nothing, rather than an error."""
+    """Verify no vault reachable yields a hint naming both ways to configure one."""
     # Given a VaultCLI.discover that finds nothing
     monkeypatch.setattr(sessionstart.VaultCLI, "discover", classmethod(lambda cls, **_kwargs: None))
     # When the memory block is built
     result = sessionstart._memory_block(SessionMemoryConfig(), cwd=tmp_path)
+    # Then the session is told nothing will be recorded and how to point the hooks at a vault
+    assert result == sessionstart.NO_VAULT_HINT
+    assert "SESSIONMEMORY_VAULT" in result
+    assert "[vault]" in result
+    assert "~/.claude/sessionmemory.toml" in result
+
+
+def test_memory_block_none_when_inject_is_off_and_no_vault_is_discovered(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Verify the no-vault hint follows the inject toggle like every other block."""
+    # Given injection turned off and no vault reachable
+    monkeypatch.setattr(sessionstart.VaultCLI, "discover", classmethod(lambda cls, **_kwargs: None))
+    # When the memory block is built
+    result = sessionstart._memory_block(SessionMemoryConfig(inject_enabled=False), cwd=tmp_path)
     # Then there is nothing to say
     assert result is None
 
@@ -714,9 +730,9 @@ def test_sessionstart_skips_handoff_on_resume(tmp_path: Path) -> None:
     proc = _run(
         "sessionstart", {"cwd": str(proj), "source": "resume"}, _isolated_env(tmp_path, proj)
     )
-    # Then nothing is injected and the baton is left intact
+    # Then the handoff is neither injected nor consumed
     assert proc.returncode == 0, proc.stderr
-    assert proc.stdout.strip() == ""
+    assert "the baton" not in proc.stdout
     assert store.handoff_path.exists()
 
 

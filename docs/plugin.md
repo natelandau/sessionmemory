@@ -94,6 +94,13 @@ This project is not registered with the vault, so it has no memory yet. Register
 The hint spells the CLI the way the session can run it: by name when the tool on `PATH`
 passed the handshake, and by the cached copy's absolute path otherwise.
 
+When the hook finds no vault at all, the session receives this instead of memory, since
+the sweep at the end of the session will find none either:
+
+```
+No vault is reachable, so this session has no memory and nothing it does will be recorded. Set SESSIONMEMORY_VAULT to the vault directory, or set root under [vault] in ~/.claude/sessionmemory.toml, then start a new session. A variable exported in a shell profile reaches only sessions launched from a shell that sourced it.
+```
+
 The hook's timeout is 100 seconds, and it budgets its own worst case: resolving the
 project root 5s, reading the head commit 5s, two version handshakes 10s, the vault commit
 35s, one registration check 5s, one registration 5s, and `sessionmemory inject` 25s,
@@ -258,14 +265,16 @@ to `sweep.log` in this project's machine-local state directory, which
 `hooks/vault-path.py --state-dir` prints. The line carries the outcome, the files
 written, and the tail of stderr when the run failed.
 
-**A session starts with no memory.** Run `sessionmemory project` in that repository. An
-unregistered directory exits 1 and names the command that registers it. The hook
-registers a git repository on its own, so a repository that stays unregistered is one the
-CLI refused. Run `sessionmemory project --register --cwd .` by hand to see the reason,
-which is usually a slug another project holds. If the project is registered, run
-`sessionmemory inject --cwd <your repo>` by hand from a shell. If that prints the block,
-the hook is not finding the vault root, so set `vault.root` in
-`~/.claude/sessionmemory.toml`.
+**A session starts with no memory.** If it started with the "No vault is reachable" hint,
+the hook is not finding the vault root. A `SESSIONMEMORY_VAULT` exported from a shell
+profile reaches only sessions launched from a shell that sourced it, so a terminal opened
+before the export was added, and any GUI launcher, starts sessions without it. Set
+`vault.root` in `~/.claude/sessionmemory.toml`, which every session reads. Without the
+hint, run `sessionmemory project` in that repository. An unregistered directory exits 1
+and names the command that registers it. The hook registers a git repository on its own,
+so a repository that stays unregistered is one the CLI refused. Run
+`sessionmemory project --register --cwd .` by hand to see the reason, which is usually a
+slug another project holds.
 
 **Search misses a page you can see.** The index is behind its pages. Run
 `sessionmemory reindex --cwd <your repo>`, or delete the `*.sqlite3` file in the field and

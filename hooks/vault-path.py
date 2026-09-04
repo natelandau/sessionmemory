@@ -3,6 +3,10 @@
 # /// script
 # requires-python = ">=3.13"
 # dependencies = []
+#
+# # ty checks a script as its own project, so the repo's extra-paths do not reach it.
+# [tool.ty.environment]
+# extra-paths = ["."]
 # ///
 
 """Print an absolute path for the current project's memory.
