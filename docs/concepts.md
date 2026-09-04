@@ -107,9 +107,11 @@ commit type:
 ```
 
 The size is `S`, `M`, or `L`. The heading is one of `feat`, `fix`, `refactor`, `perf`,
-`docs`, `test`, `build`, or `ci`. Finished work becomes `- [x]` on its existing line, and
-work that will never happen is deleted. A session start reports how many `- [ ]` lines
-the file holds, and nothing more.
+`docs`, `test`, `build`, or `ci`. `sessionmemory new backlog` writes an item in exactly
+that shape, dated, under its heading, and creates the file or the heading when either is
+missing. Finished work becomes `- [x]` on its existing line, and work that will never
+happen is deleted; both are edits to the file. A session start reports how many `- [ ]`
+lines the file holds, and nothing more.
 
 ## Logs
 

@@ -8,7 +8,8 @@ description: Use when writing a spec, a plan, or a learning that should outlive 
 Durable memory for this repository lives in its own folder of a vault: a flat
 `learnings/` field of markdown pages, a `logs/` field with one page per session,
 `specs/`, `plans/`, and a `backlog.md` checklist. The CLI does only what you cannot
-do with Read, Grep, and Write: it searches pages by meaning and it creates pages.
+do with Read, Grep, and Write: it searches pages by meaning, it creates pages, and
+it writes a backlog item in the one shape the session start counts.
 
 Resolve the CLI once, then use `$CLI` for every command:
 
@@ -45,7 +46,8 @@ answer, not a reason to loosen `--max-distance`.
 "${CLAUDE_SKILL_DIR}/../../hooks/vault-path.py" --logs
 ```
 
-`backlog.md`, specs, and plans are ordinary files. Read and edit them directly.
+`backlog.md`, specs, and plans are ordinary files. Read and edit them directly;
+the CLI only adds to them.
 
 ## Creating a page
 
@@ -74,6 +76,17 @@ Specs and plans are files with a title and dates:
 EOF
 "$CLI" new plan --title "..." --cwd .
 ```
+
+A backlog item is one line under a `## <kind>` heading, sized S, M, or L, with
+today's date and a topic tag. The CLI writes it, creating the file or the heading
+when either is missing, so the line is always the shape the session start counts:
+
+```bash
+"$CLI" new backlog --kind feat --size S --title "cache the model between reindex runs" --topic index --cwd .
+```
+
+Kind is one of feat, fix, refactor, perf, docs, test, build, ci. Ticking a finished
+item and deleting one that will never be done are direct edits to `backlog.md`.
 
 ## Deleting
 

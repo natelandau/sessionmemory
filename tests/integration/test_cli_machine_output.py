@@ -75,6 +75,10 @@ def colored(tmp_path):
         pytest.param(
             ["new", "learning", "--title", "t", "--summary", "s", "--json"], id="new-learning"
         ),
+        pytest.param(
+            ["new", "backlog", "--kind", "feat", "--size", "S", "--title", "t", "--json"],
+            id="new-backlog",
+        ),
         pytest.param(["search", "anything", "--json"], id="search"),
         pytest.param(["inject", "--json"], id="inject"),
         pytest.param(["reindex", "--json"], id="reindex"),

@@ -110,3 +110,71 @@ def test_new_learning_with_unusable_title_fails(workspace):
     result = runner.invoke(app, ["new", "learning", "--title", "!!!", "--summary", "s"])
 
     assert result.exit_code == 1
+
+
+def test_new_backlog_writes_a_dated_item_under_its_kind_heading(workspace):
+    """Verify the item lands in projects/<slug>/backlog.md with today's date and the tag."""
+    vault, _ = workspace
+
+    result = runner.invoke(
+        app,
+        [
+            "new",
+            "backlog",
+            "--kind",
+            "feat",
+            "--size",
+            "S",
+            "--title",
+            "cache the model",
+            "--topic",
+            "index",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    path = vault / "projects" / "demo" / "backlog.md"
+    assert path.read_text(encoding="utf-8") == (
+        f"# Backlog\n\n## feat\n\n- [ ] [S] cache the model - {today()} [#index]\n"
+    )
+    assert "- [ ] [S] cache the model" in result.output
+
+
+def test_new_backlog_json_names_path_and_line(workspace):
+    """Verify the payload carries where the item went and exactly what was written."""
+    result = runner.invoke(
+        app, ["new", "backlog", "--kind", "fix", "--size", "M", "--title", "t", "--json"]
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert set(payload) == {"path", "line"}
+    assert payload["path"].endswith("/demo/backlog.md")
+    assert payload["line"] == f"- [ ] [M] t - {today()}"
+
+
+def test_new_backlog_rejects_an_unknown_kind_and_names_the_allowed_set(workspace):
+    """Verify a kind outside the heading set fails at parse time with the choices listed."""
+    result = runner.invoke(
+        app, ["new", "backlog", "--kind", "chore", "--size", "S", "--title", "t"]
+    )
+
+    assert result.exit_code != 0
+    assert "chore" in result.output
+    assert "refactor" in result.output
+
+
+def test_new_backlog_item_is_counted_by_inject(workspace):
+    """Verify the line the command writes is the shape the session start counts."""
+    runner.invoke(app, ["new", "backlog", "--kind", "docs", "--size", "L", "--title", "t"])
+
+    result = runner.invoke(app, ["inject", "--json"])
+
+    assert json.loads(result.stdout)["open_backlog"] == 1
+
+
+def test_new_backlog_with_empty_title_fails(workspace):
+    """Verify a blank description is refused rather than written as an empty item."""
+    result = runner.invoke(app, ["new", "backlog", "--kind", "docs", "--size", "S", "--title", " "])
+
+    assert result.exit_code == 1

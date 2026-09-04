@@ -39,8 +39,13 @@ def test_the_prompt_never_names_a_command_that_does_not_exist():
             " status ",
             "global learning",
             "[[",
-            "new backlog",
-            "--size",
-            "--kind",
         ):
             assert forbidden not in text, f"{forbidden!r} in {name}"
+
+
+def test_the_prompt_adds_a_backlog_item_through_the_cli():
+    """Verify deferred work is written by the command that owns the line format, not by hand."""
+    text = (PROMPTS / "sweep.md").read_text(encoding="utf-8")
+
+    assert "{{vault_cli}} new backlog --kind" in text
+    assert "create it with a `# Backlog` heading" not in text

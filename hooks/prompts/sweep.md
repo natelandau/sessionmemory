@@ -75,16 +75,17 @@ the file, commit, or URL the fact came from wherever there is one.
 ### 2. Deferred work
 
 Concrete work that was decided and not done is one line in `backlog.md`, under
-the `## <kind>` section for its commit type, created if absent:
+the `## <kind>` section for its commit type. Add it with the CLI, which writes the
+line, the date, and the heading, and creates the file when it is missing:
 
 ```
-- [ ] [S] <imperative description> - <YYYY-MM-DD> [#topic]
+{{vault_cli}} new backlog --kind <kind> --size <S|M|L> \
+  --title "<imperative description>" --topic <topic> --cwd {{repo}}
 ```
 
 Size is `S`, `M`, or `L`. Kind is one of feat, fix, refactor, perf, docs, test,
 build, ci. Work the transcript shows was finished becomes `- [x]` on its existing
-line. An item that will never be done is deleted. Edit the file directly; if it
-does not exist, create it with a `# Backlog` heading.
+line, and an item that will never be done is deleted; make both edits directly.
 
 ### 3. The session log
 

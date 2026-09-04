@@ -11,11 +11,11 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from sessionmemory.lib import field, paths
+from sessionmemory.lib.backlog import OPEN_ITEM
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-OPEN_ITEM = "- [ ]"
 _LEADING_PUNCTUATION = "`'\"([{<*_~"
 
 
@@ -76,8 +76,9 @@ away. The project's folder has `learnings/` and `logs/`, searched by meaning, be
   - Past sessions, one page each: `{command} search "<words>" --logs`.
   - Open work: read `backlog.md`. An item is one line under a `## <kind>` heading
     (feat, fix, refactor, perf, docs, test, build, ci), sized S, M, or L:
-    `- [ ] [S] <imperative description> - <YYYY-MM-DD> [#topic]`. Add, tick, or
-    delete lines directly. If the file is missing, create it with a `# Backlog` heading.
+    `- [ ] [S] <imperative description> - <YYYY-MM-DD> [#topic]`. Add one with
+    `{command} new backlog --kind <kind> --size <S|M|L> --title "..." --topic <topic> --cwd .`,
+    which creates the file or heading when missing. Tick or delete lines directly.
   - Specs and plans: `{command} new spec|plan --title "..." --cwd .` creates the file
     and prints its path. Edit it directly after that.
   - Learnings are captured at session end, not by you mid-session. When the user asks

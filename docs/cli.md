@@ -213,6 +213,52 @@ sessionmemory new plan --title "Move PDF rendering to a worker queue" --cwd .
   └─ ~/repos/my-vault/projects/invoice-api/plans/2026-09-03-move-pdf-rendering-to-a-worker-queue.md
 ```
 
+## `sessionmemory new backlog`
+
+Add one open item to this project's `backlog.md`. The command writes the line in the one
+shape a session start counts, dates it, and puts it under the heading for its kind. It
+creates the file with its `# Backlog` heading when there is none, and adds the kind
+heading at the end when the file lacks it.
+
+| Option    | What it does                                                                                                          |
+| --------- | --------------------------------------------------------------------------------------------------------------------- |
+| `--kind`  | The commit type heading the item goes under: `feat`, `fix`, `refactor`, `perf`, `docs`, `test`, `build`, or `ci`. Required. |
+| `--size`  | Effort: `S`, `M`, or `L`. Required.                                                                                   |
+| `--title` | The imperative description of the work. Required.                                                                     |
+| `--topic` | A topic tag, without the leading hash.                                                                                |
+| `--cwd`   | Directory to resolve the project from.                                                                                |
+| `--json`  | Emit JSON instead of prose.                                                                                           |
+
+```bash
+sessionmemory new backlog --kind feat --size M \
+  --title "cache the embedding model between reindex runs" --topic index --cwd .
+```
+
+```
+✓ added to backlog.md
+  ├─ - [ ] [M] cache the embedding model between reindex runs - 2026-09-03 [#index]
+  └─ ~/repos/my-vault/projects/invoice-api/backlog.md
+```
+
+With `--json`, the payload names the file and the exact line written:
+
+```json
+{
+  "path": "~/repos/my-vault/projects/invoice-api/backlog.md",
+  "line": "- [ ] [M] cache the embedding model between reindex runs - 2026-09-03 [#index]"
+}
+```
+
+A kind or size outside the set is refused before anything is written:
+
+```
+Invalid value for '--kind': 'chore' is not one of 'feat', 'fix', 'refactor',
+'perf', 'docs', 'test', 'build', 'ci'.
+```
+
+The command only adds. Ticking a finished item to `- [x]` and deleting one that will
+never be done are edits to the file.
+
 ## `sessionmemory log`
 
 Record this session's work in the one page that belongs to it.
@@ -405,8 +451,9 @@ away. The project's folder has `learnings/` and `logs/`, searched by meaning, be
   - Past sessions, one page each: `sessionmemory search "<words>" --logs`.
   - Open work: read `backlog.md`. An item is one line under a `## <kind>` heading
     (feat, fix, refactor, perf, docs, test, build, ci), sized S, M, or L:
-    `- [ ] [S] <imperative description> - <YYYY-MM-DD> [#topic]`. Add, tick, or
-    delete lines directly. If the file is missing, create it with a `# Backlog` heading.
+    `- [ ] [S] <imperative description> - <YYYY-MM-DD> [#topic]`. Add one with
+    `sessionmemory new backlog --kind <kind> --size <S|M|L> --title "..." --topic <topic> --cwd .`,
+    which creates the file or heading when missing. Tick or delete lines directly.
   - Specs and plans: `sessionmemory new spec|plan --title "..." --cwd .` creates the file
     and prints its path. Edit it directly after that.
   - Learnings are captured at session end, not by you mid-session. When the user asks

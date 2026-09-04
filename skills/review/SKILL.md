@@ -76,9 +76,10 @@ The two backlog reviewers are `backlog`'s job. Do not dispatch them here.
 - **Learnings**: `UPDATE` rewrites the body in place; `DELETE` runs
   `"$CLI" delete "$LEARNINGS/<file>"`; `KEEP` does nothing.
 - **Backlog routing** (from `backlog_candidate`): dedupe against the open lines
-  in `$BACKLOG`, then add one line under the right `## <kind>` section in the
-  format `- [ ] [S] <item> - <today> [#topic]`. A `workaround` page stays; a
-  `superseded` page is deleted like any other DELETE.
+  in `$BACKLOG`, then add the item with
+  `"$CLI" new backlog --kind <kind> --size <S|M|L> --title "<item>" --topic <topic> --cwd .`,
+  which writes the line under the right `## <kind>` section. A `workaround` page
+  stays; a `superseded` page is deleted like any other DELETE.
 - **CLAUDE.md promotion** (from `claude_md_candidate`): recommend only, never
   apply. Surface the reason and the suggested entry; do not edit `CLAUDE.md` and
   do not delete the page.

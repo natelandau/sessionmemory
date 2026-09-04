@@ -204,6 +204,15 @@ rather than beside it.
 `claim_filename` takes a name by exclusive creation rather than by checking first, so two
 writers racing for one title get two files rather than one overwritten page.
 
+**`lib/backlog.py` is the one place a backlog item's shape is known.** `KINDS`, `SIZES`,
+and the `OPEN_ITEM` prefix that `inject` counts live there, and `sessionmemory new backlog`
+is the CLI's one exception to leaving `backlog.md` to Read and Edit. It earns that because a
+line carries a heading from a fixed set, a size from a fixed set, and a date, none of which
+Edit validates, and a malformed line is silently not counted. The command only appends:
+ticking and deleting need no validation and stay direct edits, and `add_item` never inserts
+the `# Backlog` heading into an existing file, since a file someone else structured is
+theirs.
+
 ### The index
 
 One SQLite file per field, named `<embedder.name>.sqlite3` by `fieldindex.index_path`, so

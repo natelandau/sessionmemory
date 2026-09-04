@@ -57,7 +57,8 @@ derived from the pages beside it, gitignored, and rebuilt by `sessionmemory rein
 `_system/vault.toml` is the marker that tells the CLI this directory is a vault.
 
 Pages are created with `sessionmemory new learning` and searched with
-`sessionmemory search`. Everything else is an ordinary file you read and edit directly.
+`sessionmemory search`, and a backlog item is added with `sessionmemory new backlog`.
+Everything else is an ordinary file you read and edit directly.
 The format follows the memoryfield spec: https://github.com/calpaterson/memoryfield-spec
 """
 

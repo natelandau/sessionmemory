@@ -74,7 +74,8 @@ def test_guidance_teaches_the_backlog_line_and_the_project_paths():
 
     assert "`- [ ] [S] <imperative description> - <YYYY-MM-DD> [#topic]`" in text
     assert "`## <kind>` heading" in text
-    assert "# Backlog" in text
+    assert "sessionmemory new backlog --kind <kind> --size <S|M|L>" in text
+    assert "# Backlog" not in text
     assert "sessionmemory project --json" in text
     assert "--logs" in text
     assert "--read" in text

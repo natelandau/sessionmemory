@@ -106,4 +106,5 @@ def test_readme_explains_the_files_a_reader_finds_beside_the_pages(tmp_path):
     assert f"`{MODEL_CODE}.sqlite3`" in text
     assert "`_system/registry.toml`" in text
     assert "`sessionmemory new learning`" in text
+    assert "`sessionmemory new backlog`" in text
     assert "`backlog.md` is the list of open items" in text
