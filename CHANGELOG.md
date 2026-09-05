@@ -1,3 +1,10 @@
+## v0.4.1 (2026-09-05)
+
+### Fix
+
+- remove chore prefix from vault checkpoints
+- **plugin**: tell a session when no vault is reachable (#5)
+
 ## v0.4.0 (2026-09-04)
 
 ### Feat
