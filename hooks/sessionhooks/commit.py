@@ -81,9 +81,7 @@ def commit_vault(root: Path, *, env: Mapping[str, str], timeout: int = 10) -> st
     if added is None or added.returncode != 0:
         return None
     stamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M")
-    committed = _git(
-        root, "commit", "-q", "-m", f"chore(vault): checkpoint {stamp}", env=env, timeout=timeout
-    )
+    committed = _git(root, "commit", "-q", "-m", f"checkpoint {stamp}", env=env, timeout=timeout)
     if committed is None or committed.returncode != 0:
         return None
     head = _git(root, "rev-parse", "--short", "HEAD", env=env, timeout=timeout)

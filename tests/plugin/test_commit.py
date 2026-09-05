@@ -43,7 +43,7 @@ def test_commit_vault_commits_a_dirty_tree(tmp_path):
     log = subprocess.run(
         ["git", "log", "--oneline"], cwd=root, capture_output=True, text=True, check=True
     )
-    assert "chore(vault): checkpoint" in log.stdout.splitlines()[0]
+    assert "checkpoint" in log.stdout.splitlines()[0]
 
 
 def test_commit_vault_clean_tree_is_none(tmp_path):

@@ -364,7 +364,7 @@ def test_sessionstart_commits_the_vault(tmp_path: Path) -> None:
     log = subprocess.run(
         ["git", "log", "--oneline"], cwd=vault, capture_output=True, text=True, check=True
     )
-    assert "chore(vault): checkpoint" in log.stdout
+    assert "checkpoint" in log.stdout
 
 
 def test_sessionstart_disabled_inject_exits_silently(tmp_path: Path) -> None:
@@ -878,7 +878,7 @@ def test_sessionend_commits_the_vault(tmp_path: Path) -> None:
     log = subprocess.run(
         ["git", "log", "--oneline"], cwd=vault, capture_output=True, text=True, check=True
     )
-    assert "chore(vault): checkpoint" in log.stdout
+    assert "checkpoint" in log.stdout
 
 
 def test_sessionend_commits_when_the_sweep_is_disabled(tmp_path: Path) -> None:
@@ -912,7 +912,7 @@ def test_sessionend_commits_when_the_sweep_is_disabled(tmp_path: Path) -> None:
     log = subprocess.run(
         ["git", "log", "--oneline"], cwd=vault, capture_output=True, text=True, check=True
     )
-    assert "chore(vault): checkpoint" in log.stdout
+    assert "checkpoint" in log.stdout
 
 
 def test_sessionend_skips_the_commit_while_a_sweep_worker_holds_a_fresh_lock(
@@ -947,7 +947,7 @@ def test_sessionend_skips_the_commit_while_a_sweep_worker_holds_a_fresh_lock(
         ["git", "log", "--oneline"], cwd=vault, capture_output=True, text=True, check=True
     )
     assert len(log.stdout.strip().splitlines()) == 1
-    assert "chore(vault): checkpoint" not in log.stdout
+    assert "checkpoint" not in log.stdout
 
 
 def test_memory_block_names_the_skill_that_carries_the_rest(
