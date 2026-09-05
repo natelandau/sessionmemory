@@ -31,3 +31,17 @@ def test_iter_project_slugs_lists_folders_sorted(tmp_path):
 def test_iter_project_slugs_without_projects_folder(tmp_path):
     """Verify a fresh vault lists no projects."""
     assert paths.iter_project_slugs(tmp_path) == []
+
+
+def test_iter_field_dirs_lists_every_existing_field(tmp_path):
+    """Verify every project's learnings and logs folder is listed, sorted, and a missing one skipped."""
+    (tmp_path / "projects" / "beta" / "logs").mkdir(parents=True)
+    (tmp_path / "projects" / "alpha" / "learnings").mkdir(parents=True)
+    (tmp_path / "projects" / "alpha" / "logs").mkdir()
+    (tmp_path / "projects" / "alpha" / "specs").mkdir()
+
+    assert paths.iter_field_dirs(tmp_path) == [
+        tmp_path / "projects" / "alpha" / "learnings",
+        tmp_path / "projects" / "alpha" / "logs",
+        tmp_path / "projects" / "beta" / "logs",
+    ]

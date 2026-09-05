@@ -39,7 +39,7 @@ A non-zero exit means no vault is reachable; say so and stop.
 It reports a page with a nonconformant filename, a page over 8KB, unparsable
 frontmatter, a dead project root, a backlog line outside the item shape, or a
 stale index. Fix a filename with `mv`, split an oversized page into two, and run
-`"$CLI" reindex` for a stale index, all before dispatching reviewers. A `backlog`
+`"$CLI" reindex --cwd .` for a stale index, all before dispatching reviewers. A `backlog`
 finding is `backlog`'s to clear; leave it and mention it in the report.
 
 ## Identify what to review

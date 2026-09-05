@@ -278,7 +278,8 @@ slug another project holds.
 
 **Search misses a page you can see.** The index is behind its pages. Run
 `sessionmemory reindex --cwd <your repo>`, or delete the `*.sqlite3` file in the field and
-run it again. `sessionmemory doctor` reports an index that is behind or unreadable.
+run it again. `sessionmemory doctor` reports an index that is behind or unreadable, and
+`sessionmemory reindex --all` clears every such finding in one run.
 
 ## How the pieces fit
 

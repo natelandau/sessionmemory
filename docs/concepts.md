@@ -159,7 +159,8 @@ Freshness is the sha256 of each file, so a page edited in any editor is re-embed
 next read. Every `sessionmemory search` refreshes the field's index before it queries,
 which means a page written moments ago is found without anyone running
 `sessionmemory reindex` first. `sessionmemory reindex` exists for the case where you want
-that work done up front.
+that work done up front, and `sessionmemory reindex --all` does it for every project in
+the vault at once, which is the whole restore procedure after a `git clone`.
 
 Changing the model changes the index filename, so two models never share a file and no
 migration is needed.

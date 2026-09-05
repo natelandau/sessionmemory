@@ -65,7 +65,7 @@ app.command("log", help="Record this session's work in one upserted page.")(
 app.command("project", help="Report this directory's project, or register it.")(
     project.project_command
 )
-app.command("reindex", help="Rebuild this project's search indexes.")(
+app.command("reindex", help="Rebuild this project's search indexes, or every project's.")(
     reindex_commands.reindex_command
 )
 app.command("search", help="Search this project's learnings by meaning, or its logs with --logs.")(

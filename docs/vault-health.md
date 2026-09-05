@@ -124,8 +124,9 @@ and is not reported.
 A field's index file cannot be opened as a database, or it disagrees with the pages
 beside it.
 
-Run `sessionmemory reindex --cwd <your repo>`. The index is derived and disposable, so
-deleting the `*.sqlite3` file in the field and reindexing has the same effect.
+Run `sessionmemory reindex --cwd <your repo>`, or `sessionmemory reindex --all` when more
+than one field is reported. The index is derived and disposable, so deleting the
+`*.sqlite3` file in the field and reindexing has the same effect.
 `sessionmemory search` refreshes the index it queries, so this finding usually means a
 field nobody has searched since its pages changed.
 

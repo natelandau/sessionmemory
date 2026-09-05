@@ -75,3 +75,13 @@ def iter_project_slugs(vault: Path) -> list[str]:
     if not root.is_dir():
         return []
     return sorted(entry.name for entry in root.iterdir() if entry.is_dir())
+
+
+def iter_field_dirs(vault: Path) -> list[Path]:
+    """Return every existing field directory in the vault, sorted by project then field."""
+    return [
+        project_dir(vault, slug) / name
+        for slug in iter_project_slugs(vault)
+        for name in FIELD_DIRS
+        if (project_dir(vault, slug) / name).is_dir()
+    ]

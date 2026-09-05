@@ -487,11 +487,13 @@ session with no `sessionmemory` on its `PATH`.
 
 ## `sessionmemory reindex`
 
-Bring this project's learnings and logs indexes up to date with the pages beside them.
+Bring this project's learnings and logs indexes up to date with the pages beside them,
+or every project's with `--all`.
 
 | Option   | What it does                            |
 | -------- | --------------------------------------- |
 | `--cwd`  | Directory to resolve the project from.  |
+| `--all`  | Reindex every project in the vault.     |
 | `--json` | Emit JSON instead of prose.             |
 
 ```bash
@@ -520,6 +522,63 @@ that work up front, or for rebuilding an index file you deleted.
     "updated": 0,
     "removed": 0,
     "unchanged": 1
+  }
+}
+```
+
+`--all` walks every project folder in the vault instead of resolving one from `--cwd`,
+so it runs from any directory and reaches a project whose repository is not on this
+machine. It is the one command to run after cloning a vault, or when `sessionmemory
+doctor` reports more than one index behind its pages. `--all` and `--cwd` are mutually
+exclusive.
+
+```bash
+sessionmemory reindex --all
+```
+
+```
+✓ reindexing
+  ├─ billing-worker/learnings: 2 added, 0 updated, 0 removed, 0 unchanged
+  ├─ billing-worker/logs: 0 added, 0 updated, 0 removed, 0 unchanged
+  ├─ invoice-api/learnings: 0 added, 0 updated, 0 removed, 4 unchanged
+  └─ invoice-api/logs: 0 added, 0 updated, 0 removed, 1 unchanged
+```
+
+A page whose bytes have not changed is skipped, so a run over a healthy vault costs
+almost nothing. A folder left behind by a project that was unregistered is walked too,
+since it still holds pages.
+
+With `--json`, the payload nests each field's counts under its project:
+
+```json
+{
+  "billing-worker": {
+    "learnings": {
+      "added": 0,
+      "updated": 0,
+      "removed": 0,
+      "unchanged": 2
+    },
+    "logs": {
+      "added": 0,
+      "updated": 0,
+      "removed": 0,
+      "unchanged": 0
+    }
+  },
+  "invoice-api": {
+    "learnings": {
+      "added": 0,
+      "updated": 0,
+      "removed": 0,
+      "unchanged": 4
+    },
+    "logs": {
+      "added": 0,
+      "updated": 0,
+      "removed": 0,
+      "unchanged": 1
+    }
   }
 }
 ```

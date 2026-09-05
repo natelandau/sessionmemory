@@ -241,10 +241,11 @@ having been run.
 
 The index is derived, gitignored, and never backed up. Deleting `<field>/*.sqlite3` and
 running `sessionmemory reindex` reproduces it exactly, and the restore procedure for a
-whole vault is `git clone` followed by `sessionmemory reindex`. `fieldindex._open` treats
-a corrupt file the same way: it deletes the file and its `-journal` sibling and reconnects
-once, rather than letting a damaged cache crash a read that has no reason to fail. Nothing
-may treat a value read from the index as authoritative.
+whole vault is `git clone` followed by `sessionmemory reindex --all`, which walks every
+field `paths.iter_field_dirs` lists rather than resolving one project. `fieldindex._open`
+treats a corrupt file the same way: it deletes the file and its `-journal` sibling and
+reconnects once, rather than letting a damaged cache crash a read that has no reason to
+fail. Nothing may treat a value read from the index as authoritative.
 
 **There is no application lock, and nothing here needs one.** A page write is an atomic
 rename, each field's index is one SQLite file under SQLite's own locking with a five
