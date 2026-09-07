@@ -277,3 +277,41 @@ def test_resolver_unknown_flag_is_usage_error(tmp_path: Path) -> None:
     # Then it is a usage error
     assert proc.returncode != 0
     assert proc.stdout.strip() == ""
+
+
+def test_log_flag_prints_the_default_log_path_without_a_vault(tmp_path: Path) -> None:
+    """Verify --log needs no vault, since it is what a person runs when nothing else works."""
+    proc = _run(
+        "--log",
+        cwd=tmp_path,
+        env_overrides={"HOME": _isolated_home(tmp_path), "XDG_STATE_HOME": str(tmp_path / "xdg")},
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == str(tmp_path / "xdg" / "sessionmemory" / "hooks.log")
+
+
+def test_log_flag_honors_the_configured_path(tmp_path: Path) -> None:
+    """Verify --log prints the path from [log] when one is set."""
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    (home / ".claude" / "sessionmemory.toml").write_text(
+        f'[log]\npath = "{tmp_path / "custom.log"}"\n', encoding="utf-8"
+    )
+    proc = _run("--log", cwd=tmp_path, env_overrides={"HOME": str(home)})
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == str(tmp_path / "custom.log")
+
+
+def test_log_flag_exits_loudly_when_the_configured_path_cannot_be_resolved(
+    tmp_path: Path,
+) -> None:
+    """Verify a log.path tilde expansion could not resolve fails loudly, not with a crash."""
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    (home / ".claude" / "sessionmemory.toml").write_text(
+        '[log]\npath = "~nosuchuser_xyz/hooks.log"\n', encoding="utf-8"
+    )
+    proc = _run("--log", cwd=tmp_path, env_overrides={"HOME": str(home)})
+    assert proc.returncode == 2
+    assert proc.stdout.strip() == ""
+    assert "log.path cannot be resolved" in proc.stderr

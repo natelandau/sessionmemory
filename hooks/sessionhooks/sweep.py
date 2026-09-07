@@ -2,8 +2,8 @@
 
 The gate runs inline in the SessionEnd/PreCompact hook: it acquires a per-project
 single-writer lock, resolves the transcript, windows it since the last compaction,
-drops system/hook noise, and yields a SweepJob only when the session cleared both
-floors in `_is_meaningful`. The heavy `claude -p` pass runs in a double-forked daemon
+drops system/hook noise, and yields a SweepJob only when the session clears every
+floor in `_shortfall`. The heavy `claude -p` pass runs in a double-forked daemon
 that outlives session teardown.
 
 The agent may write anywhere inside this project's vault folder and nowhere else. A
@@ -30,7 +30,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from sessionhooks import transcript
+from sessionhooks import log, transcript
 from sessionhooks.config import SessionMemoryConfig
 from sessionhooks.paths import is_within_root
 from sessionhooks.runner import ClaudeRunner
@@ -41,12 +41,14 @@ from sessionhooks.vaultcli import ROOT_ENV, VaultCLI
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from sessionhooks.runner import Runner
+    from sessionhooks.runner import Runner, RunResult
+
+_log = log.logger("sweep")
 
 STALE_AFTER = 300.0
 _GIT_TIMEOUT = 10
-# How much of a failed run's stderr sweep.log keeps; enough to name the error,
-# short enough that a runaway traceback never dominates the log file.
+# How much of a failed run's stderr the log keeps; enough to name the error, short
+# enough that a runaway traceback never dominates the file.
 STDERR_TAIL_CHARS = 500
 # The model emits this when it judges the session worth no memory at all. It is
 # a diagnostic only: nothing reads it back, and a model that forgets it simply
@@ -251,52 +253,68 @@ class Sweep:
             if job is not None:
                 self._spawn_detached(job)
 
-    def _is_meaningful(self, window: list[dict[str, Any]]) -> bool:
-        """Report whether a session said enough to be worth any memory at all.
+    def _shortfall(self, window: list[dict[str, Any]]) -> str | None:
+        """Why a session is not worth any memory, or None when it clears every floor.
 
-        Governs the whole sweep, not just the log: a session that fails here
-        writes no learning, no backlog item, and no log, and never spawns the
-        model pass. Two floors on the human's own messages, because a single
-        instruction answered at length clears a combined message count.
+        Governs the whole sweep, not just the log: a session that falls short writes
+        no learning, no backlog item, and no log, and never spawns the model pass.
+        Two floors on the human's own messages, because a single instruction
+        answered at length clears a combined message count. Every measure is
+        reported against its floor so a skip explains itself.
         """
         meaningful = transcript.meaningful_messages(window)
-        if len(meaningful) < self.config.min_exchanges:
-            return False
         substance = transcript.user_substance(meaningful)
-        return (
-            substance.messages >= self.config.min_user_messages
-            and substance.characters >= self.config.min_user_chars
+        counts = (
+            f"exchanges {len(meaningful)}/{self.config.min_exchanges}, "
+            f"user messages {substance.messages}/{self.config.min_user_messages}, "
+            f"user chars {substance.characters}/{self.config.min_user_chars}"
         )
+        short = (
+            len(meaningful) < self.config.min_exchanges
+            or substance.messages < self.config.min_user_messages
+            or substance.characters < self.config.min_user_chars
+        )
+        return f"below threshold ({counts})" if short else None
 
     def _gate(self, event: dict[str, Any], *, now: float) -> SweepJob | None:
         """Acquire the lock and return a SweepJob, or None when not worth sweeping.
 
         Never raises and never leaks the lock: on any post-acquire failure or a
         below-threshold window it releases the lock and returns None. On success
-        the lock stays held for `_run_job` to release.
+        the lock stays held for `_run_job` to release. Every None is logged with
+        its reason, since a gate that declines silently is indistinguishable from
+        a hook that never ran.
         """
         lock = Lock(self.store.lock_path)
         if not lock.acquire(now=now):
+            _log.info("sweep skipped: lock held")
             return None
         try:
             transcript_path = event.get("transcript_path") or self.store.read_transcript_pointer()
-            entries = transcript.read_entries(transcript_path) if transcript_path else []
-            window = transcript.window_since_compact(entries)
-            if not self._is_meaningful(window):
+            if not transcript_path:
+                _log.info("sweep skipped: no transcript")
                 lock.release()
                 return None
-            session_id = Path(transcript_path).stem if transcript_path else ""
+            entries = transcript.read_entries(transcript_path)
+            window = transcript.window_since_compact(entries)
+            shortfall = self._shortfall(window)
+            if shortfall is not None:
+                _log.info("sweep skipped: %s", shortfall)
+                lock.release()
+                return None
+            session_id = str(event.get("session_id") or "") or Path(transcript_path).stem
             return SweepJob(
                 window=window,
                 cwd=str(event.get("cwd") or Path.cwd()),
                 session_id=session_id,
-                transcript_path=str(transcript_path or ""),
+                transcript_path=str(transcript_path),
                 # Read from every entry rather than the window: the bridge entry is
                 # written at the top of the transcript, before any compaction.
                 session_url=transcript.session_url(entries),
                 started=transcript.session_start(entries),
             )
         except Exception:  # noqa: BLE001 - gate must never raise or leak the lock
+            _log.exception("sweep gate failed")
             lock.release()
             return None
 
@@ -399,10 +417,11 @@ class Sweep:
         with no one to catch it). Returns the remediation notes.
         """
         lock = Lock(self.store.lock_path)
+        log.bind(step="sweep", session=job.session_id)
         try:
             prepared = self._prepare(job)
             if prepared is None:
-                self._log_run(session=job.session_id, ok=False, changed=[], notes=["no-vault"])
+                _log.info("sweep skipped: no vault or unregistered project")
                 return []
             target, log_command = prepared
             # A project registered on another machine has no folder until its first
@@ -423,27 +442,35 @@ class Sweep:
                 existing_log=self._existing_log(target, job.session_id),
             )
             result = self.runner.run(prompt, cwd=str(target.project_dir))
+            _log.debug("claude ran %.1fs", time.time() - started_at)
             notes = self._validate_writes(result.changed_files, target, started_at=started_at)
             # The sentinel also appears in the transcript the agent summarizes, so
             # an actual write outranks it: a run that wrote something did record.
             if NOTHING_TO_RECORD in result.text and not result.changed_files:
-                notes.append("nothing-to-record")
-            sha = self.vault.commit(env=self.env) if self.vault else None
-            notes.append(f"committed: {sha}" if sha else "commit-skipped")
-            self._log_run(
-                session=job.session_id,
-                ok=result.success,
-                changed=result.changed_files,
-                notes=notes,
-                exit_code=result.exit_code,
-                stderr=result.stderr,
+                notes.append("nothing to record")
+            outcome = self.vault.commit(env=self.env) if self.vault else None
+            commit_clause = outcome.describe() if outcome else "commit skipped: no vault"
+            self._log_result(
+                result, changed=len(result.changed_files), commit=commit_clause, notes=notes
             )
         except Exception:  # noqa: BLE001 - the detached worker must never raise
+            _log.exception("sweep worker failed")
             return []
         else:
-            return notes
+            return [*notes, commit_clause]
         finally:
             lock.release()
+
+    def _log_result(
+        self, result: RunResult, *, changed: int, commit: str, notes: list[str]
+    ) -> None:
+        """One line for the run: what it wrote and how the commit went, or why it failed."""
+        if result.success:
+            suffix = f" (notes: {'; '.join(notes)})" if notes else ""
+            _log.info("sweep finished: ok, %d file(s) changed, %s%s", changed, commit, suffix)
+            return
+        tail = (result.stderr or "").strip()[-STDERR_TAIL_CHARS:]
+        _log.error("sweep failed: claude exited %s (%s)", result.exit_code, tail or "no stderr")
 
     def _quarantine(self, path: Path) -> None:
         """Move `path` into this project's quarantine directory rather than deleting it.
@@ -500,7 +527,7 @@ class Sweep:
 
         `raw` is what the note names, so a diff-derived path (already resolved
         and absolute) and a tool-reported one (possibly relative, possibly
-        still carrying a symlink) both read the same in `sweep.log`.
+        still carrying a symlink) both read the same in the hooks log.
         """
         try:
             content = path.read_text(encoding="utf-8")
@@ -570,40 +597,6 @@ class Sweep:
                     parts.append(f"# learnings/{f.name}\n{f.read_text(encoding='utf-8')}")
         return "\n\n".join(parts)[:max_chars]
 
-    def _log_run(
-        self,
-        *,
-        session: str,
-        ok: bool,
-        changed: list[str],
-        notes: list[str],
-        exit_code: int | None = None,
-        stderr: str = "",
-    ) -> None:
-        """Append one line recording what this session's sweep did; best-effort.
-
-        The session id is here because this is the only record that answers "was
-        that session ever swept, and did it work". Nothing reads the line back:
-        it is a diagnostic for a human asking why some conversation left no
-        memory behind, so it carries the outcome as well as the writes. The exit
-        code, and a tail of stderr when the run failed, are what tell a timeout
-        apart from a missing `claude` binary here; both otherwise look identical
-        as ok=False with no writes.
-        """
-        try:
-            self.store.state_dir.mkdir(parents=True, exist_ok=True)
-            stamp = datetime.now(UTC).isoformat()
-            line = (
-                f"{stamp} session={session or 'unknown'} ok={ok} exit_code={exit_code} "
-                f"changed={changed} notes={notes}"
-            )
-            if not ok and stderr:
-                line += f" stderr={stderr[-STDERR_TAIL_CHARS:]!r}"
-            with self.store.log_path.open("a", encoding="utf-8") as fh:
-                fh.write(line + "\n")
-        except OSError:
-            pass
-
     def _redirect_stdio(self) -> None:
         """Point the daemon's stdio at sweep.out so it never touches the hook's stdout."""
         try:
@@ -639,10 +632,12 @@ class Sweep:
             pid = os.fork()
         except OSError:
             Lock(self.store.lock_path).release()
+            _log.info("sweep skipped: fork failed")
             return  # cannot fork; skip the sweep rather than block the hook
         if pid > 0:
             with contextlib.suppress(OSError):
                 os.waitpid(pid, 0)  # reap the intermediate child (grandchild reparents to init)
+            _log.info("sweep spawned")
             return
         # intermediate child
         try:
@@ -650,32 +645,51 @@ class Sweep:
             pid2 = os.fork()
         except OSError:
             Lock(self.store.lock_path).release()
+            _log.info("sweep skipped: fork failed")
             os._exit(0)
         if pid2 > 0:
             os._exit(0)
         # grandchild = the daemon
         self._redirect_stdio()
-        with contextlib.suppress(BaseException):
+        try:
             self._run_job(job)
+        except BaseException:  # noqa: BLE001 - no caller to report to  # pragma: no cover
+            _log.exception("sweep worker crashed")
         os._exit(0)
 
 
-def run_sweep(event: dict[str, Any], *, env: Mapping[str, str]) -> None:
+def run_sweep(
+    event: dict[str, Any],
+    *,
+    env: Mapping[str, str],
+    store: Store | None = None,
+    config: SessionMemoryConfig | None = None,
+) -> None:
     """Build the store/config/runner from the event and trigger the sweep. Never raises.
 
     The single wiring point both `sessionend.py` and `precompact.py` call, so the
     thin scripts don't duplicate construction.
+
+    `store` lets a caller that already resolved one for its own log line pass it
+    straight through: `Store.for_cwd` runs a git call, and a hook that already paid
+    for it once inside a tight timeout budget should not pay for it again. `config`
+    does the same for a caller that already loaded one through `hookmain.begin`.
     """
     cwd = Path(event.get("cwd") or Path.cwd())
-    store = Store.for_cwd(cwd=cwd, env=env)
-    config = SessionMemoryConfig.load(project_dir=env.get("CLAUDE_PROJECT_DIR"))
+    if store is None:
+        store = Store.for_cwd(cwd=cwd, env=env)
+    if config is None:
+        config = SessionMemoryConfig.load(project_dir=env.get("CLAUDE_PROJECT_DIR"))
     vault = VaultCLI.discover(env=env, configured=config.vault_root)
+    if vault is None:
+        _log.info("sweep skipped: no vault")
+        return
     # The sweep agent runs the vault CLI itself, and the CLI reads its root only
     # from the environment. Pin the root this process resolved, or a vault found
     # via `[vault] root` in the config is invisible to every command the agent runs.
     runner = ClaudeRunner(
         model=config.sweep_model,
         save_transcript=config.sweep_save_transcript,
-        extra_env={ROOT_ENV: str(vault.root)} if vault is not None else None,
+        extra_env={ROOT_ENV: str(vault.root)},
     )
     Sweep(store, config, runner, vault, env=env).trigger(event)

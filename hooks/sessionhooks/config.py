@@ -2,10 +2,10 @@
 
 Resolution (low to high precedence): built-in defaults, then
 ~/.claude/sessionmemory.toml, then $CLAUDE_PROJECT_DIR/.claude/
-sessionmemory.toml (project wins per key). The schema is three flat tables,
-`[vault]`, `[inject]`, and `[sweep]`; there are no profiles or per-hook disable
-lists. Any read or parse error is swallowed (warned to stderr) so a broken
-config never wedges a session.
+sessionmemory.toml (project wins per key). The schema is four flat tables,
+`[vault]`, `[inject]`, `[sweep]`, and `[log]`; there are no profiles or per-hook
+disable lists. Any read or parse error is swallowed (warned to stderr) so a
+broken config never wedges a session.
 
 `[vault] root` is the fallback for locating the vault when
 `$SESSIONMEMORY_VAULT` is unset. It exists because a hook does not inherit an
@@ -33,6 +33,10 @@ DEFAULT_MIN_EXCHANGES = 10
 # a long question that changed no code is exactly what the sweep exists to keep.
 DEFAULT_MIN_USER_MESSAGES = 3
 DEFAULT_MIN_USER_CHARS = 400
+DEFAULT_LOG_LEVEL = "info"
+# `off` is a level name rather than a separate toggle so one key answers both
+# "how much" and "whether", and a misspelling falls back to info instead of silence.
+LOG_LEVELS = frozenset({"debug", "info", "warning", "error", "off"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +55,9 @@ class SessionMemoryConfig:
     # Persist the headless sweep's own `claude -p` session to ~/.claude/projects
     # so its API-token usage is auditable; false re-adds --no-session-persistence.
     sweep_save_transcript: bool = True
+    # Where the hooks log. Empty means the XDG state root, which is the normal case.
+    log_path: str = ""
+    log_level: str = DEFAULT_LOG_LEVEL
 
     @classmethod
     def load(
@@ -73,6 +80,7 @@ class SessionMemoryConfig:
         vault = merged.get("vault", {})
         inject = merged.get("inject", {})
         sweep = merged.get("sweep", {})
+        log = merged.get("log", {})
         return cls(
             vault_root=_as_str(vault.get("root"), default=""),
             inject_enabled=_as_bool(inject.get("enabled"), default=True),
@@ -84,6 +92,8 @@ class SessionMemoryConfig:
             ),
             min_user_chars=_as_int(sweep.get("min_user_chars"), default=DEFAULT_MIN_USER_CHARS),
             sweep_save_transcript=_as_bool(sweep.get("save_transcript"), default=True),
+            log_path=_as_str(log.get("path"), default=""),
+            log_level=_as_choice(log.get("level"), LOG_LEVELS, default=DEFAULT_LOG_LEVEL),
         )
 
 
@@ -100,8 +110,11 @@ def _read_toml(path: Path) -> dict[str, object]:
 
 
 def _overlay(merged: dict[str, dict[str, object]], layer: dict[str, object]) -> None:
-    """Merge one config layer's `[vault]`/`[inject]`/`[sweep]` tables into `merged` per key."""
-    for section in ("vault", "inject", "sweep"):
+    """Merge one config layer's four tables into `merged` per key.
+
+    The tables are `[vault]`, `[inject]`, `[sweep]`, and `[log]`.
+    """
+    for section in ("vault", "inject", "sweep", "log"):
         table = layer.get(section)
         if isinstance(table, dict):
             merged.setdefault(section, {}).update(
@@ -132,3 +145,11 @@ def _as_int(value: object, *, default: int) -> int:
 def _as_str(value: object, *, default: str) -> str:
     """Coerce a config value to str, falling back when it is not a string."""
     return value if isinstance(value, str) else default
+
+
+def _as_choice(value: object, choices: frozenset[str], *, default: str) -> str:
+    """Coerce a config value to one of `choices`, case-insensitively, else `default`."""
+    if not isinstance(value, str):
+        return default
+    lowered = value.lower()
+    return lowered if lowered in choices else default

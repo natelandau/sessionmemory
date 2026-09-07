@@ -10,13 +10,16 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
+import precompact  # ty: ignore[unresolved-import]
 import pytest
+import sessionend  # ty: ignore[unresolved-import]
 import sessionstart  # ty: ignore[unresolved-import]
 from sessionhooks.config import SessionMemoryConfig  # ty: ignore[unresolved-import]
 from sessionhooks.store import Store  # ty: ignore[unresolved-import]
@@ -25,6 +28,10 @@ from sessionhooks.vaultcli import ROOT_ENV  # ty: ignore[unresolved-import]
 from sessionmemory.lib import field, registry
 from sessionmemory.lib.bootstrap import initialize
 from tests._env import clean_environ
+from tests.plugin.conftest import hooks_log_text
+
+if TYPE_CHECKING:
+    from types import ModuleType
 
 HOOKS = Path(__file__).resolve().parent.parent.parent / "hooks"
 
@@ -70,6 +77,11 @@ def _isolated_env(tmp_path: Path, proj: Path, *, vault: Path | None = None) -> d
     if vault is not None:
         env[ROOT_ENV] = str(vault)
     return env
+
+
+def _hooks_log(tmp_path: Path) -> str:
+    """Everything the hooks wrote to the shared log under this test's XDG root."""
+    return hooks_log_text(tmp_path / "state")
 
 
 def _fake_vault(tmp_path: Path, proj: Path, *, title: str = TITLE) -> Path:
@@ -803,6 +815,40 @@ def test_sessionstart_keeps_handoff_when_emit_fails(tmp_path: Path) -> None:
     assert store.handoff_path.exists()
 
 
+def test_sessionstart_logs_one_started_line(tmp_path: Path) -> None:
+    """Verify a start with a vault writes one line naming the source, the CLI, the commit, and the inject."""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    vault = _fake_vault(tmp_path, proj)
+    env = _isolated_env(tmp_path, proj, vault=vault)
+    proc = _run(
+        "sessionstart",
+        {"cwd": str(proj), "source": "startup", "session_id": "abcdef12-0000"},
+        env,
+    )
+    assert proc.returncode == 0, proc.stderr
+    (line,) = [x for x in _hooks_log(tmp_path).splitlines() if "started (" in x]
+    assert "INFO  [sessionstart] proj: started (" in line
+    assert line.endswith(") (session=abcdef12)")
+    assert "source startup" in line
+    assert "commit skipped: not a repository" in line
+    assert "memory injected" in line
+
+
+def test_sessionstart_logs_the_no_vault_case(tmp_path: Path) -> None:
+    """Verify a start that found no vault says so in its line."""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    proc = _run(
+        "sessionstart", {"cwd": str(proj), "source": "startup"}, _isolated_env(tmp_path, proj)
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert (
+        "proj: started (source startup, no vault, commit skipped: no vault, "
+        "no memory: no vault) (session=-)" in _hooks_log(tmp_path)
+    )
+
+
 # ---------------------------------------------------------------------------
 # SessionEnd / PreCompact (sweep) - never spawns a real worker
 # ---------------------------------------------------------------------------
@@ -817,23 +863,23 @@ def test_sweep_headless_guard_short_circuits(stage: str, tmp_path: Path) -> None
     env = {**_isolated_env(tmp_path, proj), "SESSIONMEMORY_HEADLESS": "1"}
     # When the sweep script runs
     proc = _run(stage, {"cwd": str(proj)}, env)
-    # Then it exits cleanly, emits nothing, and writes no sweep.log
+    # Then it exits cleanly, emits nothing, and the hooks log stays empty
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == ""
-    assert not list((tmp_path / "state").rglob("sweep.log"))
+    assert _hooks_log(tmp_path) == ""
 
 
 @pytest.mark.parametrize("stage", ["sessionend", "precompact"])
 def test_sweep_below_threshold_does_not_spawn(stage: str, tmp_path: Path) -> None:
     """Verify a below-threshold transcript exits 0 without spawning a worker."""
-    # Given no transcript (0 meaningful exchanges) and no headless guard
+    # Given no transcript (0 meaningful exchanges), no vault, and no headless guard
     proj = tmp_path / "proj"
     proj.mkdir()
     # When the sweep script runs
     proc = _run(stage, {"cwd": str(proj), "transcript_path": ""}, _isolated_env(tmp_path, proj))
-    # Then it exits cleanly and no sweep.log is written (gate returned None)
+    # Then it exits cleanly and the hooks log names why nothing ran
     assert proc.returncode == 0, proc.stderr
-    assert not list((tmp_path / "state").rglob("sweep.log"))
+    assert "sweep skipped: no vault" in _hooks_log(tmp_path)
 
 
 @pytest.mark.parametrize("stage", ["sessionend", "precompact"])
@@ -849,7 +895,7 @@ def test_sweep_disabled_exits_without_gating(stage: str, tmp_path: Path) -> None
     proc = _run(stage, {"cwd": str(proj), "transcript_path": ""}, _isolated_env(tmp_path, proj))
     # Then it exits cleanly with no side effects
     assert proc.returncode == 0, proc.stderr
-    assert not list((tmp_path / "state").rglob("sweep.log"))
+    assert "sweep skipped: disabled" in _hooks_log(tmp_path)
 
 
 def test_sessionend_commits_the_vault(tmp_path: Path) -> None:
@@ -874,7 +920,10 @@ def test_sessionend_commits_the_vault(tmp_path: Path) -> None:
     proc = _run("sessionend", {"cwd": str(proj), "transcript_path": ""}, env)
     # Then the outstanding page still landed in a checkpoint commit
     assert proc.returncode == 0, proc.stderr
-    assert not list((tmp_path / "state").rglob("sweep.log"))
+    assert "sweep skipped: no transcript" in _hooks_log(tmp_path)
+    assert re.search(
+        r"\[sessionend  \] proj: committed [0-9a-f]{7} \(session=-\)", _hooks_log(tmp_path)
+    )
     log = subprocess.run(
         ["git", "log", "--oneline"], cwd=vault, capture_output=True, text=True, check=True
     )
@@ -908,7 +957,7 @@ def test_sessionend_commits_when_the_sweep_is_disabled(tmp_path: Path) -> None:
     proc = _run("sessionend", {"cwd": str(proj), "transcript_path": ""}, env)
     # Then no sweep ran, but the outstanding page still landed in a checkpoint commit
     assert proc.returncode == 0, proc.stderr
-    assert not list((tmp_path / "state").rglob("sweep.log"))
+    assert "sweep skipped: disabled" in _hooks_log(tmp_path)
     log = subprocess.run(
         ["git", "log", "--oneline"], cwd=vault, capture_output=True, text=True, check=True
     )
@@ -943,11 +992,72 @@ def test_sessionend_skips_the_commit_while_a_sweep_worker_holds_a_fresh_lock(
     proc = _run("sessionend", {"cwd": str(proj), "transcript_path": ""}, env)
     # Then the commit is skipped, leaving only the vault's initial commit
     assert proc.returncode == 0, proc.stderr
+    assert "commit skipped: sweep in progress" in _hooks_log(tmp_path)
     log = subprocess.run(
         ["git", "log", "--oneline"], cwd=vault, capture_output=True, text=True, check=True
     )
     assert len(log.stdout.strip().splitlines()) == 1
     assert "checkpoint" not in log.stdout
+
+
+def test_a_hook_with_a_bad_transcript_path_still_exits_zero_and_logs(tmp_path: Path) -> None:
+    """Verify a transcript pointer that cannot be read is gated away rather than crashing."""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    env = _isolated_env(tmp_path, proj)
+    # A transcript pointer naming a directory makes `read_entries` swallow an
+    # OSError and return [], so the gate sees an empty window and declines.
+    proc = _run(
+        "sessionend",
+        {"cwd": str(proj), "transcript_path": str(tmp_path), "session_id": "crash-1"},
+        env,
+    )
+    assert proc.returncode == 0, proc.stderr
+    text = _hooks_log(tmp_path)
+    assert "(session=crash-1)" in text
+    assert "sweep skipped" in text
+
+
+@pytest.mark.parametrize("hook", [sessionstart, sessionend, precompact])
+def test_a_crash_inside_a_hook_reaches_the_log_with_its_traceback(
+    hook: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify fail-open no longer means silent: the exception and its traceback are on record."""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    for key, value in _isolated_env(tmp_path, proj).items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(hook, "read_payload", lambda: {"cwd": str(proj), "session_id": "crash-42"})
+
+    def _explode(*args: object, **kwargs: object) -> None:
+        message = "kaboom"
+        raise RuntimeError(message)
+
+    monkeypatch.setattr(hook, "_run", _explode)
+    hook.main()  # must not raise
+    text = _hooks_log(tmp_path)
+    assert "proj: hook failed (session=crash-42)" in text
+    assert "Traceback" in text
+    assert "RuntimeError: kaboom" in text
+
+
+@pytest.mark.parametrize("hook", [sessionstart, sessionend, precompact])
+def test_begin_raising_still_returns_from_main_without_raising(
+    hook: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify a hook survives even a crash before the log is configured."""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    for key, value in _isolated_env(tmp_path, proj).items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(hook, "read_payload", lambda: {"cwd": str(proj)})
+
+    def _explode(*args: object, **kwargs: object) -> None:
+        message = "no context yet"
+        raise RuntimeError(message)
+
+    monkeypatch.setattr(hook, "begin", _explode)
+    hook.main()  # must not raise
 
 
 def test_memory_block_names_the_skill_that_carries_the_rest(

@@ -193,6 +193,8 @@ session.
 | `sweep.min_user_messages` | `3`                 | Skip the pass below this many messages from you                     |
 | `sweep.min_user_chars`    | `400`               | Skip the pass below this many characters from you, in total         |
 | `sweep.save_transcript`   | `true`              | Save the pass's own session, so its API usage is auditable          |
+| `log.path`                | `~/.local/state/sessionmemory/hooks.log` | Where every hook on this machine logs; `hooks/vault-path.py --log` prints it |
+| `log.level`               | `info`              | `debug`, `info`, `warning`, `error`, or `off`                       |
 
 `hooks/sessionmemory.toml.example` in this repository holds the same table as a file
 you can copy.
@@ -259,11 +261,19 @@ near-duplicates, and nothing else in the system consolidates them.
 
 ## Troubleshooting
 
-**A sweep recorded nothing.** Short sessions are skipped on purpose, so compare the
-session against the three floors in the settings table. Every run also appends one line
-to `sweep.log` in this project's machine-local state directory, which
-`hooks/vault-path.py --state-dir` prints. The line carries the outcome, the files
-written, and the tail of stderr when the run failed.
+**A sweep recorded nothing.** Read the hooks log, which `hooks/vault-path.py --log`
+prints and which defaults to `~/.local/state/sessionmemory/hooks.log`. Every hook writes
+one line per decision, so a short session shows as `sweep skipped: below threshold` with
+each measure against its floor, and a session the worker swept shows as `sweep finished`
+with the files it changed and the commit it made. A `sweep failed` line carries the exit
+code and the tail of stderr, which is what tells a missing `claude` binary from a timeout.
+The log rotates at 1 MB with two backups kept, so it holds weeks of ordinary use. Set
+`log.level` to `debug` to see the version handshake and each git call.
+
+```text
+2026-09-07 12:58:27 INFO  [sessionend  ] invoice-api: sweep skipped: below threshold (exchanges 4/10, user messages 2/3, user chars 59/400) (session=05ecdee7)
+2026-09-07 12:58:27 INFO  [sessionend  ] invoice-api: commit skipped: clean (session=05ecdee7)
+```
 
 **A session starts with no memory.** If it started with the "No vault is reachable" hint,
 the hook is not finding the vault root. A `SESSIONMEMORY_VAULT` exported from a shell

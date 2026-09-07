@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from sessionhooks import commit as commit_module  # ty: ignore[unresolved-import]
 from sessionhooks.commit import (  # ty: ignore[unresolved-import]
+    CommitOutcome,
     commit_vault,
     is_repository,
     is_safe_to_commit,
@@ -37,18 +38,19 @@ def test_commit_vault_commits_a_dirty_tree(tmp_path):
     root = _repo(tmp_path)
     (root / "page.md").write_text("x", encoding="utf-8")
 
-    sha = commit_vault(root, env=clean_environ())
+    outcome = commit_vault(root, env=clean_environ())
 
-    assert sha is not None
+    assert outcome.sha
+    assert outcome.describe() == f"committed {outcome.sha}"
     log = subprocess.run(
         ["git", "log", "--oneline"], cwd=root, capture_output=True, text=True, check=True
     )
     assert "checkpoint" in log.stdout.splitlines()[0]
 
 
-def test_commit_vault_clean_tree_is_none(tmp_path):
+def test_commit_vault_clean_tree_is_skipped(tmp_path):
     """Verify nothing is committed when nothing changed."""
-    assert commit_vault(_repo(tmp_path), env=clean_environ()) is None
+    assert commit_vault(_repo(tmp_path), env=clean_environ()) == CommitOutcome(reason="clean")
 
 
 def test_commit_vault_excludes_the_derived_index(tmp_path):
@@ -72,9 +74,9 @@ def test_commit_vault_excludes_the_derived_index(tmp_path):
     assert "stub.sqlite3" not in tracked
 
 
-def test_commit_vault_outside_a_repository_is_none(tmp_path):
+def test_commit_vault_outside_a_repository_is_skipped(tmp_path):
     """Verify a plain directory is left alone."""
-    assert commit_vault(tmp_path, env=clean_environ()) is None
+    assert commit_vault(tmp_path, env=clean_environ()) == CommitOutcome(reason="not a repository")
     assert is_repository(tmp_path, env=clean_environ()) is False
 
 
@@ -99,7 +101,7 @@ def test_commit_vault_skips_a_merge_in_progress(tmp_path):
     (root / "page.md").write_text("x", encoding="utf-8")
     (root / ".git" / "MERGE_HEAD").write_text("deadbeef\n", encoding="utf-8")
 
-    assert commit_vault(root, env=clean_environ()) is None
+    assert commit_vault(root, env=clean_environ()) == CommitOutcome(reason="operation in progress")
     log = subprocess.run(
         ["git", "log", "--oneline"], cwd=root, capture_output=True, text=True, check=True
     )
@@ -113,7 +115,7 @@ def test_commit_vault_skips_a_rebase_in_progress(tmp_path):
     (root / "page.md").write_text("x", encoding="utf-8")
     (root / ".git" / "rebase-merge").mkdir()
 
-    assert commit_vault(root, env=clean_environ()) is None
+    assert commit_vault(root, env=clean_environ()) == CommitOutcome(reason="operation in progress")
     log = subprocess.run(
         ["git", "log", "--oneline"], cwd=root, capture_output=True, text=True, check=True
     )
@@ -127,7 +129,7 @@ def test_commit_vault_skips_a_detached_head(tmp_path):
     (root / "page.md").write_text("x", encoding="utf-8")
     _git("checkout", "-q", "--detach", cwd=root)
 
-    assert commit_vault(root, env=clean_environ()) is None
+    assert commit_vault(root, env=clean_environ()) == CommitOutcome(reason="detached HEAD")
     log = subprocess.run(
         ["git", "log", "--oneline"], cwd=root, capture_output=True, text=True, check=True
     )
@@ -161,7 +163,7 @@ def test_is_safe_to_commit_outside_a_repository_is_false(tmp_path):
     assert is_safe_to_commit(tmp_path, env=clean_environ()) is False
 
 
-def test_commit_vault_returns_none_when_add_fails(tmp_path, monkeypatch):
+def test_commit_vault_reports_a_failed_add(tmp_path, monkeypatch):
     """Verify a failed `git add` is not committed over, so a bad stage never lands silently."""
     # Given a dirty repo whose `git add` is rigged to fail
     root = _repo(tmp_path)
@@ -179,14 +181,14 @@ def test_commit_vault_returns_none_when_add_fails(tmp_path, monkeypatch):
     result = commit_vault(root, env=clean_environ())
 
     # Then nothing is committed and the repo's log gains no new entry
-    assert result is None
+    assert result == CommitOutcome(reason="add failed")
     log = subprocess.run(
         ["git", "log", "--oneline"], cwd=root, capture_output=True, text=True, check=True
     )
     assert len(log.stdout.strip().split("\n")) == 1
 
 
-def test_commit_vault_returns_none_when_commit_fails(tmp_path, monkeypatch):
+def test_commit_vault_reports_a_failed_commit(tmp_path, monkeypatch):
     """Verify a failed `git commit` reads as nothing committed, not a raised error."""
     # Given a dirty repo whose `git commit` is rigged to fail
     root = _repo(tmp_path)
@@ -204,8 +206,75 @@ def test_commit_vault_returns_none_when_commit_fails(tmp_path, monkeypatch):
     result = commit_vault(root, env=clean_environ())
 
     # Then nothing is committed and the repo's log gains no new entry
-    assert result is None
+    assert result == CommitOutcome(reason="commit failed")
     log = subprocess.run(
         ["git", "log", "--oneline"], cwd=root, capture_output=True, text=True, check=True
     )
     assert len(log.stdout.strip().split("\n")) == 1
+
+
+def test_commit_vault_reports_git_unavailable_when_status_fails(tmp_path, monkeypatch):
+    """Verify a `git status` that fails outright is reported as unavailable, not as clean."""
+    # Given a dirty repo whose `git status` is rigged to fail
+    root = _repo(tmp_path)
+    (root / "page.md").write_text("x", encoding="utf-8")
+    real_git = commit_module._git
+
+    def _fake_git(root_, *args, env, timeout=10) -> subprocess.CompletedProcess | None:
+        if args and args[0] == "status":
+            return subprocess.CompletedProcess(args, returncode=1, stdout="", stderr="boom")
+        return real_git(root_, *args, env=env, timeout=timeout)
+
+    monkeypatch.setattr(commit_module, "_git", _fake_git)
+
+    # When committing the vault
+    result = commit_vault(root, env=clean_environ())
+
+    # Then nothing is committed and the failure reads as unavailable, not clean
+    assert result == CommitOutcome(reason="git unavailable")
+
+
+def test_commit_vault_reports_the_sha_as_unavailable_when_rev_parse_fails(tmp_path, monkeypatch):
+    """Verify a commit that landed but whose sha could not be read is still reported as committed."""
+    # Given a dirty repo whose final `rev-parse --short` is rigged to fail
+    root = _repo(tmp_path)
+    (root / "page.md").write_text("x", encoding="utf-8")
+    real_git = commit_module._git
+
+    def _fake_git(root_, *args, env, timeout=10) -> subprocess.CompletedProcess | None:
+        if args[:2] == ("rev-parse", "--short"):
+            return subprocess.CompletedProcess(args, returncode=1, stdout="", stderr="boom")
+        return real_git(root_, *args, env=env, timeout=timeout)
+
+    monkeypatch.setattr(commit_module, "_git", _fake_git)
+
+    # When committing the vault
+    result = commit_vault(root, env=clean_environ())
+
+    # Then the commit landed and is reported as such, sha unavailable rather than a failure
+    assert result == CommitOutcome(sha=commit_module.SHA_UNAVAILABLE)
+    assert result.describe() == "committed (sha unavailable)"
+    log = subprocess.run(
+        ["git", "log", "--oneline"], cwd=root, capture_output=True, text=True, check=True
+    )
+    assert "checkpoint" in log.stdout.splitlines()[0]
+
+
+def test_commit_vault_names_a_lost_index_lock_race(tmp_path, monkeypatch):
+    """Verify a commit that lost git's own lock is reported as that, not as a generic failure."""
+    root = _repo(tmp_path)
+    (root / "page.md").write_text("x", encoding="utf-8")
+    real_git = commit_module._git
+
+    def _locked(root_, *args, env, timeout) -> subprocess.CompletedProcess:
+        if args[0] == "commit":
+            return subprocess.CompletedProcess(
+                args=["git", *args],
+                returncode=128,
+                stdout="",
+                stderr="fatal: Unable to create '.git/index.lock': File exists.",
+            )
+        return real_git(root_, *args, env=env, timeout=timeout)
+
+    monkeypatch.setattr(commit_module, "_git", _locked)
+    assert commit_vault(root, env=clean_environ()) == CommitOutcome(reason="index lock")

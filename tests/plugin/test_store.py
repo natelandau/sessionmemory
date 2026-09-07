@@ -6,16 +6,21 @@ import hashlib
 import os
 import subprocess
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from sessionhooks.store import (  # ty: ignore[unresolved-import]
     Store,
     encode_project_key,
     head_commit,
     project_root,
+    state_root,
 )
 
 from tests._env import clean_environ
 from tests.plugin._store_factory import store_at
+
+if TYPE_CHECKING:
+    import pytest
 
 _CLEAN = {"PATH": os.environ.get("PATH", "")}
 
@@ -219,7 +224,6 @@ def test_path_accessors(tmp_path: Path) -> None:
     assert store.base_commit_path == tmp_path / "state" / "base-commit"
     assert store.lock_path == tmp_path / "state" / "sweep.lock"
     assert store.transcript_pointer_path == tmp_path / "state" / "transcript-path"
-    assert store.log_path == tmp_path / "state" / "sweep.log"
 
 
 def test_save_and_read_transcript_pointer(tmp_path: Path) -> None:
@@ -363,3 +367,32 @@ def test_save_base_commit_swallows_an_os_error(tmp_path: Path) -> None:
     store.save_base_commit("abc123")
     # Then nothing was recorded
     assert store.read_base_commit() == ""
+
+
+# ---------------------------------------------------------------------------
+# state_root and Store.name
+# ---------------------------------------------------------------------------
+
+
+def test_state_root_honors_xdg_state_home(tmp_path: Path) -> None:
+    """Verify the shared state root follows XDG_STATE_HOME."""
+    assert state_root({"XDG_STATE_HOME": str(tmp_path)}) == tmp_path / "sessionmemory"
+
+
+def test_state_root_falls_back_under_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Verify an unset XDG_STATE_HOME lands under ~/.local/state."""
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    assert state_root({}) == tmp_path / ".local" / "state" / "sessionmemory"
+
+
+def test_for_cwd_names_the_project_after_its_root_directory(tmp_path: Path) -> None:
+    """Verify a store knows the project's directory name, for a log line to carry."""
+    proj = tmp_path / "invoice-api"
+    proj.mkdir()
+    store = Store.for_cwd(cwd=proj, env={"XDG_STATE_HOME": str(tmp_path / "state")})
+    assert store.name == "invoice-api"
+
+
+def test_a_directly_constructed_store_has_no_name(tmp_path: Path) -> None:
+    """Verify the factory the tests use still constructs without a name."""
+    assert store_at(tmp_path).name == ""

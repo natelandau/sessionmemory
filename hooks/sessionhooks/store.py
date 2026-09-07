@@ -3,8 +3,7 @@
 Durable memory lives in the vault, reached through
 `sessionhooks.vaultcli`. What stays here is everything that describes a session on
 this machine rather than knowledge worth keeping: the sweep lock, the pointer to
-the transcript, the log of what each sweep did, the commit a session started from,
-and the consume-once handoff.
+the transcript, the commit a session started from, and the consume-once handoff.
 
 None of it belongs in the vault. A lock committed to git reads as held on every
 other machine, a transcript path is meaningless on any other, and a handoff is a
@@ -31,7 +30,6 @@ PLUGIN_NS = "sessionmemory"
 HANDOFF_NAME = "HANDOFF.md"
 LOCK_NAME = "sweep.lock"
 TRANSCRIPT_POINTER_NAME = "transcript-path"
-LOG_NAME = "sweep.log"
 BASE_COMMIT_NAME = "base-commit"
 
 _GIT_TIMEOUT = 5
@@ -123,10 +121,15 @@ def _xdg_root(env: Mapping[str, str], var: str, default_rel: str) -> Path:
     return root / PLUGIN_NS
 
 
+def state_root(env: Mapping[str, str]) -> Path:
+    """The machine-local root every project's state dir, and the hooks' log, sit under."""
+    return _xdg_root(env, "XDG_STATE_HOME", ".local/state")
+
+
 def _state_dir(key: str, *, env: Mapping[str, str]) -> Path:
     """Return the ephemeral state dir for a project key (hashed, not created)."""
     digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:12]  # noqa: S324
-    return _xdg_root(env, "XDG_STATE_HOME", ".local/state") / digest
+    return state_root(env) / digest
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,12 +138,16 @@ class Store:
 
     key: str
     state_dir: Path
+    # The project root's directory name, so a log line can name the project without
+    # the vault CLI having answered. Empty when a store is built without resolution.
+    name: str = ""
 
     @classmethod
     def for_cwd(cls, *, cwd: Path, env: Mapping[str, str]) -> Store:
         """Resolve the store for `cwd`: project root -> key -> XDG state dir."""
-        key = encode_project_key(project_root(cwd=cwd, env=env))
-        return cls(key=key, state_dir=_state_dir(key, env=env))
+        root = project_root(cwd=cwd, env=env)
+        key = encode_project_key(root)
+        return cls(key=key, state_dir=_state_dir(key, env=env), name=root.name)
 
     @property
     def handoff_path(self) -> Path:
@@ -166,11 +173,6 @@ class Store:
     def transcript_pointer_path(self) -> Path:
         """The saved transcript path so the sweep finds it after /clear."""
         return self.state_dir / TRANSCRIPT_POINTER_NAME
-
-    @property
-    def log_path(self) -> Path:
-        """The append-only sweep activity log."""
-        return self.state_dir / LOG_NAME
 
     def save_transcript_pointer(self, transcript_path: str) -> None:
         """Best-effort persist the transcript path for the sweep; never raises."""

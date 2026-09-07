@@ -32,8 +32,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from sessionhooks import log
+
 if TYPE_CHECKING:
     from collections.abc import Mapping
+
+    from sessionhooks.commit import CommitOutcome
 
 ROOT_ENV = "SESSIONMEMORY_VAULT"
 
@@ -65,6 +69,8 @@ COMMIT_GIT_TIMEOUT = 5
 # The CLI's own contract: 0 success, 1 refused, 2 misconfigured.
 EXIT_OK = 0
 EXIT_REFUSED = 1
+
+_log = log.logger("vaultcli")
 
 
 def _shim() -> Path:
@@ -126,14 +132,25 @@ def _cli_on_path(env: Mapping[str, str]) -> Path | None:
     """The `sessionmemory` on PATH, when it passes the version handshake."""
     found = shutil.which(CLI_NAME, path=env.get("PATH"))
     if found is None:
+        _log.debug("handshake: no %s on PATH", CLI_NAME)
         return None
     required = plugin_version()
     if required is None:
+        _log.debug("handshake: plugin version unreadable, using the shim")
         return None
     installed = _installed_version(Path(found), env)
-    if installed is None or installed < required:
+    if installed is None:
+        _log.debug("handshake: %s on PATH gave no version", CLI_NAME)
         return None
-    return Path(found)
+    verdict = "pass" if installed >= required else "fail"
+    _log.debug(
+        "handshake: %s on PATH reports %s, plugin requires %s: %s",
+        CLI_NAME,
+        ".".join(map(str, installed)),
+        ".".join(map(str, required)),
+        verdict,
+    )
+    return Path(found) if verdict == "pass" else None
 
 
 def _json_object(raw: str | None) -> dict[str, Any] | None:
@@ -287,8 +304,8 @@ class VaultCLI:
         slug = payload.get("slug")
         return slug if isinstance(slug, str) and slug else None
 
-    def commit(self, *, env: Mapping[str, str]) -> str | None:
-        """Commit the vault's outstanding changes; the short sha, or None."""
+    def commit(self, *, env: Mapping[str, str]) -> CommitOutcome:
+        """Commit the vault's outstanding changes and report what happened."""
         # Imported at call time so a test can patch sessionhooks.commit.commit_vault.
         from sessionhooks.commit import commit_vault
 

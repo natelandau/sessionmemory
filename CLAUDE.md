@@ -420,11 +420,40 @@ predates the index. `_commit` checks `git add`'s exit status: `git add` stages w
 reach and still exits non-zero on a path it could not read, and committing over that
 writes a commit silently missing the one file that needed attention.
 
-A commit is skipped rather than forced in five states: not a repository, a clean tree, a
-merge or rebase or cherry-pick or revert in progress, a detached `HEAD`, and a lost race
-on git's `index.lock`. None of them is an error worth surfacing from a hook. The next
-session's hook commits whatever was left behind, which is what makes skipping cheap and
-retrying automatic.
+A commit is skipped rather than forced for seven reasons: `not a repository`, `clean`, a
+merge or rebase or cherry-pick or revert `operation in progress`, a `detached HEAD`, a lost
+race on git's `index lock`, an `add failed`, or `git unavailable`. None of them is an error
+worth surfacing from a hook. The next session's hook commits whatever was left behind,
+which is what makes skipping cheap and retrying automatic. A commit whose `git commit`
+landed but whose sha could not be read back afterward is reported as `committed (sha
+unavailable)` rather than as a skip, since the commit happened and a skip reason here
+would send a reader hunting for a failure that never occurred.
+
+### Logging
+
+Every hook and the sweep worker write to one log, `hooks.log` under the XDG state root,
+configured by `hooks/sessionhooks/log.py` and nowhere else. Every hook opens through
+`hookmain.begin(step, *, payload, env) -> HookContext`, which loads the config, resolves
+the cwd and the `Store`, and calls `log.configure` with the store's project name and the
+payload's session id; every module underneath logs through `log.logger("<name>")` and
+inherits that context. Each hook's `main` reads its own payload, calls `begin`, and wraps
+`_run` in a `try`/`except` that logs `hook failed` with the traceback, so the log is
+configured before anything in the hook's body can raise. `run_sweep` in
+`hooks/sessionhooks/sweep.py` takes an optional `store` keyword so a hook that already
+resolved one through `begin` does not pay for a second `git rev-parse` inside its timeout
+budget. The worker relabels itself with `log.bind(step="sweep")` after the fork.
+
+The default level is INFO and the rule is one line per decision: a gate skip with its
+counts, a spawn, a worker result, a commit or the reason it was skipped, and what a
+start injected. A step that went as expected is DEBUG. Every fail-open boundary logs
+the exception at ERROR before swallowing it, so a new `except` that returns quietly
+needs a line too, and a new reason for a skip needs to be in the message. Rotation is
+fixed at 1 MB and two backups in `log.py` and is not a setting.
+
+A line is `DATE TIME LEVEL [step] project: message (session=<id>)`. Only the level and
+the bracketed step are padded, since a project name has no known width; the session
+closes the line so the message stays readable. Nothing reads the file but a person, so
+it stays plaintext.
 
 ### Doctor
 

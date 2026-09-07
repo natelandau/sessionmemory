@@ -47,6 +47,9 @@ The hook's timeout budgets its worst case: `Store.for_cwd` 5s, `head_commit` 5s,
 two `VaultCLI.discover` handshakes 10s, the vault commit 35s, `VaultCLI.resolve` 5s,
 `VaultCLI.register` 5s, `VaultCLI.inject` 25s, 90s in all; the timeout is 100 to
 stay ahead of that sum. Raising any of those numbers means raising it.
+
+Every decision the hook makes is one line in the shared hooks log, and a crash is
+logged before the fail-open exit.
 """
 
 from __future__ import annotations
@@ -57,18 +60,25 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 HOOKS_ROOT = Path(__file__).resolve().parent
 if str(HOOKS_ROOT) not in sys.path:  # pragma: no cover - conftest.py always adds it first
     sys.path.insert(0, str(HOOKS_ROOT))
 
-from sessionhooks.config import SessionMemoryConfig  # noqa: E402
+from sessionhooks import log  # noqa: E402
 from sessionhooks.headless import is_headless  # noqa: E402
+from sessionhooks.hookmain import begin  # noqa: E402
 from sessionhooks.io import read_payload  # noqa: E402
-from sessionhooks.store import Store, head_commit  # noqa: E402
+from sessionhooks.store import head_commit  # noqa: E402
 from sessionhooks.sweep import in_progress  # noqa: E402
 from sessionhooks.vaultcli import VaultCLI  # noqa: E402
+
+if TYPE_CHECKING:
+    import logging
+
+    from sessionhooks.config import SessionMemoryConfig
+    from sessionhooks.store import Store
 
 # Start sources that carry on a session already recorded rather than opening a new
 # one. Re-recording the base commit for either would move it forward past work the
@@ -125,12 +135,20 @@ def _record_session_state(store: Store, *, payload: dict[str, Any], cwd: Path) -
         store.save_base_commit(head_commit(cwd=cwd, env=os.environ))
 
 
-def _memory_block(cfg: SessionMemoryConfig, *, cwd: Path) -> str | None:
-    """The project's memory block, a hint about why there is none, or None when inject is off."""
+def _memory_block(
+    cfg: SessionMemoryConfig, *, cwd: Path, notes: list[str] | None = None
+) -> str | None:
+    """The project's memory block, a hint about why there is none, or None when inject is off.
+
+    `notes` collects one clause for the log naming what happened, when the caller wants it.
+    """
+    notes = notes if notes is not None else []
     if not cfg.inject_enabled:
+        notes.append("inject off")
         return None
     vault = VaultCLI.discover(env=os.environ, configured=cfg.vault_root)
     if vault is None:
+        notes.append("no memory: no vault")
         return NO_VAULT_HINT
     resolution = vault.resolve(cwd=cwd, env=os.environ)
     registered = resolution is not None and resolution.get("registered") is True
@@ -140,36 +158,49 @@ def _memory_block(cfg: SessionMemoryConfig, *, cwd: Path) -> str | None:
         # a session opened in a home or scratch directory must not file a project
         # named after it. Every other refusal belongs to the CLI.
         if resolution is None or not resolution.get("repo_root"):
+            notes.append("unregistered")
             return _unregistered_hint(vault)
         slug = vault.register(cwd=cwd, env=os.environ)
         if slug is None:
+            notes.append("registration refused")
             return _unregistered_hint(vault)
+        notes.append(f"registered as {slug}")
     blocks: list[str] = []
     if slug is not None:
         blocks.append(_registered_note(slug))
     memory = vault.inject(cwd=cwd, env=os.environ)
     if memory:
         blocks.append(f"{memory}\n\n{SKILL_POINTER}")
+        notes.append("memory injected")
+    else:
+        notes.append("nothing to inject")
     return "\n\n".join(blocks) or None
 
 
-def main() -> None:  # pragma: no cover - runs only as a subprocess, where coverage cannot see it
-    """Inject the handoff (if any) and memory for the current project, unless headless."""
-    if is_headless():
-        return
-    payload = read_payload()
-    cfg = SessionMemoryConfig.load(project_dir=os.environ.get("CLAUDE_PROJECT_DIR"))
-
-    cwd = Path(payload.get("cwd") or Path.cwd())
-    store = Store.for_cwd(cwd=cwd, env=os.environ)
+def _run(  # pragma: no cover - runs only as a subprocess, where coverage cannot see it
+    payload: dict[str, Any],
+    cfg: SessionMemoryConfig,
+    *,
+    cwd: Path,
+    store: Store,
+    log: logging.Logger,
+) -> None:
+    """Inject the handoff (if any) and memory for the current project."""
+    clauses: list[str] = [f"source {payload.get('source') or 'unknown'}"]
 
     # Commit whatever the last session's sweep and any hand edits left behind, so
     # the vault's history is never more than one session behind its files, in
     # every case SessionEnd does. Skipped while a sweep worker holds a fresh
     # lock: it commits its own writes when it finishes.
     vault = VaultCLI.discover(env=os.environ, configured=cfg.vault_root)
-    if vault is not None and not in_progress(store, now=time.time()):
-        vault.commit(env=os.environ)
+    if vault is None:
+        clauses.extend(["no vault", "commit skipped: no vault"])
+    else:
+        clauses.append("cli on PATH" if vault.on_path else "cli shim")
+        if in_progress(store, now=time.time()):
+            clauses.append("commit skipped: sweep in progress")
+        else:
+            clauses.append(vault.commit(env=os.environ).describe())
 
     # Consume the handoff on any start except `resume` (which may be the same session
     # that wrote it). A denylist, not an allowlist of known sources, keeps this working
@@ -178,6 +209,7 @@ def main() -> None:  # pragma: no cover - runs only as a subprocess, where cover
     source = payload.get("source")
     consume_handoff = source != "resume"
     if not (consume_handoff or cfg.inject_enabled or cfg.sweep_enabled):
+        log.info("started (%s)", ", ".join([*clauses, "nothing to do"]))
         return  # resume with everything off: nothing left to do
 
     blocks: list[str] = []
@@ -187,15 +219,18 @@ def main() -> None:  # pragma: no cover - runs only as a subprocess, where cover
     handoff_text = store.read_handoff() if consume_handoff else None
     if handoff_text:
         blocks.append(handoff_text)
+        clauses.append("handoff consumed")
 
     # Tied to the sweep toggle, not the inject one: a user who turns injection off
     # still gets a sweep, and it is the sweep that reads this state.
     if cfg.sweep_enabled:
         _record_session_state(store, payload=payload, cwd=cwd)
 
-    memory = _memory_block(cfg, cwd=cwd)
+    memory = _memory_block(cfg, cwd=cwd, notes=clauses)
     if memory:
         blocks.append(memory)
+
+    log.info("started (%s)", ", ".join(clauses))
 
     if not blocks:
         return
@@ -215,9 +250,25 @@ def main() -> None:  # pragma: no cover - runs only as a subprocess, where cover
     try:
         _write_all(sys.stdout.fileno(), (rendered + "\n").encode("utf-8"))
     except OSError:
+        log.warning("inject not emitted: stdout closed")
         return
     if handoff_text:
         store.delete_handoff()
+
+
+def main() -> None:  # pragma: no cover - runs only as a subprocess, where coverage cannot see it
+    """Configure the log, then run the hook body with its crash on record."""
+    if is_headless():
+        return
+    payload = read_payload()
+    # Bound ahead of the try: a crash before begin() configures the log still has
+    # something to report to, the import-time NullHandler dropping it quietly.
+    logger = log.logger()
+    try:
+        ctx = begin("sessionstart", payload=payload, env=os.environ)
+        _run(ctx.payload, ctx.config, cwd=ctx.cwd, store=ctx.store, log=ctx.log)
+    except Exception:
+        logger.exception("hook failed")
 
 
 if __name__ == "__main__":  # pragma: no cover - runs only as a subprocess

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
+from sessionhooks.commit import CommitOutcome  # ty: ignore[unresolved-import]
 from sessionhooks.vaultcli import (  # ty: ignore[unresolved-import]
     COMMIT_GIT_TIMEOUT,
     ROOT_ENV,
@@ -335,9 +336,13 @@ def test_project_paths_refuses_output_it_cannot_trust(marked_vault, stub_cli, tm
 def test_commit_delegates_to_commit_vault(marked_vault, stub_cli, mocker):
     """Verify VaultCLI.commit commits the discovered root."""
     cli = VaultCLI.discover(env=_env(**{ROOT_ENV: str(marked_vault)}), configured=None)
-    spy = mocker.patch("sessionhooks.commit.commit_vault", autospec=True, return_value="abc1234")
+    spy = mocker.patch(
+        "sessionhooks.commit.commit_vault",
+        autospec=True,
+        return_value=CommitOutcome(sha="abc1234"),
+    )
 
-    assert cli.commit(env={}) == "abc1234"
+    assert cli.commit(env={}) == CommitOutcome(sha="abc1234")
     spy.assert_called_once_with(marked_vault, env={}, timeout=COMMIT_GIT_TIMEOUT)
 
 
@@ -450,3 +455,12 @@ def test_resolve_yields_none_when_the_cli_is_misconfigured(marked_vault, stub_cl
     cli = VaultCLI.discover(env=_env(**{ROOT_ENV: str(marked_vault)}), configured=None)
 
     assert cli.resolve(cwd=tmp_path, env=_env()) is None
+
+
+def test_discover_logs_the_handshake_at_debug(tmp_path, marked_vault, caplog):
+    """Verify a person raising the level to debug can see which CLI answered and why."""
+    caplog.set_level("DEBUG", logger="sessionmemory")
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    VaultCLI.discover(env={"SESSIONMEMORY_VAULT": str(marked_vault), "PATH": str(empty)})
+    assert "handshake: no sessionmemory on PATH" in caplog.text

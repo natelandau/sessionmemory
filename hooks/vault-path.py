@@ -29,10 +29,12 @@ need to know which is which:
     vault-path.py --logs         # this project's logs field
     vault-path.py --project      # the project's vault folder
     vault-path.py --cli          # the vault CLI itself
+    vault-path.py --log          # the hooks' shared log
 
 Exactly one flag per call. A vault-backed flag exits 2 when no vault is
 reachable, because printing nothing would read as "the path is empty" rather
-than "there is nowhere to look".
+than "there is nowhere to look". `--log` is answered from config and the
+environment alone, so it works when nothing else does.
 """
 
 from __future__ import annotations
@@ -47,12 +49,15 @@ if str(HOOKS_ROOT) not in sys.path:
     sys.path.insert(0, str(HOOKS_ROOT))
 
 from sessionhooks.config import SessionMemoryConfig  # noqa: E402
+from sessionhooks.log import log_path  # noqa: E402
 from sessionhooks.store import Store  # noqa: E402
 from sessionhooks.vaultcli import VaultCLI  # noqa: E402
 
 EXIT_NO_VAULT = 2
 
 NO_VAULT = "sessionmemory: no reachable vault"
+
+NO_LOG_PATH = "sessionmemory: log.path cannot be resolved"
 
 # Flag -> the key in `sessionmemory project --json` output that answers it.
 VAULT_KEYS = {
@@ -70,12 +75,26 @@ STORE_ATTRS = {"handoff": "handoff_path", "state_dir": "state_dir"}
 # Answered by the vault's location alone, without asking it to resolve a project.
 CLI_FLAG = "cli"
 
+# Answered from config and the environment alone, so it works when nothing else does.
+LOG_FLAG = "log"
+
+
+def _print_log_path(cfg: SessionMemoryConfig) -> int:
+    """Print the hooks log path, or fail loudly when the configured path cannot be resolved."""
+    try:
+        resolved = log_path(cfg, os.environ)
+    except (OSError, RuntimeError, ValueError):
+        print(NO_LOG_PATH, file=sys.stderr)  # noqa: T201
+        return EXIT_NO_VAULT
+    print(resolved)  # noqa: T201
+    return 0
+
 
 def main() -> int:
     """Resolve the requested path for the current directory and print it."""
     parser = argparse.ArgumentParser(description="Resolve a project-memory path.")
     target = parser.add_mutually_exclusive_group(required=True)
-    for flag in (*STORE_ATTRS, *VAULT_KEYS, CLI_FLAG):
+    for flag in (*STORE_ATTRS, *VAULT_KEYS, CLI_FLAG, LOG_FLAG):
         target.add_argument(
             f"--{flag.replace('_', '-')}", action="store_const", const=flag, dest="target"
         )
@@ -88,6 +107,9 @@ def main() -> int:
         return 0
 
     cfg = SessionMemoryConfig.load(project_dir=os.environ.get("CLAUDE_PROJECT_DIR"))
+    if args.target == LOG_FLAG:
+        return _print_log_path(cfg)
+
     vault = VaultCLI.discover(env=os.environ, configured=cfg.vault_root)
     if vault is None:
         print(NO_VAULT, file=sys.stderr)  # noqa: T201

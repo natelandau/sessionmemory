@@ -173,3 +173,48 @@ def test_substance_floors_fall_back_on_a_bad_value(tmp_path):
     cfg = SessionMemoryConfig.load(home=home)
     assert cfg.min_user_messages == 3
     assert cfg.min_user_chars == 400
+
+
+def test_log_settings_have_defaults(tmp_path):
+    """Verify the log keys carry defaults when no config file exists."""
+    cfg = SessionMemoryConfig.load(home=tmp_path)
+    assert cfg.log_path == ""
+    assert cfg.log_level == "info"
+
+
+def test_log_settings_are_read_from_the_config(tmp_path):
+    """Verify both log keys are configurable under [log]."""
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    (home / ".claude" / "sessionmemory.toml").write_text(
+        '[log]\npath = "~/hooks.log"\nlevel = "DEBUG"\n', encoding="utf-8"
+    )
+    cfg = SessionMemoryConfig.load(home=home)
+    assert cfg.log_path == "~/hooks.log"
+    assert cfg.log_level == "debug"
+
+
+def test_log_level_falls_back_on_an_unknown_value(tmp_path):
+    """Verify a level outside the five known names uses the default rather than wedging a hook."""
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    (home / ".claude" / "sessionmemory.toml").write_text(
+        '[log]\nlevel = "loud"\npath = 7\n', encoding="utf-8"
+    )
+    cfg = SessionMemoryConfig.load(home=home)
+    assert cfg.log_level == "info"
+    assert cfg.log_path == ""
+
+
+def test_a_project_config_overrides_the_global_log_level(tmp_path):
+    """Verify the [log] table cascades global then project like every other table."""
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    (home / ".claude" / "sessionmemory.toml").write_text('[log]\nlevel = "off"\n', encoding="utf-8")
+    proj = tmp_path / "proj"
+    (proj / ".claude").mkdir(parents=True)
+    (proj / ".claude" / "sessionmemory.toml").write_text(
+        '[log]\nlevel = "error"\n', encoding="utf-8"
+    )
+    cfg = SessionMemoryConfig.load(home=home, project_dir=str(proj))
+    assert cfg.log_level == "error"
