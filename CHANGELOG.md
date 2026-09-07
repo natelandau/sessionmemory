@@ -1,3 +1,14 @@
+## v0.5.0 (2026-09-07)
+
+### Feat
+
+- **reindex**: add --all to rebuild every project's indexes at once
+
+### Fix
+
+- **skills**: rewrite the four skills as numbered steps in plain prose
+- **inject**: count specs instead of listing them and drop plans
+
 ## v0.4.1 (2026-09-05)
 
 ### Fix
