@@ -52,6 +52,9 @@ def test_inject_json_names_the_same_fields_as_the_prose(workspace):
     payload = json.loads(result.stdout)
     assert payload["project"] == "demo"
     assert payload["titles"] == ["A learning"]
+    assert payload["open_backlog"] == 0
+    assert payload["specs"] == 0
+    assert "plans" not in payload
     assert "/x/sessionmemory search" in payload["guidance"]
 
 

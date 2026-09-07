@@ -169,8 +169,14 @@ migration is needed.
 
 `sessionmemory inject` prints one block: a fixed guidance section that says how to read
 and write the vault, then the title of every learning the project holds, then a count of
-open backlog items with the titles of any specs and plans. No summaries, no bodies, no
-triggers.
+open backlog items and a count of specs. No summaries, no bodies, no triggers.
+
+Specs are counted rather than listed because a spec outlives the work it describes. A
+list of them is a changelog rather than open work, and it grows with every feature the
+project ever shipped. The count says whether listing `specs/` is worth a call, and the
+guidance says when to make it: before designing or changing a feature, since the file
+names are dated topic slugs and a matching one holds a decision already made. Plans are
+not mentioned at all. The tool that writes them manages them.
 
 Titles rather than summaries, because injection is a push channel and must not grow into
 the thing it is trying to save. For a project with 62 pages, titles cost roughly 400
@@ -214,8 +220,8 @@ in a file.
 
 Two more places differ from the design spec for this vault, and the code is the
 authority: the registry file is `_system/registry.toml` rather than `projects.toml`, and
-injection lists spec and plan titles and a count of open backlog items beside the
-learning titles.
+injection carries a count of open backlog items and a count of specs beside the learning
+titles.
 
 ## See also
 

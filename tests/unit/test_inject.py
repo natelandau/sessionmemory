@@ -29,6 +29,8 @@ def _project(vault: Path) -> Path:
         now=NOW,
     )
     field.new_document(root / "specs", title="A Spec", body="", now=NOW, day=NOW[:10])
+    field.new_document(root / "specs", title="B Spec", body="", now=NOW, day=NOW[:10])
+    field.new_document(root / "plans", title="A Plan", body="", now=NOW, day=NOW[:10])
     (root / "backlog.md").write_text(
         "# Backlog\n\n## feat\n\n- [S] one - 2026-09-01 [#a]\n- [x] [S] done - 2026-09-01\n"
         "- [ ] [S] old open shape - 2026-09-01\n- [M] two - 2026-09-01\n",
@@ -37,23 +39,22 @@ def _project(vault: Path) -> Path:
     return root
 
 
-def test_build_lists_titles_sorted_and_counts_open_backlog(tmp_path):
-    """Verify titles come from the pages, sorted, and only lines in the item shape count as open."""
+def test_build_lists_titles_sorted_and_counts_open_backlog_and_specs(tmp_path):
+    """Verify titles come from the pages, sorted, only lines in the item shape count as open, and specs are counted rather than listed."""
     _project(tmp_path)
 
     result = inject.build(tmp_path, "demo")
 
     assert result.titles == ("Alpha learning", "Beta learning")
     assert result.open_backlog == 2
-    assert result.specs == ("A Spec",)
-    assert result.plans == ()
+    assert result.specs == 2
 
 
 def test_build_empty_project(tmp_path):
     """Verify a project with nothing yet builds an empty injection rather than failing."""
     result = inject.build(tmp_path, "demo")
 
-    assert result == inject.Injection(project="demo", titles=(), open_backlog=0, specs=(), plans=())
+    assert result == inject.Injection(project="demo", titles=(), open_backlog=0, specs=0)
 
 
 def test_render_leads_with_guidance_and_names_the_command(tmp_path):
@@ -67,7 +68,26 @@ def test_render_leads_with_guidance_and_names_the_command(tmp_path):
     assert "## What this project knows" in text
     assert "  - Alpha learning\n  - Beta learning" in text
     assert "2 open backlog items" in text
-    assert "A Spec" in text
+    assert "2 specs in specs/" in text
+
+
+def test_render_counts_specs_and_never_names_a_spec_or_a_plan(tmp_path):
+    """Verify the block carries a spec count and how to find one, and says nothing about plans, which another tool manages."""
+    _project(tmp_path)
+
+    text = inject.render(inject.build(tmp_path, "demo"), command="sessionmemory")
+
+    assert "A Spec" not in text
+    assert "B Spec" not in text
+    assert "`<date>-<topic>.md`" in text
+    assert "plan" not in text.casefold()
+
+
+def test_render_singular_spec(tmp_path):
+    """Verify one spec reads as a spec, not as 1 specs."""
+    text = inject.render(inject.Injection("demo", (), 0, 1), command="sessionmemory")
+
+    assert "1 spec in specs/" in text
 
 
 def test_guidance_teaches_the_backlog_line_and_the_project_paths():

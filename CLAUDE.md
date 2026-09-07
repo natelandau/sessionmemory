@@ -293,8 +293,11 @@ hang.
 ### Injection
 
 `sessionmemory inject` emits a fixed guidance block, then every learning's title, then a
-count of open backlog items with the titles of any specs and plans. **The index is never
-read here**, and no page body ever enters an injection, which is what makes its cost
+count of open backlog items and a count of specs. Specs are counted rather than listed
+because they outlive the work they describe, so a list is a changelog that grows forever
+rather than open work; the guidance tells a session to list `specs/` before designing a
+feature. Plans are never mentioned, since the tool that writes them manages them. **The
+index is never read here**, and no page body ever enters an injection, which is what makes its cost
 proportional to the number of pages rather than to their length. `lib/inject.build` reads
 the files directly.
 

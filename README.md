@@ -190,7 +190,7 @@ project holding four learnings, one spec, one plan, and two open backlog items:
 Durable memory for this project lives in a vault of markdown pages. Nothing below is
 loaded for you: the titles are what the vault holds, and each is one `sessionmemory search`
 away. The project's folder has `learnings/` and `logs/`, searched by meaning, beside
-`specs/`, `plans/`, and `backlog.md`, which are ordinary files you Read and Edit.
+`specs/` and `backlog.md`, which are ordinary files you Read and Edit.
 `sessionmemory project --json` prints every path.
 
   - Before assuming nothing was written down, search: `sessionmemory search "<words>"`
@@ -205,8 +205,11 @@ away. The project's folder has `learnings/` and `logs/`, searched by meaning, be
     which creates the file or heading when missing. Delete a finished line, and one
     that will never be done, directly; never tick or annotate it. Git history is the
     record of what was finished.
-  - Specs and plans: `sessionmemory new spec|plan --title "..." --cwd .` creates the file
-    and prints its path. Edit it directly after that.
+  - Specs: `specs/` holds one design record per feature, named `<date>-<topic>.md`
+    and kept after the work ships. Before designing or changing a feature, list the
+    directory and read any spec whose name matches, so a decision already made is not
+    made again. `sessionmemory new spec --title "..." --cwd .` creates one and prints its
+    path. Edit it directly after that.
   - Learnings are captured at session end, not by you mid-session. When the user asks
     to keep one now: `sessionmemory new learning --title "..." --summary "..." --cwd .`
     creates the page and prints the path to write prose into. Title and summary state
@@ -222,8 +225,7 @@ away. The project's folder has `learnings/` and `logs/`, searched by meaning, be
 ## Open work
 
   2 open backlog items
-  spec: Export invoices as UBL 2.1 XML
-  plan: Move PDF rendering to a worker queue
+  1 spec in specs/
 ```
 
 A page body never enters that block, so its cost grows with the number of pages and not

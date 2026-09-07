@@ -25,8 +25,7 @@ class Injection:
     project: str
     titles: tuple[str, ...]
     open_backlog: int
-    specs: tuple[str, ...]
-    plans: tuple[str, ...]
+    specs: int
 
 
 def _sort_key(title: str) -> str:
@@ -45,14 +44,22 @@ def _open_backlog(path: Path) -> int:
     return sum(1 for line in path.read_text(encoding="utf-8").splitlines() if backlog.is_item(line))
 
 
+def _spec_count(directory: Path) -> int:
+    return sum(1 for _ in field.iter_pages(directory))
+
+
 def build(vault: Path, slug: str) -> Injection:
-    """Read the project's pages and files; the index is never consulted here."""
+    """Read the project's pages and files; the index is never consulted here.
+
+    Specs are counted rather than listed. A spec outlives the work it describes, so a
+    list of them is a changelog rather than open work, and it grows without bound. The
+    count says whether listing `specs/` is worth a call, which is all a session needs.
+    """
     return Injection(
         project=slug,
         titles=_titles(paths.learnings_dir(vault, slug)),
         open_backlog=_open_backlog(paths.backlog_path(vault, slug)),
-        specs=_titles(paths.specs_dir(vault, slug)),
-        plans=_titles(paths.plans_dir(vault, slug)),
+        specs=_spec_count(paths.specs_dir(vault, slug)),
     )
 
 
@@ -61,7 +68,7 @@ GUIDANCE = """## Using this vault
 Durable memory for this project lives in a vault of markdown pages. Nothing below is
 loaded for you: the titles are what the vault holds, and each is one `{command} search`
 away. The project's folder has `learnings/` and `logs/`, searched by meaning, beside
-`specs/`, `plans/`, and `backlog.md`, which are ordinary files you Read and Edit.
+`specs/` and `backlog.md`, which are ordinary files you Read and Edit.
 `{command} project --json` prints every path.
 
   - Before assuming nothing was written down, search: `{command} search "<words>"`
@@ -76,8 +83,11 @@ away. The project's folder has `learnings/` and `logs/`, searched by meaning, be
     which creates the file or heading when missing. Delete a finished line, and one
     that will never be done, directly; never tick or annotate it. Git history is the
     record of what was finished.
-  - Specs and plans: `{command} new spec|plan --title "..." --cwd .` creates the file
-    and prints its path. Edit it directly after that.
+  - Specs: `specs/` holds one design record per feature, named `<date>-<topic>.md`
+    and kept after the work ships. Before designing or changing a feature, list the
+    directory and read any spec whose name matches, so a decision already made is not
+    made again. `{command} new spec --title "..." --cwd .` creates one and prints its
+    path. Edit it directly after that.
   - Learnings are captured at session end, not by you mid-session. When the user asks
     to keep one now: `{command} new learning --title "..." --summary "..." --cwd .`
     creates the page and prints the path to write prose into. Title and summary state
@@ -93,8 +103,8 @@ def render(injection: Injection, *, command: str = "sessionmemory") -> str:
     lines.extend(["", "## Open work", ""])
     item = "item" if injection.open_backlog == 1 else "items"
     lines.append(f"  {injection.open_backlog} open backlog {item}")
-    lines.extend(f"  spec: {title}" for title in injection.specs)
-    lines.extend(f"  plan: {title}" for title in injection.plans)
+    spec = "spec" if injection.specs == 1 else "specs"
+    lines.append(f"  {injection.specs} {spec} in specs/")
     return "\n".join(lines)
 
 
@@ -105,6 +115,5 @@ def payload(injection: Injection, *, command: str) -> dict[str, object]:
         "project": injection.project,
         "titles": list(injection.titles),
         "open_backlog": injection.open_backlog,
-        "specs": list(injection.specs),
-        "plans": list(injection.plans),
+        "specs": injection.specs,
     }
