@@ -143,8 +143,13 @@ routine maintenance, or a couple of commands, or abandoned before anything was d
 is recorded as nothing at all. Then it does three jobs, in order:
 
 1. **Learnings.** One page per durable fact that a future session in this repository
-   would otherwise get wrong. A fact already recorded is refined in place, never written
-   a second time.
+   would otherwise get wrong. Before writing one, the pass reads the repository and the
+   session's own commits, and drops any fact the code, a comment, a config value, a
+   test, or `CLAUDE.md` already states. A decision the session made, and the
+   alternatives it rejected, stay in the commit that made them. A fact every session
+   needs belongs in the project's `CLAUDE.md`, and the pass records it as a `docs`
+   backlog line rather than a page. A fact already recorded is refined in place, never
+   written a second time.
 2. **Deferred work.** Concrete work that was decided and not done becomes one line in
    `backlog.md`, written through `sessionmemory new backlog`. Work the transcript shows
    was finished has its line deleted.

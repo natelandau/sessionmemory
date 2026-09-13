@@ -1343,7 +1343,7 @@ def test_render_inlines_capture_criteria() -> None:
         existing_log="",
     )
     # Then the criteria text is present and no placeholder remains
-    assert "The two-gate test" in rendered
+    assert "The three-gate test" in rendered
     assert "{{capture_criteria}}" not in rendered
     # Then a literal "{{name}}" never reaches the model as an instruction it cannot follow.
     assert "{{" not in rendered

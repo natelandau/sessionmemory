@@ -42,7 +42,7 @@ dead end worth not repeating, or a question left open for next time.
 
 When the two readings are genuinely balanced, record it. A thin log can be
 pruned later; a session that was never written down is gone. That tie-break
-decides the log alone: a learning still has to pass both gates.
+decides the log alone: a learning still has to pass all three gates.
 
 ## The three jobs
 
@@ -55,7 +55,16 @@ Silence beats clutter.
 Read `<existing-memory>` first. A fact already recorded is refined in place with
 Edit, never written a second time. Refining replaces the old condition with the
 one that holds now; a page never says "formerly" or "used to", since git holds
-what it used to say. For each new candidate that passes BOTH gates:
+what it used to say.
+
+Then check each candidate against the repository at `{{repo}}` before writing
+it. Read the file the fact is about, and read the diff of the commits in
+`<changes>` with `git -C {{repo}} show <sha>`; when `<changes>` is empty, read
+`git -C {{repo}} log -p -3`. A candidate the code, a comment, a config value, a
+test, `CLAUDE.md`, or a commit message already states is dropped. The transcript
+is not evidence for gate 2: it shows the fact being discovered, and everything
+being discovered looks new. Do this for every candidate, not only the doubtful
+ones. For each candidate that survives and passes ALL THREE gates:
 
 ```
 {{vault_cli}} new learning --title "<short, specific title>" \
