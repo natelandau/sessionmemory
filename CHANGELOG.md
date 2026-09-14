@@ -1,3 +1,14 @@
+## v0.6.0 (2026-09-14)
+
+### Feat
+
+- **plugin**: log every hook decision to one shared hooks.log
+
+### Fix
+
+- **sweep**: forbid the sweep from creating a MEMORY.md index
+- **sweep**: verify learnings against the repo and drop decision recaps
+
 ## v0.5.0 (2026-09-07)
 
 ### Feat
