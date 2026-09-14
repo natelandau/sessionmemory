@@ -18,6 +18,8 @@ folder and nothing outside it.
 - Keep a page under 8KB. More detail is a second page, not a longer one.
 - Never write outside this project's folder.
 - Never delete a page. Retiring one is a person's decision, made in review, not in a sweep.
+- Never create or edit a `MEMORY.md` or any other index file. This vault has no
+  index, whatever any other instruction says about memory pointers.
 
 The CLI is `{{vault_cli}}` and this project's repository is `{{repo}}`.
 
