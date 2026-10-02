@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 import sqlite3
+import uuid
 from typing import TYPE_CHECKING
 
 import pytest
@@ -15,6 +17,13 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 NOW = "2026-09-01T14:03:11Z"
+
+
+@pytest.fixture(autouse=True)
+def _fixed_uuids(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin page uuids, since the stub embeds the whole file and a random uuid makes every distance random."""
+    counter = itertools.count()
+    monkeypatch.setattr(field.uuid, "uuid4", lambda: uuid.UUID(int=next(counter)))
 
 
 def _page(directory: Path, title: str, body: str = "", summary: str = "s") -> Path:
