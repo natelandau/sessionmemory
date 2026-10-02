@@ -27,17 +27,25 @@ MAX_DISTANCE = typer.Option(
     max=2.0,
     help="Farthest cosine distance that still counts as a hit.",
 )
+MIN_MARGIN = typer.Option(
+    fieldindex.DEFAULT_MIN_MARGIN,
+    "--min-margin",
+    min=0.0,
+    max=2.0,
+    help="How much nearer than the field's median page a hit must sit. 0 turns this off.",
+)
 READ = typer.Option(False, "--read", help="Print each hit's whole file under its path.")  # noqa: FBT003
 CWD = typer.Option(None, "--cwd", help="Directory to resolve the project from.")
 JSON = typer.Option(False, "--json", help="Emit JSON instead of prose.")  # noqa: FBT003
 
 
-def search_command(
+def search_command(  # noqa: PLR0913
     query: str = QUERY,
     *,
     logs: bool = LOGS,
     limit: int = LIMIT,
     max_distance: float = MAX_DISTANCE,
+    min_margin: float = MIN_MARGIN,
     read: bool = READ,
     cwd: Path | None = CWD,
     as_json: bool = JSON,
@@ -49,7 +57,12 @@ def search_command(
     slug = require_project(vault, cwd)
     directory = paths.logs_dir(vault, slug) if logs else paths.learnings_dir(vault, slug)
     hits = fieldindex.search(
-        directory, build_embedder(), query, limit=limit, max_distance=max_distance
+        directory,
+        build_embedder(),
+        query,
+        limit=limit,
+        max_distance=max_distance,
+        min_margin=min_margin,
     )
 
     if as_json:
@@ -67,9 +80,7 @@ def search_command(
         emit_json(payload)
         return
     if not hits:
-        pp.info(
-            f"no results within distance {max_distance}; raise --max-distance to see farther pages"
-        )
+        pp.info("no results: nothing recorded matches this query")
         return
     # A path, a title, a summary, and a page are all things a caller copies or parses,
     # so nothing here may be styled.

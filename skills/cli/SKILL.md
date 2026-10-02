@@ -30,17 +30,25 @@ required.
 ## Search before you assume
 
 ```bash
-"$CLI" search "connection pooling"              # this project's learnings, by meaning
-"$CLI" search "connection pooling" --read       # every hit's whole page, in one call
-"$CLI" search "the deploy that failed" --logs   # past sessions
-"$CLI" search "ruff" --json                     # path, title, summary, distance per hit
+"$CLI" search "connection pooling"               # this project's learnings, by meaning
+"$CLI" search "connection pooling" --read        # every hit's whole page, in one call
+"$CLI" search "deploy failed migration" --logs   # past sessions
+"$CLI" search "ruff" --json                      # path, title, summary, distance per hit
 ```
 
+Search with a few distinctive words: names, identifiers, error text. Keywords separate
+the page that answers from its neighbors more clearly than a full sentence does, and
+a paraphrase of those words still matches.
+
+Search the logs for why something was decided, what happened the last time an area
+changed, or whether a fix was already tried. Learnings hold the distilled facts. Logs
+hold the history.
+
 Each hit is a path. Read it, or pass `--read` to get every hit's page in one call.
-`search` ranks by meaning, so a paraphrase still matches. It refreshes the index
-before it queries, so a page written a moment ago is already found. If nothing
-matches, `search` returns no results rather than the nearest pages. No results
-means nothing is recorded. Do not loosen `--max-distance`.
+`search` refreshes the index before it queries, so a page written a moment ago is
+already found. A hit has to stand out from the rest of its field. If nothing does,
+`search` returns no results rather than the nearest pages. No results means nothing
+is recorded. Do not loosen `--max-distance` or `--min-margin`.
 
 ## Find this project's files
 

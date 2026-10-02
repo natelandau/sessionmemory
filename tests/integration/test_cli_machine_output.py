@@ -185,7 +185,9 @@ def test_inject_and_search_prose_stay_unstyled_and_unwrapped(colored):
     assert inject_result.returncode == 0
     assert ESCAPE not in inject_result.stdout
 
-    search_result = _run(env, "search", "wok", "--max-distance", "2", "--cwd", str(project))
+    search_result = _run(
+        env, "search", "wok", "--max-distance", "2", "--min-margin", "0", "--cwd", str(project)
+    )
     assert search_result.returncode == 0
     assert ESCAPE not in search_result.stdout
     text = search_result.stdout.decode()

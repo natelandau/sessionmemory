@@ -14,6 +14,7 @@ import datetime
 import hashlib
 import json
 import sqlite3
+import statistics
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -26,10 +27,21 @@ if TYPE_CHECKING:
 
     from sessionmemory.lib.embed import Embedder
 
-# Measured on a real vault with nomic-embed-text-v1.5: a page that answers the query sits
-# under 0.25, a related neighbor under 0.40, and the nearest page to an unrelated query
-# sits at 0.45 or beyond. It matches the reference implementation's default for the model.
+# The reference implementation's default cutoff for nomic-embed-text-v1.5. On its own it
+# admits most unrelated queries, so it is only a ceiling and the margin below decides.
 DEFAULT_MAX_DISTANCE = 0.45
+
+# Measured with nomic-embed-text-v1.5 on 120 labeled queries across four projects' learnings
+# and logs: a page that answers the query sits at least this much nearer than the field's
+# median page, and the nearest page to an unrelated query does not. The rule is relative
+# because phrasing a query as a question lowers every distance at once, and because a log,
+# which summarizes a whole session, sits near every query about its project.
+DEFAULT_MIN_MARGIN = 0.11
+
+# A median over fewer pages than this is noise, so a small field measures against the
+# median background seen across the labeled queries instead.
+MIN_BACKGROUND_PAGES = 8
+FALLBACK_BACKGROUND = 0.49
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS pages (
@@ -165,11 +177,14 @@ def search(
     *,
     limit: int,
     max_distance: float = DEFAULT_MAX_DISTANCE,
+    min_margin: float = DEFAULT_MIN_MARGIN,
 ) -> list[Hit]:
-    """Return the pages within `max_distance` of `query`, nearest first, refreshing the index first.
+    """Return the pages that stand out as nearest to `query`, nearest first, refreshing the index first.
 
-    A cutoff rather than a bare top-k, so a query nothing answers returns nothing instead
-    of the nearest pages dressed up as hits.
+    A hit sits within `max_distance` and at least `min_margin` nearer than the field's
+    median page. A cutoff rather than a bare top-k, so a query nothing answers returns
+    nothing instead of the nearest pages dressed up as hits. A `min_margin` of 0 leaves
+    only the absolute cutoff.
     """
     if not field_dir.is_dir():
         return []
@@ -177,16 +192,25 @@ def search(
     try:
         _refresh(conn, field_dir, embedder)
         rows = conn.execute(
-            "SELECT * FROM ("
-            " SELECT filename, frontmatter, vec_distance_cosine(embedding, ?) AS distance"
-            " FROM pages)"
-            " WHERE distance <= ? ORDER BY distance LIMIT ?",
-            (sqlite_vec.serialize_float32(embedder.encode_query(query)), max_distance, limit),
+            "SELECT filename, frontmatter, vec_distance_cosine(embedding, ?) AS distance"
+            " FROM pages ORDER BY distance",
+            (sqlite_vec.serialize_float32(embedder.encode_query(query)),),
         ).fetchall()
     finally:
         conn.close()
+    ceiling = max_distance
+    if min_margin > 0:
+        distances = [float(row["distance"]) for row in rows]
+        background = (
+            statistics.median(distances)
+            if len(distances) >= MIN_BACKGROUND_PAGES
+            else FALLBACK_BACKGROUND
+        )
+        ceiling = min(ceiling, background - min_margin)
     hits = []
     for row in rows:
+        if float(row["distance"]) > ceiling or len(hits) == limit:
+            break
         meta = json.loads(row["frontmatter"])
         title = meta.get("title")
         summary = meta.get("summary")

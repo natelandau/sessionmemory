@@ -312,50 +312,47 @@ that omits one never clears it.
 Find the pages nearest in meaning to the query, nearest first. This is the one read an
 agent cannot do with its own tools.
 
-| Option           | What it does                                                        |
-| ---------------- | ------------------------------------------------------------------- |
-| `{query}`        | What to look for, in plain words. Required.                         |
-| `--logs`         | Search past session logs instead of learnings.                      |
-| `--limit`        | Maximum number of results. Default 10.                              |
-| `--max-distance` | Farthest cosine distance that still counts as a hit. Default 0.45.  |
-| `--read`         | Print each hit's whole file under its path.                         |
-| `--cwd`          | Directory to resolve the project from.                              |
-| `--json`         | Emit JSON instead of prose.                                         |
+| Option           | What it does                                                                    |
+| ---------------- | ------------------------------------------------------------------------------- |
+| `{query}`        | What to look for: a few distinctive words. Required.                            |
+| `--logs`         | Search past session logs instead of learnings.                                  |
+| `--limit`        | Maximum number of results. Default 10.                                          |
+| `--max-distance` | Farthest cosine distance that still counts as a hit. Default 0.45.              |
+| `--min-margin`   | How much nearer than the field's median page a hit must sit. Default 0.11.      |
+| `--read`         | Print each hit's whole file under its path.                                     |
+| `--cwd`          | Directory to resolve the project from.                                          |
+| `--json`         | Emit JSON instead of prose.                                                     |
+
+Search with a few distinctive words, such as names, identifiers, or error text, rather
+than a sentence. A paraphrase still matches, but keywords separate the page that answers
+from its neighbors more clearly than a question does.
 
 ```bash
-sessionmemory search "why does the same stripe event arrive twice" --limit 3
+sessionmemory search "stripe duplicate webhook event"
 ```
 
 ```
 ~/repos/my-vault/projects/invoice-api/learnings/stripe-retries-a-webhook-for-72-hours-so-the-handler-must-be-idempotent.md
   Stripe retries a webhook for 72 hours, so the handler must be idempotent
   Stripe redelivers an unacknowledged webhook for up to 72 hours, so the handler records the event id and ignores a repeat.
-
-~/repos/my-vault/projects/invoice-api/learnings/the-nightly-reconciliation-job-must-start-after-the-02-00-bank-feed.md
-  The nightly reconciliation job must start after the 02:00 bank feed
-  The bank feed lands at 02:00 UTC; a reconciliation run before it reports every open invoice as unpaid.
-
-~/repos/my-vault/projects/invoice-api/learnings/invoice-numbers-come-from-a-postgres-sequence-never-from-max-id-plus-one.md
-  Invoice numbers come from a Postgres sequence, never from max(id) plus one
-  Two workers issuing invoices at once both read the same max(id), so numbering uses a database sequence.
 ```
 
 Each result is the page's path, its title, and its summary. Read the path to get the
 body, or pass `--read` to get every hit's whole file in the one call:
 
 ```bash
-sessionmemory search "why does the same stripe event arrive twice" --limit 1 --read
+sessionmemory search "stripe duplicate webhook event" --read
 ```
 
 ```
 ~/repos/my-vault/projects/invoice-api/learnings/stripe-retries-a-webhook-for-72-hours-so-the-handler-must-be-idempotent.md
 ---
 title: Stripe retries a webhook for 72 hours, so the handler must be idempotent
-uuid: 1417edb7-4f54-45fc-95de-af21585cd271
+uuid: 0b3de896-f58b-4d49-a4be-cf356e0302d5
 summary: Stripe redelivers an unacknowledged webhook for up to 72 hours, so the handler records
   the event id and ignores a repeat.
-created: '2026-09-02T17:34:56Z'
-updated: '2026-09-02T17:34:56Z'
+created: '2026-10-02T16:48:08Z'
+updated: '2026-10-02T16:48:08Z'
 ---
 The handler inserts the Stripe event id into `webhook_events` before doing any work. A
 duplicate key means the event was already handled, and the handler returns 200 without
@@ -364,7 +361,7 @@ touching the invoice. Source: https://docs.stripe.com/webhooks#retries
 
 Each page is printed as it is on disk, under its path, with a blank line between pages.
 
-A hit is a page within a cosine distance of the query, and a query nothing answers
+A hit is a page that stands out from the rest of its field. A query nothing answers
 returns nothing rather than the nearest pages dressed up as hits:
 
 ```bash
@@ -372,12 +369,19 @@ sessionmemory search "kubernetes ingress"
 ```
 
 ```
-no results within distance 0.45; raise --max-distance to see farther pages
+no results: nothing recorded matches this query
 ```
 
-The default cutoff was measured on a real vault with this model: a page that answers the
-query sits under 0.25, a related neighbor under 0.40, and the nearest page to an
-unrelated query at 0.45 or beyond. `--max-distance` moves it, from 0 to 2.
+A page counts as a hit when it sits within `--max-distance` of the query and at least
+`--min-margin` nearer than the median page in the field. A field with fewer than 8 pages
+measures against a fixed median of 0.49 instead, which makes its cutoff 0.38.
+
+The margin is relative because a fixed distance does not separate matches from
+non-matches. Phrasing a query as a question lowers every distance at once, and a session
+log, which covers a whole session, sits near every query about its project. Measured on
+120 labeled queries across four real projects, a fixed cutoff of 0.45 returned hits for
+28 of 42 queries that had no answer. The margin returned a hit for 1 of them and missed
+3 of 78 answers. `--min-margin 0` turns the margin off and leaves only `--max-distance`.
 
 Search refreshes the field's index before it queries, so a page written moments ago is
 found without a `sessionmemory reindex` first. The first search on a machine downloads the
@@ -392,19 +396,7 @@ adds each page's whole file as `content`:
     "path": "~/repos/my-vault/projects/invoice-api/learnings/stripe-retries-a-webhook-for-72-hours-so-the-handler-must-be-idempotent.md",
     "title": "Stripe retries a webhook for 72 hours, so the handler must be idempotent",
     "summary": "Stripe redelivers an unacknowledged webhook for up to 72 hours, so the handler records the event id and ignores a repeat.",
-    "distance": 0.28473490476608276
-  },
-  {
-    "path": "~/repos/my-vault/projects/invoice-api/learnings/the-nightly-reconciliation-job-must-start-after-the-02-00-bank-feed.md",
-    "title": "The nightly reconciliation job must start after the 02:00 bank feed",
-    "summary": "The bank feed lands at 02:00 UTC; a reconciliation run before it reports every open invoice as unpaid.",
-    "distance": 0.43256503343582153
-  },
-  {
-    "path": "~/repos/my-vault/projects/invoice-api/learnings/invoice-numbers-come-from-a-postgres-sequence-never-from-max-id-plus-one.md",
-    "title": "Invoice numbers come from a Postgres sequence, never from max(id) plus one",
-    "summary": "Two workers issuing invoices at once both read the same max(id), so numbering uses a database sequence.",
-    "distance": 0.4457415044307709
+    "distance": 0.19797725975513458
   }
 ]
 ```
@@ -447,9 +439,12 @@ away. The project's folder has `learnings/` and `logs/`, searched by meaning, be
 
   - Before assuming nothing was written down, search: `sessionmemory search "<words>"`
     prints each hit's path, title, and summary, and `--read` prints every hit's whole
-    page in one call. A paraphrase still matches. No hits means nothing is recorded,
-    not that the query needs loosening.
-  - Past sessions, one page each: `sessionmemory search "<words>" --logs`.
+    page in one call. Search with a few distinctive words, such as names, identifiers,
+    or error text, rather than a sentence. No hits means nothing is recorded, not that
+    the query needs loosening.
+  - Past sessions, one page each: `sessionmemory search "<words>" --logs`. Search them
+    for why something was decided, what happened the last time an area changed, or
+    whether a fix was already tried.
   - Open work: read `backlog.md`. An item is one line under a `## <kind>` heading
     (feat, fix, refactor, perf, docs, test, build, ci), sized S, M, or L:
     `- [S] <imperative description> - <YYYY-MM-DD> [#topic]`. Add one with

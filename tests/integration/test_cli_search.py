@@ -37,7 +37,7 @@ def test_search_finds_a_page_written_moments_ago(workspace):
         app, ["new", "learning", "--title", "Pytest cov warning", "--summary", "the summary"]
     )
 
-    result = runner.invoke(app, ["search", "pytest", "--max-distance", "2"])
+    result = runner.invoke(app, ["search", "pytest", "--max-distance", "2", "--min-margin", "0"])
 
     assert result.exit_code == 0, result.output
     assert str(vault / "projects" / "demo" / "learnings" / "pytest-cov-warning.md") in result.stdout
@@ -49,7 +49,9 @@ def test_search_json_carries_distance(workspace):
     runner.invoke(app, ["new", "learning", "--title", "A", "--summary", "s"])
 
     payload = json.loads(
-        runner.invoke(app, ["search", "q", "--json", "--max-distance", "2"]).stdout
+        runner.invoke(
+            app, ["search", "q", "--json", "--max-distance", "2", "--min-margin", "0"]
+        ).stdout
     )
 
     assert set(payload[0]) == {"path", "title", "summary", "distance"}
@@ -61,7 +63,9 @@ def test_search_logs_flag_searches_the_logs_field(workspace):
     runner.invoke(app, ["log", "--session-id", "s", "--title", "Session", "--body", "b"])
 
     payload = json.loads(
-        runner.invoke(app, ["search", "q", "--logs", "--json", "--max-distance", "2"]).stdout
+        runner.invoke(
+            app, ["search", "q", "--logs", "--json", "--max-distance", "2", "--min-margin", "0"]
+        ).stdout
     )
 
     assert [hit["title"] for hit in payload] == ["Session"]
@@ -88,14 +92,33 @@ def test_search_drops_hits_beyond_max_distance(workspace):
     runner.invoke(app, ["new", "learning", "--title", "A", "--summary", "s"])
 
     everything = json.loads(
-        runner.invoke(app, ["search", "q", "--json", "--max-distance", "2"]).stdout
+        runner.invoke(
+            app, ["search", "q", "--json", "--max-distance", "2", "--min-margin", "0"]
+        ).stdout
     )
     nothing = runner.invoke(app, ["search", "q", "--max-distance", "0"])
 
     assert len(everything) == 1
     assert nothing.exit_code == 0
-    assert "no results within distance 0.0" in nothing.output
-    assert "--max-distance" in nothing.output
+    assert "nothing recorded matches this query" in nothing.output
+    assert "--max-distance" not in nothing.output
+
+
+def test_search_min_margin_drops_a_page_that_does_not_stand_out(workspace):
+    """Verify the default margin turns away a page the --max-distance ceiling alone would keep."""
+    runner.invoke(app, ["new", "learning", "--title", "A", "--summary", "s"])
+
+    kept = json.loads(
+        runner.invoke(
+            app, ["search", "q", "--json", "--max-distance", "2", "--min-margin", "0"]
+        ).stdout
+    )
+    dropped = json.loads(
+        runner.invoke(app, ["search", "q", "--json", "--max-distance", "2"]).stdout
+    )
+
+    assert len(kept) == 1
+    assert dropped == []
 
 
 def test_search_refuses_a_max_distance_outside_the_cosine_range(workspace):
@@ -114,7 +137,9 @@ def test_search_read_prints_each_hit_in_full(workspace):
     )
     path = vault / "projects" / "demo" / "learnings" / "full.md"
 
-    result = runner.invoke(app, ["search", "q", "--read", "--max-distance", "2"])
+    result = runner.invoke(
+        app, ["search", "q", "--read", "--max-distance", "2", "--min-margin", "0"]
+    )
 
     assert result.exit_code == 0, result.output
     assert result.stdout.startswith(f"{path}\n---\n")
@@ -129,7 +154,9 @@ def test_search_read_json_carries_the_content(workspace):
     path = vault / "projects" / "demo" / "learnings" / "full.md"
 
     payload = json.loads(
-        runner.invoke(app, ["search", "q", "--read", "--json", "--max-distance", "2"]).stdout
+        runner.invoke(
+            app, ["search", "q", "--read", "--json", "--max-distance", "2", "--min-margin", "0"]
+        ).stdout
     )
 
     assert set(payload[0]) == {"path", "title", "summary", "distance", "content"}

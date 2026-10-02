@@ -144,22 +144,19 @@ The CLI does two things. It finds pages by meaning, and it creates pages. Readin
 editing a page is a job for your editor or your agent's own tools.
 
 ```bash
-sessionmemory search "why does the same stripe event arrive twice" --limit 2 --cwd .
+sessionmemory search "stripe event delivered twice" --cwd .
 ```
 
 ```
 ~/repos/my-vault/projects/invoice-api/learnings/stripe-retries-a-webhook-for-72-hours-so-the-handler-must-be-idempotent.md
   Stripe retries a webhook for 72 hours, so the handler must be idempotent
   Stripe redelivers an unacknowledged webhook for up to 72 hours, so the handler records the event id and ignores a repeat.
-
-~/repos/my-vault/projects/invoice-api/learnings/the-nightly-reconciliation-job-must-start-after-the-02-00-bank-feed.md
-  The nightly reconciliation job must start after the 02:00 bank feed
-  The bank feed lands at 02:00 UTC; a reconciliation run before it reports every open invoice as unpaid.
 ```
 
 A result is a path, a title, and a summary. A paraphrase finds the page, because search
-ranks by meaning and not by words in common. A query that nothing answers returns no
-results rather than the nearest pages. Pass `--read` to print every hit in full.
+ranks by meaning and not by words in common. A hit has to stand out from the rest of the
+project's pages, so a query that nothing answers returns no results rather than the
+nearest pages. Pass `--read` to print every hit in full.
 
 ```bash
 sessionmemory new learning \
@@ -195,9 +192,12 @@ away. The project's folder has `learnings/` and `logs/`, searched by meaning, be
 
   - Before assuming nothing was written down, search: `sessionmemory search "<words>"`
     prints each hit's path, title, and summary, and `--read` prints every hit's whole
-    page in one call. A paraphrase still matches. No hits means nothing is recorded,
-    not that the query needs loosening.
-  - Past sessions, one page each: `sessionmemory search "<words>" --logs`.
+    page in one call. Search with a few distinctive words, such as names, identifiers,
+    or error text, rather than a sentence. No hits means nothing is recorded, not that
+    the query needs loosening.
+  - Past sessions, one page each: `sessionmemory search "<words>" --logs`. Search them
+    for why something was decided, what happened the last time an area changed, or
+    whether a fix was already tried.
   - Open work: read `backlog.md`. An item is one line under a `## <kind>` heading
     (feat, fix, refactor, perf, docs, test, build, ci), sized S, M, or L:
     `- [S] <imperative description> - <YYYY-MM-DD> [#topic]`. Add one with

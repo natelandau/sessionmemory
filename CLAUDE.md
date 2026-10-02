@@ -161,8 +161,9 @@ is <https://calpaterson.com/memoryfields.html>, and every "the spec" below means
 document. His reference implementation is
 <https://github.com/calpaterson/memoryfield-tool>, and it is the independent check on this
 one: it can `connect` to any field directory here as is, and its `validate` passes every
-field in the vault. Its default search cutoff for this model, 0.45, is the same number
-measured here. Never let it write an index file ours reads: it embeds through Ollama, and
+field in the vault. Its default search cutoff for this model, 0.45, is the ceiling
+here too, but a hit here must also clear a margin below the field's median page (see The
+index). Never let it write an index file ours reads: it embeds through Ollama, and
 the vectors are not guaranteed to match fastembed's. It also pins `pysqlite3-binary`,
 which has no Apple Silicon wheel, so on a Mac it runs only with that dependency dropped
 from a scratch copy.
@@ -254,6 +255,17 @@ entirely. Two hooks committing at once race on git's own `index.lock`, the loser
 and the next session's hook commits what it left behind. Do not reintroduce
 `lib/locking.py`: the shared index and the taxonomy file it guarded are both gone.
 
+**A hit is relative to its field, not a fixed distance.** `fieldindex.search` keeps a
+page within `DEFAULT_MAX_DISTANCE` (0.45) only when it also sits `DEFAULT_MIN_MARGIN`
+(0.11) nearer than the median distance from the query to every page in the field. No
+absolute number separates matches from non-matches: phrasing a query as a question lowers
+every distance by about 0.05, and a log, which summarizes a whole session, sits near every
+query about its project, so 0.45 alone returned hits for most queries that had no answer.
+A median over fewer than `MIN_BACKGROUND_PAGES` is noise, so a smaller field measures
+against `FALLBACK_BACKGROUND` instead. All three numbers came from labeled queries
+against real vaults; the vault's spec on the search cutoff holds the measurements.
+Change them only by re-measuring, never by reasoning about one query.
+
 Two environment variables exist for tests rather than for a person configuring the CLI:
 
 - `SESSIONMEMORY_EMBEDDER=stub` selects the deterministic, hash-derived `StubEmbedder`
@@ -321,8 +333,9 @@ nothing.
 Injection is deliberately unranked and unlimited. If the titles prove not to be read, the
 next thing to try is a `UserPromptSubmit` hook that embeds each prompt and injects the
 nearest pages above a threshold, ahead of any ranking of the titles themselves. The
-threshold is already measured: `fieldindex.DEFAULT_MAX_DISTANCE` is 0.45, and `search`
-returns nothing beyond it rather than the nearest pages dressed up as hits. `--read`
+threshold is already measured: `search` keeps a page only when it sits
+`fieldindex.DEFAULT_MIN_MARGIN` nearer than the field's median page, and returns nothing
+otherwise rather than the nearest pages dressed up as hits. `--read`
 prints every hit's whole file, so one call replaces a search and a Read per hit.
 
 ### The Plugin Half of This Repository

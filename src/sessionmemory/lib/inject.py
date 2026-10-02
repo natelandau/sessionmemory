@@ -73,9 +73,12 @@ away. The project's folder has `learnings/` and `logs/`, searched by meaning, be
 
   - Before assuming nothing was written down, search: `{command} search "<words>"`
     prints each hit's path, title, and summary, and `--read` prints every hit's whole
-    page in one call. A paraphrase still matches. No hits means nothing is recorded,
-    not that the query needs loosening.
-  - Past sessions, one page each: `{command} search "<words>" --logs`.
+    page in one call. Search with a few distinctive words, such as names, identifiers,
+    or error text, rather than a sentence. No hits means nothing is recorded, not that
+    the query needs loosening.
+  - Past sessions, one page each: `{command} search "<words>" --logs`. Search them
+    for why something was decided, what happened the last time an area changed, or
+    whether a fix was already tried.
   - Open work: read `backlog.md`. An item is one line under a `## <kind>` heading
     (feat, fix, refactor, perf, docs, test, build, ci), sized S, M, or L:
     `- [S] <imperative description> - <YYYY-MM-DD> [#topic]`. Add one with

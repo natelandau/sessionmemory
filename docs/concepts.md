@@ -192,8 +192,10 @@ and it is accepted as one.
 Automatic prompt-time retrieval is deferred rather than rejected. A hook that embedded
 each prompt and injected the nearest pages would remove the agent's decision entirely. The
 threshold such a hook needs is already measured and applied: `sessionmemory search`
-returns only pages within a cosine distance of 0.45, the point past which the nearest page
-to an unrelated query sits, and `--json` prints each hit's distance.
+returns only pages within a cosine distance of 0.45 that also sit at least 0.11 nearer to
+the query than the median page in their field, the margin an unrelated query's nearest
+page does not reach. A field with fewer than 8 pages measures against a fixed median of
+0.49 instead. `--json` prints each hit's distance.
 
 ## The memoryfield format
 

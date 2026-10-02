@@ -6,6 +6,8 @@ import json
 import sqlite3
 from typing import TYPE_CHECKING
 
+import pytest
+
 from sessionmemory.lib import field, fieldindex
 from sessionmemory.lib.embed import StubEmbedder
 
@@ -92,7 +94,9 @@ def test_search_returns_nearest_first_with_title_and_summary(tmp_path):
     matching_text = (tmp_path / "match.md").read_text(encoding="utf-8")
 
     # When searching with that exact text
-    hits = fieldindex.search(tmp_path, StubEmbedder(), matching_text, limit=5, max_distance=2.0)
+    hits = fieldindex.search(
+        tmp_path, StubEmbedder(), matching_text, limit=5, max_distance=2.0, min_margin=0.0
+    )
 
     # Then it is first, with its display fields, and the distance is bounded
     assert [hit.path.name for hit in hits] == ["match.md", "other.md"]
@@ -105,7 +109,9 @@ def test_search_refreshes_before_querying(tmp_path):
     """Verify a page written moments ago is found without an explicit reindex."""
     _page(tmp_path, "Fresh")
 
-    hits = fieldindex.search(tmp_path, StubEmbedder(), "anything", limit=5, max_distance=2.0)
+    hits = fieldindex.search(
+        tmp_path, StubEmbedder(), "anything", limit=5, max_distance=2.0, min_margin=0.0
+    )
 
     assert [hit.path.name for hit in hits] == ["fresh.md"]
 
@@ -121,7 +127,14 @@ def test_search_honors_limit(tmp_path):
     for name in ("a", "b", "c"):
         _page(tmp_path, name)
 
-    assert len(fieldindex.search(tmp_path, StubEmbedder(), "q", limit=2, max_distance=2.0)) == 2
+    assert (
+        len(
+            fieldindex.search(
+                tmp_path, StubEmbedder(), "q", limit=2, max_distance=2.0, min_margin=0.0
+            )
+        )
+        == 2
+    )
 
 
 def test_forget_removes_one_row(tmp_path):
@@ -160,7 +173,9 @@ def test_refresh_indexes_a_page_with_invalid_utf8_bytes(tmp_path):
     result = fieldindex.refresh(tmp_path, StubEmbedder())
 
     assert result.added == 1
-    hits = fieldindex.search(tmp_path, StubEmbedder(), "broken", limit=5, max_distance=2.0)
+    hits = fieldindex.search(
+        tmp_path, StubEmbedder(), "broken", limit=5, max_distance=2.0, min_margin=0.0
+    )
     assert [hit.path.name for hit in hits] == ["invalid.md"]
 
 
@@ -169,7 +184,9 @@ def test_a_corrupt_index_is_rebuilt(tmp_path):
     _page(tmp_path, "Alpha")
     fieldindex.index_path(tmp_path, StubEmbedder()).write_bytes(b"not a database")
 
-    hits = fieldindex.search(tmp_path, StubEmbedder(), "q", limit=5, max_distance=2.0)
+    hits = fieldindex.search(
+        tmp_path, StubEmbedder(), "q", limit=5, max_distance=2.0, min_margin=0.0
+    )
 
     assert [hit.path.name for hit in hits] == ["alpha.md"]
 
@@ -194,3 +211,42 @@ def test_search_default_cutoff_is_the_measured_one(tmp_path):
 
     assert fieldindex.search(tmp_path, StubEmbedder(), "unrelated", limit=5) == []
     assert fieldindex.DEFAULT_MAX_DISTANCE == 0.45
+    assert fieldindex.DEFAULT_MIN_MARGIN == 0.11
+
+
+def _field_of(directory: Path, count: int) -> str:
+    """Write `count` pages and return the text of the first, which the stub embeds as itself."""
+    for index in range(count):
+        _page(directory, f"Page {index}", summary=f"summary {index}", body="")
+    return (directory / "page-0.md").read_text(encoding="utf-8")
+
+
+def test_search_margin_keeps_the_page_that_stands_out_of_a_large_field(tmp_path):
+    """Verify a page far nearer than the field's median is a hit while the rest are not."""
+    # Given a field large enough to measure its own background
+    matching_text = _field_of(tmp_path, fieldindex.MIN_BACKGROUND_PAGES)
+
+    # When searching with no absolute ceiling to speak of
+    hits = fieldindex.search(tmp_path, StubEmbedder(), matching_text, limit=10, max_distance=2.0)
+
+    # Then only the page that stands out comes back
+    assert [hit.path.name for hit in hits] == ["page-0.md"]
+
+
+@pytest.mark.parametrize("count", [1, fieldindex.MIN_BACKGROUND_PAGES])
+def test_search_margin_returns_nothing_when_no_page_stands_out(tmp_path, count):
+    """Verify an unrelated query returns nothing from a small or a large field, whatever the ceiling."""
+    _field_of(tmp_path, count)
+
+    assert (
+        fieldindex.search(tmp_path, StubEmbedder(), "unrelated", limit=10, max_distance=2.0) == []
+    )
+
+
+def test_search_margin_in_a_small_field_measures_against_the_fallback_background(tmp_path):
+    """Verify a field too small for a median still returns a page that answers the query."""
+    matching_text = _field_of(tmp_path, 2)
+
+    hits = fieldindex.search(tmp_path, StubEmbedder(), matching_text, limit=10, max_distance=2.0)
+
+    assert [hit.path.name for hit in hits] == ["page-0.md"]
