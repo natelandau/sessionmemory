@@ -1,3 +1,13 @@
+## v0.7.0 (2026-10-07)
+
+### Feat
+
+- **vault**: give runbooks their own folder (#8)
+
+### Fix
+
+- **hooks**: keep SessionEnd inside Claude Code's hook budget
+
 ## v0.6.1 (2026-10-02)
 
 ### Fix
