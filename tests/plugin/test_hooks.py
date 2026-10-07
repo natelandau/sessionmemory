@@ -964,6 +964,34 @@ def test_sessionend_commits_when_the_sweep_is_disabled(tmp_path: Path) -> None:
     assert "checkpoint" in log.stdout
 
 
+def test_sessionend_never_starts_the_vault_cli(tmp_path: Path) -> None:
+    """Verify SessionEnd commits without a version handshake eating Claude Code's budget."""
+    # Given a registered vault under git, and a `sessionmemory` on PATH that
+    # records every run
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    vault = _fake_vault(tmp_path, proj)
+    subprocess.run(["git", "init", "-q", "."], cwd=vault, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "t@example.org"], cwd=vault, check=True, capture_output=True
+    )
+    subprocess.run(["git", "config", "user.name", "t"], cwd=vault, check=True, capture_output=True)
+    bindir = tmp_path / "pathbin"
+    bindir.mkdir()
+    sentinel = tmp_path / "cli-ran"
+    spy = bindir / "sessionmemory"
+    spy.write_text(f"#!/bin/sh\ntouch {sentinel}\necho 99.0.0\n", encoding="utf-8")
+    spy.chmod(0o755)
+    env = _isolated_env(tmp_path, proj, vault=vault)
+    env["PATH"] = os.pathsep.join([str(bindir), os.environ["PATH"]])
+    # When SessionEnd runs with a below-threshold transcript
+    proc = _run("sessionend", {"cwd": str(proj), "transcript_path": ""}, env)
+    # Then the vault is committed and the CLI never ran
+    assert proc.returncode == 0, proc.stderr
+    assert re.search(r"\[sessionend  \] proj: committed [0-9a-f]{7}", _hooks_log(tmp_path))
+    assert not sentinel.exists()
+
+
 def test_sessionend_skips_the_commit_while_a_sweep_worker_holds_a_fresh_lock(
     tmp_path: Path,
 ) -> None:

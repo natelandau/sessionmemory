@@ -63,7 +63,8 @@ TIMEOUT = 25
 RESOLVE_TIMEOUT = 5
 
 # commit_vault runs up to seven git calls in sequence; five seconds each keeps its
-# worst case at 35s, inside both hook budgets.
+# worst case at 35s, inside the SessionStart budget. SessionEnd's budget is Claude
+# Code's, not ours, so a commit there is best effort.
 COMMIT_GIT_TIMEOUT = 5
 
 # The CLI's own contract: 0 success, 1 refused, 2 misconfigured.
@@ -173,9 +174,13 @@ class VaultCLI:
     # True when `cli` was found on PATH, so a prompt can spell it by name.
     on_path: bool = False
 
-    @classmethod
-    def discover(cls, *, env: Mapping[str, str], configured: str | None = None) -> VaultCLI | None:
-        """Locate the vault and a CLI to run against it, or None when there is not one."""
+    @staticmethod
+    def locate(*, env: Mapping[str, str], configured: str | None = None) -> Path | None:
+        """Locate the vault directory alone, for a caller that never runs the CLI.
+
+        Costs no subprocess, unlike `discover`, whose handshake starts one: a
+        SessionEnd hook shares a budget of seconds, and committing needs only git.
+        """
         raw = env.get(ROOT_ENV) or configured
         if not raw:
             return None
@@ -183,8 +188,17 @@ class VaultCLI:
             root = Path(raw).expanduser()
         except (OSError, RuntimeError):
             return None
-        if not (root / MARKER).is_file():
-            return None
+        return root if (root / MARKER).is_file() else None
+
+    @classmethod
+    def discover(cls, *, env: Mapping[str, str], configured: str | None = None) -> VaultCLI | None:
+        """Locate the vault and a CLI to run against it, or None when there is not one."""
+        root = cls.locate(env=env, configured=configured)
+        return None if root is None else cls.for_root(root, env=env)
+
+    @classmethod
+    def for_root(cls, root: Path, *, env: Mapping[str, str]) -> VaultCLI | None:
+        """Choose the CLI for an already-located vault, or None when neither copy exists."""
         found = _cli_on_path(env)
         if found is not None:
             return cls(root=root, cli=found, on_path=True)

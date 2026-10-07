@@ -236,11 +236,15 @@ class Sweep:
         vault: VaultCLI | None = None,
         *,
         env: Mapping[str, str] | None = None,
+        vault_root: Path | None = None,
     ) -> None:
         self.store = store
         self.config = config
         self.runner = runner
         self.vault = vault
+        # Choosing a CLI runs a version handshake, which the worker pays after it
+        # detaches rather than the hook paying it inside Claude Code's budget.
+        self.vault_root = vault_root
         # The env run_sweep resolved the vault/store from, not a fresh read of
         # os.environ: a vault found via `[vault] root` in the config is invisible
         # to the environment a second, independent read would see.
@@ -419,6 +423,8 @@ class Sweep:
         lock = Lock(self.store.lock_path)
         log.bind(step="sweep", session=job.session_id)
         try:
+            if self.vault is None and self.vault_root is not None:
+                self.vault = VaultCLI.for_root(self.vault_root, env=self.env)
             prepared = self._prepare(job)
             if prepared is None:
                 _log.info("sweep skipped: no vault or unregistered project")
@@ -680,8 +686,8 @@ def run_sweep(
         store = Store.for_cwd(cwd=cwd, env=env)
     if config is None:
         config = SessionMemoryConfig.load(project_dir=env.get("CLAUDE_PROJECT_DIR"))
-    vault = VaultCLI.discover(env=env, configured=config.vault_root)
-    if vault is None:
+    root = VaultCLI.locate(env=env, configured=config.vault_root)
+    if root is None:
         _log.info("sweep skipped: no vault")
         return
     # The sweep agent runs the vault CLI itself, and the CLI reads its root only
@@ -690,6 +696,6 @@ def run_sweep(
     runner = ClaudeRunner(
         model=config.sweep_model,
         save_transcript=config.sweep_save_transcript,
-        extra_env={ROOT_ENV: str(vault.root)},
+        extra_env={ROOT_ENV: str(root)},
     )
-    Sweep(store, config, runner, vault, env=env).trigger(event)
+    Sweep(store, config, runner, env=env, vault_root=root).trigger(event)

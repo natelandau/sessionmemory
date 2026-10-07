@@ -111,7 +111,19 @@ session never waits on the embedding model download.
 
 The hook triggers the sweep when the sweep is enabled, then commits the vault whether or
 not the sweep ran. A session that recorded nothing still lands any outstanding change.
-The timeout is 60 seconds, which covers the commit's 35 second worst case with headroom.
+
+Claude Code gives all SessionEnd hooks together 1.5 seconds by default, and a plugin
+cannot raise that limit. The hook runs in about a third of a second, but a slow
+first start can go over the limit. Claude Code then stops the hook and prints
+`SessionEnd hook [...] failed: Hook cancelled`. Nothing is lost: the next session's
+start commits what the hook left behind.
+
+To give SessionEnd hooks more time, set `CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS` in the
+environment Claude Code starts in. A value of `5000` is enough:
+
+```bash
+export CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS=5000
+```
 
 ### PreCompact
 

@@ -1642,6 +1642,54 @@ def test_run_sweep_reuses_a_config_the_caller_already_loaded(
     assert "sweep skipped: no vault" in hooks_log_text(hooks_log)
 
 
+def test_run_sweep_chooses_no_cli_before_the_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify the hook leaves the version handshake to the detached worker."""
+
+    def _handshake(*_: object, **__: object) -> None:
+        message = "handshake ran inside the hook"
+        raise AssertionError(message)
+
+    # Given a reachable vault and a handshake wired to fail if the hook runs it
+    root = tmp_path / "vault-root"
+    (root / "_system").mkdir(parents=True)
+    (root / "_system" / "vault.toml").write_text("", encoding="utf-8")
+    monkeypatch.setattr(sweep_mod.VaultCLI, "for_root", classmethod(_handshake))
+    hooks_log = _capture_log(tmp_path)
+    # When the sweep gates a session with no transcript
+    sweep_mod.run_sweep(
+        {"cwd": str(tmp_path), "transcript_path": ""},
+        env={"XDG_STATE_HOME": str(tmp_path / "state"), sweep_mod.ROOT_ENV: str(root)},
+        store=store_at(tmp_path),
+        config=SessionMemoryConfig(),
+    )
+    # Then it reaches the gate without ever choosing a CLI
+    assert "sweep skipped: no transcript" in hooks_log_text(hooks_log)
+
+
+def test_run_job_chooses_the_cli_for_the_located_vault(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify the worker resolves its CLI from the root the hook located."""
+    store = _job_store(tmp_path)
+    root = tmp_path / "vault"
+    chosen: list[Path] = []
+
+    def _for_root(cls: type, found: Path, *, env: object) -> _FakeVault:
+        chosen.append(found)
+        return _FakeVault(_target_at(root), root=found)
+
+    monkeypatch.setattr(sweep_mod.VaultCLI, "for_root", classmethod(_for_root))
+    runner = _RecordingRunner()
+    sweep = Sweep(store, SessionMemoryConfig(), runner, vault_root=root)
+
+    sweep._run_job(SweepJob(window=[_user("hi")], cwd=str(tmp_path), session_id="s"))
+
+    assert chosen == [root]
+    assert runner.prompt
+
+
 def test_run_sweep_skips_before_gating_when_there_is_no_vault(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

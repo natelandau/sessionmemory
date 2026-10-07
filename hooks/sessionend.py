@@ -20,8 +20,11 @@ skipped by its own gate; only the headless guard and a fresh sweep-worker lock
 skip it too, since a hook committing while a worker may still be writing would
 race it. Fail-open: any error exits 0 rather than wedging session end.
 
-The gate's own work is quick; the timeout of 60 covers the vault commit's 35s
-worst case with headroom.
+Claude Code gives every SessionEnd hook one shared budget, 1.5s by default, and a
+plugin's own `timeout` cannot raise it; only the user's
+`CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS` can. So nothing here starts the vault
+CLI: the commit needs only git, and the sweep worker chooses its CLI after it
+detaches. A commit cut short is not lost, since the next SessionStart commits it.
 
 Every decision the hook makes is one line in the shared hooks log, and a crash is
 logged before the fail-open exit.
@@ -41,11 +44,12 @@ if str(HOOKS_ROOT) not in sys.path:
     sys.path.insert(0, str(HOOKS_ROOT))
 
 from sessionhooks import log  # noqa: E402
+from sessionhooks.commit import commit_vault  # noqa: E402
 from sessionhooks.headless import is_headless  # noqa: E402
 from sessionhooks.hookmain import begin  # noqa: E402
 from sessionhooks.io import read_payload  # noqa: E402
 from sessionhooks.sweep import in_progress, run_sweep  # noqa: E402
-from sessionhooks.vaultcli import VaultCLI  # noqa: E402
+from sessionhooks.vaultcli import COMMIT_GIT_TIMEOUT, VaultCLI  # noqa: E402
 
 if TYPE_CHECKING:
     import logging
@@ -63,11 +67,11 @@ def _run(payload: dict, cfg: SessionMemoryConfig, *, store: Store, log: logging.
     if in_progress(store, now=time.time()):
         log.info("commit skipped: sweep in progress")
         return  # the worker commits its own writes when it finishes
-    vault = VaultCLI.discover(env=os.environ, configured=cfg.vault_root)
-    if vault is None:
+    root = VaultCLI.locate(env=os.environ, configured=cfg.vault_root)
+    if root is None:
         log.info("commit skipped: no vault")
         return
-    log.info(vault.commit(env=os.environ).describe())
+    log.info(commit_vault(root, env=os.environ, timeout=COMMIT_GIT_TIMEOUT).describe())
 
 
 def main() -> None:

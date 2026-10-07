@@ -402,9 +402,17 @@ git call, `_GIT_TIMEOUT` 5s), `head_commit` (5s), two `VaultCLI.discover` handsh
 (`VERSION_TIMEOUT` 5s each), the vault commit (`COMMIT_GIT_TIMEOUT` 5s across up to seven
 git calls, so 35s), `VaultCLI.resolve` and `VaultCLI.register` (`RESOLVE_TIMEOUT` 5s
 each), and `VaultCLI.inject` (`TIMEOUT` 25s): a worst case of 90s under a timeout of
-100. `SessionEnd` runs one handshake and then commits, so its 60 covers 40s with headroom.
-`PreCompact` only gates and spawns, and its timeout is 10. Raising any of those constants
-means raising the timeout that covers them.
+100. `PreCompact` only gates and spawns, and its timeout is 10. Raising any of those
+constants means raising the timeout that covers them.
+
+`SessionEnd` is the exception: its 60 in `hooks.json` is not the limit that applies.
+Claude Code gives every SessionEnd hook one shared budget, 1.5s by default, and a
+plugin's own `timeout` cannot raise it; only the user's
+`CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS` can. So nothing SessionEnd runs inline may
+start the vault CLI. It finds the vault with `VaultCLI.locate`, which checks the marker
+and starts no subprocess, commits with git alone, and hands the sweep worker a root
+rather than a `VaultCLI`, so the version handshake runs in the worker after it detaches.
+A commit cut short costs nothing, since the next `SessionStart` commits what it left.
 
 Both start and end hooks skip their commit while a sweep worker holds a fresh lock, since
 the worker commits its own writes when it finishes. `sessionend.py` commits whether or not

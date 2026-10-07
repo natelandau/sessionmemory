@@ -122,6 +122,22 @@ def test_discovery_falls_back_to_the_configured_root(marked_vault, stub_cli):
     assert cli.root == marked_vault
 
 
+def test_locate_finds_the_vault_without_running_any_cli(marked_vault, stub_cli, path_cli):
+    """Verify locating the vault alone starts no subprocess, unlike discovery's handshake."""
+    env = _env(**{ROOT_ENV: str(marked_vault)}, PATH=path_cli("unrunnable"))
+
+    assert VaultCLI.locate(env=env, configured=None) == marked_vault
+    assert not (stub_cli.parent / "args.txt").exists()
+
+
+def test_locate_refuses_a_directory_without_the_marker(tmp_path):
+    """Verify locate applies the same marker check discovery does."""
+    bare = tmp_path / "not-a-vault"
+    bare.mkdir()
+
+    assert VaultCLI.locate(env=_env(), configured=str(bare)) is None
+
+
 def test_a_directory_without_the_marker_is_not_a_vault(tmp_path, stub_cli):
     """Verify a directory lacking the vault-init marker is not treated as a vault."""
     bare = tmp_path / "not-a-vault"
