@@ -114,6 +114,7 @@ def test_resolver_prints_a_machine_local_path(flag: str, attr: str, tmp_path: Pa
         ("--backlog", "backlog"),
         ("--specs", "specs"),
         ("--plans", "plans"),
+        ("--runbooks", "runbooks"),
         ("--logs", "logs"),
     ],
 )

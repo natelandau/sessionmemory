@@ -73,9 +73,11 @@ def test_new_learning_body_from_stdin(workspace):
     assert body == "Prose.\n"
 
 
-@pytest.mark.parametrize(("kind", "folder"), [("spec", "specs"), ("plan", "plans")])
+@pytest.mark.parametrize(
+    ("kind", "folder"), [("spec", "specs"), ("plan", "plans"), ("runbook", "runbooks")]
+)
 def test_new_document_writes_title_and_dates_only(workspace, kind, folder):
-    """Verify a spec or plan is a dated, titled file with no uuid or summary."""
+    """Verify a spec, plan, or runbook is a dated, titled file with no uuid or summary."""
     vault, _ = workspace
 
     result = runner.invoke(app, ["new", kind, "--title", "A Thing"])

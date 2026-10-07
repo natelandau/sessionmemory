@@ -68,7 +68,7 @@ GUIDANCE = """## Using this vault
 Durable memory for this project lives in a vault of markdown pages. Nothing below is
 loaded for you: the titles are what the vault holds, and each is one `{command} search`
 away. The project's folder has `learnings/` and `logs/`, searched by meaning, beside
-`specs/` and `backlog.md`, which are ordinary files you Read and Edit.
+`specs/`, `runbooks/`, and `backlog.md`, which are ordinary files you Read and Edit.
 `{command} project --json` prints every path.
 
   - Before assuming nothing was written down, search: `{command} search "<words>"`
@@ -91,6 +91,10 @@ away. The project's folder has `learnings/` and `logs/`, searched by meaning, be
     directory and read any spec whose name matches, so a decision already made is not
     made again. `{command} new spec --title "..." --cwd .` creates one and prints its
     path. Edit it directly after that.
+  - Runbooks: `runbooks/` holds step-by-step procedures to follow by hand, such as
+    configuring a service, rotating a credential, or recovering from an outage.
+    Whenever you write one, create it with `{command} new runbook --title "..." --cwd .`,
+    which prints its path, never in another folder or the repository.
   - Learnings are captured at session end, not by you mid-session. When the user asks
     to keep one now: `{command} new learning --title "..." --summary "..." --cwd .`
     creates the page and prints the path to write prose into. Title and summary state

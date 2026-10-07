@@ -169,10 +169,10 @@ which has no Apple Silicon wheel, so on a Mac it runs only with that dependency 
 from a scratch copy.
 
 A project's `learnings/` and `logs/` are fields: flat directories of pages, each
-with its own index file. `specs/`, `plans/`, and `backlog.md` sit beside them and are
-never indexed, which is what keeps a spec or the backlog from being embedded as memory.
-There is no global scope and no cross-project read; `lib/paths.py` finds a project's
-files by its slug and nothing else.
+with its own index file. `specs/`, `plans/`, `runbooks/`, and `backlog.md` sit beside
+them and are never indexed, which is what keeps a spec or the backlog from being
+embedded as memory. There is no global scope and no cross-project read; `lib/paths.py`
+finds a project's files by its slug and nothing else.
 
 **`lib/field.py` is the one place a page's shape is known.** The filename rule, the
 debris rule, and the 8KB limit all come from the memoryfield spec and live there.
