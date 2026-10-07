@@ -18,7 +18,9 @@ from sessionmemory.commands._common import (
 from sessionmemory.lib import backlog, field, paths
 from sessionmemory.lib.config import now, today
 
-app = typer.Typer(no_args_is_help=True, help="Create a learning, spec, plan, or backlog item.")
+app = typer.Typer(
+    no_args_is_help=True, help="Create a learning, spec, plan, runbook, or backlog item."
+)
 
 # Typer lists an Enum's members in --help and rejects anything else at parse time, so the
 # allowed sets are spelled once, in lib/backlog, and mirrored here as choices.
@@ -109,6 +111,23 @@ def new_plan(
     slug = require_project(vault, cwd)
     _new_document(
         paths.plans_dir(vault, slug), title, resolve_body(body, body_file), as_json=as_json
+    )
+
+
+@app.command("runbook")
+def new_runbook(
+    title: str = TITLE,
+    body: str = BODY,
+    body_file: Path | None = BODY_FILE,
+    cwd: Path | None = CWD,
+    *,
+    as_json: bool = JSON,
+) -> None:
+    """Create a runbook for this project."""
+    vault = require_vault()
+    slug = require_project(vault, cwd)
+    _new_document(
+        paths.runbooks_dir(vault, slug), title, resolve_body(body, body_file), as_json=as_json
     )
 
 

@@ -124,6 +124,7 @@ none:
     "logs": "~/repos/my-vault/projects/invoice-api/logs",
     "specs": "~/repos/my-vault/projects/invoice-api/specs",
     "plans": "~/repos/my-vault/projects/invoice-api/plans",
+    "runbooks": "~/repos/my-vault/projects/invoice-api/runbooks",
     "backlog": "~/repos/my-vault/projects/invoice-api/backlog.md"
   }
 }
@@ -211,6 +212,20 @@ sessionmemory new plan --title "Move PDF rendering to a worker queue" --cwd .
 ```
 ✓ created 2026-09-03-move-pdf-rendering-to-a-worker-queue.md
   └─ ~/repos/my-vault/projects/invoice-api/plans/2026-09-03-move-pdf-rendering-to-a-worker-queue.md
+```
+
+## `sessionmemory new runbook`
+
+Create a runbook for this project: a step-by-step procedure to follow by hand. It takes
+the same options as `sessionmemory new spec` and writes into `runbooks/`.
+
+```bash
+sessionmemory new runbook --title "Rotate the Stripe webhook signing secret" --cwd .
+```
+
+```
+✓ created 2026-09-03-rotate-the-stripe-webhook-signing-secret.md
+  └─ ~/repos/my-vault/projects/invoice-api/runbooks/2026-09-03-rotate-the-stripe-webhook-signing-secret.md
 ```
 
 ## `sessionmemory new backlog`
@@ -434,7 +449,7 @@ sessionmemory inject --cwd ~/repos/invoice-api
 Durable memory for this project lives in a vault of markdown pages. Nothing below is
 loaded for you: the titles are what the vault holds, and each is one `sessionmemory search`
 away. The project's folder has `learnings/` and `logs/`, searched by meaning, beside
-`specs/` and `backlog.md`, which are ordinary files you Read and Edit.
+`specs/`, `runbooks/`, and `backlog.md`, which are ordinary files you Read and Edit.
 `sessionmemory project --json` prints every path.
 
   - Before assuming nothing was written down, search: `sessionmemory search "<words>"`
@@ -457,6 +472,10 @@ away. The project's folder has `learnings/` and `logs/`, searched by meaning, be
     directory and read any spec whose name matches, so a decision already made is not
     made again. `sessionmemory new spec --title "..." --cwd .` creates one and prints its
     path. Edit it directly after that.
+  - Runbooks: `runbooks/` holds step-by-step procedures to follow by hand, such as
+    configuring a service, rotating a credential, or recovering from an outage.
+    Whenever you write one, create it with `sessionmemory new runbook --title "..." --cwd .`,
+    which prints its path, never in another folder or the repository.
   - Learnings are captured at session end, not by you mid-session. When the user asks
     to keep one now: `sessionmemory new learning --title "..." --summary "..." --cwd .`
     creates the page and prints the path to write prose into. Title and summary state

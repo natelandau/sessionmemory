@@ -46,7 +46,7 @@ One folder per project under `projects/`. Inside each:
 
 - `learnings/` is a field: flat markdown pages, embedded and searchable.
 - `logs/` is a second field, one page per session, searched on request.
-- `specs/`, `plans/`, and `backlog.md` are plain files, never indexed.
+- `specs/`, `plans/`, `runbooks/`, and `backlog.md` are plain files, never indexed.
 - `backlog.md` is the list of open items for the project, one line each, sized by
   effort and grouped by commit type.
 

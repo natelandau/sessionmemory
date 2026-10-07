@@ -83,6 +83,14 @@ def test_render_counts_specs_and_never_names_a_spec_or_a_plan(tmp_path):
     assert "plan" not in text.casefold()
 
 
+def test_render_sends_runbooks_to_their_folder(tmp_path):
+    """Verify the guidance names the runbooks folder and the command that writes into it."""
+    text = inject.render(inject.Injection("demo", (), 0, 0), command="sessionmemory")
+
+    assert "`runbooks/`" in text
+    assert 'sessionmemory new runbook --title "..." --cwd .' in text
+
+
 def test_render_singular_spec(tmp_path):
     """Verify one spec reads as a spec, not as 1 specs."""
     text = inject.render(inject.Injection("demo", (), 0, 1), command="sessionmemory")

@@ -1,6 +1,6 @@
 ---
 name: cli
-description: Use when writing a spec, a plan, or a learning that should outlive this session, or when looking for knowledge an earlier session in this repository recorded. Covers the project-memory vault CLI - searching this project's pages by meaning, creating a page, and finding where this project's files live.
+description: Use when writing a spec, a plan, a runbook, or a learning that should outlive this session, or when looking for knowledge an earlier session in this repository recorded. Covers the project-memory vault CLI - searching this project's pages by meaning, creating a page, and finding where this project's files live.
 ---
 
 # Vault CLI
@@ -10,7 +10,7 @@ holds:
 
 - `learnings/`, a flat field of markdown pages, searched by meaning.
 - `logs/`, a field with one page per past session, searched by meaning.
-- `specs/` and `plans/`, ordinary files.
+- `specs/`, `plans/`, and `runbooks/`, ordinary files.
 - `backlog.md`, the list of open work.
 
 The CLI does only what Read, Grep, and Write cannot: it searches pages by meaning,
@@ -65,9 +65,10 @@ The path resolver prints one absolute path per call:
 | `--logs`      | the logs field             |
 | `--specs`     | the specs folder           |
 | `--plans`     | the plans folder           |
+| `--runbooks`  | the runbooks folder        |
 | `--backlog`   | `backlog.md`               |
 
-`backlog.md`, specs, and plans are ordinary files. Read and Edit them directly.
+`backlog.md`, specs, plans, and runbooks are ordinary files. Read and Edit them directly.
 The CLI only adds to them.
 
 ## Create a learning
@@ -89,16 +90,21 @@ Do not create a learning mid-session unless the user asks for one. A learning is
 judgment about what mattered, and that judgment is only sound in hindsight. The
 end-of-session sweep makes it.
 
-## Create a spec or a plan
+## Create a spec, a plan, or a runbook
 
-A spec and a plan are files with a title and dates:
+A spec, a plan, and a runbook are files with a title and dates:
 
 ```bash
 "$CLI" new spec --title "..." --cwd . --body-file - <<'EOF'
 ...
 EOF
 "$CLI" new plan --title "..." --cwd .
+"$CLI" new runbook --title "..." --cwd .
 ```
+
+A runbook is a step-by-step procedure to follow by hand, such as configuring a
+service or rotating a credential. Every runbook goes in `runbooks/` through
+`new runbook`, never in another folder or the repository.
 
 ## Add a backlog item
 

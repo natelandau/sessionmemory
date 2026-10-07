@@ -28,12 +28,13 @@ commits the vault when a session starts and again when a session ends.
       nomic-embed-text-v1.5.sqlite3
     specs/<date>-<slug>.md           plain files, not a field, never indexed
     plans/<date>-<slug>.md
+    runbooks/<date>-<slug>.md
     backlog.md                       a list of open work, not a page
 ```
 
 `learnings/` and `logs/` are fields: flat directories of pages, each with its own
 index file. The format forbids indexing a page in a sub-directory, so `specs/`, `plans/`,
-and `backlog.md` sit outside both fields. That is what keeps a spec or the backlog from
+`runbooks/`, and `backlog.md` sit outside both fields. That is what keeps a spec or the backlog from
 being embedded as memory.
 
 A project's files are found by its slug and nothing else. There is no global folder, and
@@ -84,12 +85,17 @@ letter or a digit. `sessionmemory new learning` derives the name from the title 
 the first free one, so two pages written with the same title get two files. A page you add
 by hand under any other name is reported by `sessionmemory doctor` and is never indexed.
 
-## Specs, plans, and the backlog
+## Specs, plans, runbooks, and the backlog
 
-These three sit beside the fields and are never embedded. `sessionmemory new spec` and
-`sessionmemory new plan` write `title`, `created`, and `updated`, and nothing else, and
-name the file for its local creation date and title, as `2026-09-03-export-invoices-as-ubl.md`.
-After that they are ordinary files, so edit them directly.
+These sit beside the fields and are never embedded. `sessionmemory new spec`,
+`sessionmemory new plan`, and `sessionmemory new runbook` write `title`, `created`, and
+`updated`, and nothing else, and name the file for its local creation date and title, as
+`2026-09-03-export-invoices-as-ubl.md`. After that they are ordinary files, so edit them
+directly.
+
+A runbook is a step-by-step procedure to follow by hand, such as configuring a service or
+rotating a credential. It has its own folder so a procedure someone will run again is not
+lost among plans for work that has already shipped.
 
 `backlog.md` is a list of open work. Each item is one line, grouped under a heading for
 its commit type:
