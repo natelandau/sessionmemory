@@ -1,3 +1,9 @@
+## v0.8.0 (2026-10-07)
+
+### Feat
+
+- **vault**: add a reference folder for private project docs (#9)
+
 ## v0.7.0 (2026-10-07)
 
 ### Feat
