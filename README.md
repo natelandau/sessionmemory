@@ -179,7 +179,8 @@ and the summary is what a search result shows. Both state the fact and not the t
 ## What a session sees
 
 `sessionmemory inject` prints the block a session starts with. This is the block for a
-project holding four learnings, one spec, one plan, and two open backlog items:
+project holding four learnings, one spec, one plan, one reference doc, and two open
+backlog items:
 
 ```
 ## Using this vault
@@ -187,7 +188,8 @@ project holding four learnings, one spec, one plan, and two open backlog items:
 Durable memory for this project lives in a vault of markdown pages. Nothing below is
 loaded for you: the titles are what the vault holds, and each is one `sessionmemory search`
 away. The project's folder has `learnings/` and `logs/`, searched by meaning, beside
-`specs/`, `runbooks/`, and `backlog.md`, which are ordinary files you Read and Edit.
+`specs/`, `runbooks/`, `reference/`, and `backlog.md`, which are ordinary files you Read
+and Edit.
 `sessionmemory project --json` prints every path.
 
   - Before assuming nothing was written down, search: `sessionmemory search "<words>"`
@@ -214,6 +216,12 @@ away. The project's folder has `learnings/` and `logs/`, searched by meaning, be
     configuring a service, rotating a credential, or recovering from an outage.
     Whenever you write one, create it with `sessionmemory new runbook --title "..." --cwd .`,
     which prints its path, never in another folder or the repository.
+  - Reference: `reference/` holds this project's private docs, such as hosting
+    settings, where each credential lives, or a data dictionary, kept out of its
+    repository. Any it holds are listed below; before working in an area, read the one
+    whose name matches. Keep a doc current by editing it in place. Create one with
+    `sessionmemory new reference --title "..." --cwd .`, which prints its path. Public
+    documentation stays in the repository.
   - Learnings are captured at session end, not by you mid-session. When the user asks
     to keep one now: `sessionmemory new learning --title "..." --summary "..." --cwd .`
     creates the page and prints the path to write prose into. Title and summary state
@@ -225,6 +233,10 @@ away. The project's folder has `learnings/` and `logs/`, searched by meaning, be
   - pytest-asyncio needs asyncio_mode = auto or every async test is skipped
   - Stripe retries a webhook for 72 hours, so the handler must be idempotent
   - The nightly reconciliation job must start after the 02:00 bank feed
+
+## Reference docs
+
+  reference/hosting.md
 
 ## Open work
 

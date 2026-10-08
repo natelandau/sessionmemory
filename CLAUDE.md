@@ -169,9 +169,9 @@ which has no Apple Silicon wheel, so on a Mac it runs only with that dependency 
 from a scratch copy.
 
 A project's `learnings/` and `logs/` are fields: flat directories of pages, each
-with its own index file. `specs/`, `plans/`, `runbooks/`, and `backlog.md` sit beside
-them and are never indexed, which is what keeps a spec or the backlog from being
-embedded as memory. There is no global scope and no cross-project read; `lib/paths.py`
+with its own index file. `specs/`, `plans/`, `runbooks/`, `reference/`, and
+`backlog.md` sit beside them and are never indexed, which is what keeps a spec or the
+backlog from being embedded as memory. There is no global scope and no cross-project read; `lib/paths.py`
 finds a project's files by its slug and nothing else.
 
 **`lib/field.py` is the one place a page's shape is known.** The filename rule, the
@@ -304,11 +304,14 @@ hang.
 
 ### Injection
 
-`sessionmemory inject` emits a fixed guidance block, then every learning's title, then a
-count of open backlog items and a count of specs. Specs are counted rather than listed
-because they outlive the work they describe, so a list is a changelog that grows forever
-rather than open work; the guidance tells a session to list `specs/` before designing a
-feature. Plans are never mentioned, since the tool that writes them manages them. **The
+`sessionmemory inject` emits a fixed guidance block, then every learning's title, then
+every reference doc's filename, then a count of open backlog items and a count of specs.
+Specs are counted rather than listed because they outlive the work they describe, so a
+list is a changelog that grows forever rather than open work; the guidance tells a
+session to list `specs/` before designing a feature. Reference docs are listed because
+they are few and edited in place rather than accumulated, and `_reference_docs` lists
+every markdown file rather than only conformant names, since a doc moved in by hand keeps
+the name it had. Plans are never mentioned, since the tool that writes them manages them. **The
 index is never read here**, and no page body ever enters an injection, which is what makes its cost
 proportional to the number of pages rather than to their length. `lib/inject.build` reads
 the files directly.

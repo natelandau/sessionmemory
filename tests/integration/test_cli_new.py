@@ -88,6 +88,45 @@ def test_new_document_writes_title_and_dates_only(workspace, kind, folder):
     assert list(meta) == ["title", "created", "updated"]
 
 
+def test_new_reference_writes_an_undated_titled_file(workspace):
+    """Verify a reference doc is named for its title alone and carries only title and dates."""
+    vault, _ = workspace
+
+    result = runner.invoke(app, ["new", "reference", "--title", "Hosting", "--body", "Notes."])
+
+    assert result.exit_code == 0, result.output
+    path = vault / "projects" / "demo" / "reference" / "hosting.md"
+    meta, body = parse(path.read_text(encoding="utf-8"))
+    assert list(meta) == ["title", "created", "updated"]
+    assert body == "Notes.\n"
+
+
+def test_new_reference_refuses_a_taken_name(workspace):
+    """Verify a second doc with the same title is refused rather than written beside the first."""
+    vault, _ = workspace
+    runner.invoke(app, ["new", "reference", "--title", "Hosting", "--body", "Original."])
+
+    result = runner.invoke(app, ["new", "reference", "--title", "Hosting"])
+
+    assert result.exit_code == 1
+    assert "already exists" in result.output
+    reference = vault / "projects" / "demo" / "reference"
+    assert sorted(path.name for path in reference.iterdir()) == ["hosting.md"]
+    assert "Original." in (reference / "hosting.md").read_text(encoding="utf-8")
+
+
+def test_new_reference_names_the_doc_holding_a_shared_slug(workspace):
+    """Verify a different title cut to the same slug is told which doc holds the name, not to edit it."""
+    long = "Hosting settings for every environment, dashboard, credential, and bucket "
+    runner.invoke(app, ["new", "reference", "--title", f"{long}in production"])
+
+    result = runner.invoke(app, ["new", "reference", "--title", f"{long}in staging"])
+
+    assert result.exit_code == 1
+    assert "choose another title" in result.output
+    assert "edit it instead" not in result.output
+
+
 def test_new_document_json_carries_no_uuid(workspace):
     """Verify a spec's --json payload has no uuid, unlike a learning's."""
     result = runner.invoke(app, ["new", "spec", "--title", "A Plan", "--json"])

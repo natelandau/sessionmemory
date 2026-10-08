@@ -19,7 +19,8 @@ from sessionmemory.lib import backlog, field, paths
 from sessionmemory.lib.config import now, today
 
 app = typer.Typer(
-    no_args_is_help=True, help="Create a learning, spec, plan, runbook, or backlog item."
+    no_args_is_help=True,
+    help="Create a learning, spec, plan, runbook, reference doc, or backlog item.",
 )
 
 # Typer lists an Enum's members in --help and rejects anything else at parse time, so the
@@ -129,6 +130,28 @@ def new_runbook(
     _new_document(
         paths.runbooks_dir(vault, slug), title, resolve_body(body, body_file), as_json=as_json
     )
+
+
+@app.command("reference")
+def new_reference(
+    title: str = TITLE,
+    body: str = BODY,
+    body_file: Path | None = BODY_FILE,
+    cwd: Path | None = CWD,
+    *,
+    as_json: bool = JSON,
+) -> None:
+    """Create a reference doc for this project."""
+    body = resolve_body(body, body_file)
+    vault = require_vault()
+    slug = require_project(vault, cwd)
+    try:
+        path = field.new_reference(
+            paths.reference_dir(vault, slug), title=title, body=body, now=now()
+        )
+    except field.PageError as error:
+        fail(str(error))
+    _report(path, as_json=as_json)
 
 
 @app.command("backlog", help="Add one open item to this project's backlog.md.")

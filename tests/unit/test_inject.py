@@ -54,7 +54,9 @@ def test_build_empty_project(tmp_path):
     """Verify a project with nothing yet builds an empty injection rather than failing."""
     result = inject.build(tmp_path, "demo")
 
-    assert result == inject.Injection(project="demo", titles=(), open_backlog=0, specs=0)
+    assert result == inject.Injection(
+        project="demo", titles=(), open_backlog=0, specs=0, reference=()
+    )
 
 
 def test_render_leads_with_guidance_and_names_the_command(tmp_path):
@@ -85,15 +87,51 @@ def test_render_counts_specs_and_never_names_a_spec_or_a_plan(tmp_path):
 
 def test_render_sends_runbooks_to_their_folder(tmp_path):
     """Verify the guidance names the runbooks folder and the command that writes into it."""
-    text = inject.render(inject.Injection("demo", (), 0, 0), command="sessionmemory")
+    text = inject.render(inject.Injection("demo", (), 0, 0, ()), command="sessionmemory")
 
     assert "`runbooks/`" in text
     assert 'sessionmemory new runbook --title "..." --cwd .' in text
 
 
+def test_build_lists_every_reference_doc_by_filename(tmp_path):
+    """Verify a doc moved in by hand is listed under its own name, and debris and non-markdown files are not."""
+    reference = tmp_path / "projects" / "demo" / "reference"
+    field.new_reference(reference, title="Hosting", body="", now=NOW)
+    (reference / "Data Dictionary.md").write_text("# Data\n", encoding="utf-8")
+    (reference / "diagram.png").write_bytes(b"")
+    (reference / ".DS_Store").write_bytes(b"")
+    (reference / "._hosting.md").write_bytes(b"")
+    (reference / "Runbook.MD").write_text("# Ops\n", encoding="utf-8")
+    (reference / "nested").mkdir()
+
+    result = inject.build(tmp_path, "demo")
+
+    assert result.reference == ("Data Dictionary.md", "Runbook.MD", "hosting.md")
+
+
+def test_render_lists_reference_docs_under_their_folder(tmp_path):
+    """Verify each reference doc is named with its folder so a session can read it directly."""
+    text = inject.render(
+        inject.Injection("demo", (), 0, 0, ("hosting.md", "operations.md")),
+        command="sessionmemory",
+    )
+
+    assert "## Reference docs\n\n  reference/hosting.md\n  reference/operations.md" in text
+    assert text.index("## Reference docs") < text.index("## Open work")
+
+
+def test_render_omits_the_reference_section_when_there_are_no_docs(tmp_path):
+    """Verify an empty reference folder adds no heading, while the guidance still teaches the folder."""
+    text = inject.render(inject.Injection("demo", (), 0, 0, ()), command="sessionmemory")
+
+    assert "## Reference docs" not in text
+    assert "`reference/`" in text
+    assert 'sessionmemory new reference --title "..." --cwd .' in text
+
+
 def test_render_singular_spec(tmp_path):
     """Verify one spec reads as a spec, not as 1 specs."""
-    text = inject.render(inject.Injection("demo", (), 0, 1), command="sessionmemory")
+    text = inject.render(inject.Injection("demo", (), 0, 1, ()), command="sessionmemory")
 
     assert "1 spec in specs/" in text
 

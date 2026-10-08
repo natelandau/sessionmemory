@@ -1,9 +1,9 @@
 """Where a project's files live inside the vault.
 
 `learnings/` and `logs/` are fields: flat directories of pages, each with its own
-index. `specs/`, `plans/`, `runbooks/`, and `backlog.md` sit beside them and are never
-indexed. A
-project's files are found by its slug and nothing else; there is no global scope.
+index. `specs/`, `plans/`, `runbooks/`, `reference/`, and `backlog.md` sit beside them
+and are never indexed. A project's files are found by its slug and nothing else; there
+is no global scope.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ LOGS_DIR = "logs"
 SPECS_DIR = "specs"
 PLANS_DIR = "plans"
 RUNBOOKS_DIR = "runbooks"
+REFERENCE_DIR = "reference"
 BACKLOG_FILE = "backlog.md"
 
 FIELD_DIRS: tuple[str, ...] = (LEARNINGS_DIR, LOGS_DIR)
@@ -56,6 +57,11 @@ def runbooks_dir(vault: Path, slug: str) -> Path:
     return project_dir(vault, slug) / RUNBOOKS_DIR
 
 
+def reference_dir(vault: Path, slug: str) -> Path:
+    """Return the project's reference folder."""
+    return project_dir(vault, slug) / REFERENCE_DIR
+
+
 def backlog_path(vault: Path, slug: str) -> Path:
     """Return the project's backlog checklist file."""
     return project_dir(vault, slug) / BACKLOG_FILE
@@ -73,6 +79,7 @@ def project_paths(vault: Path, slug: str) -> dict[str, str]:
         "specs": str(specs_dir(vault, slug)),
         "plans": str(plans_dir(vault, slug)),
         "runbooks": str(runbooks_dir(vault, slug)),
+        "reference": str(reference_dir(vault, slug)),
         "backlog": str(backlog_path(vault, slug)),
     }
 
