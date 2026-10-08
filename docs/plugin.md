@@ -21,6 +21,10 @@ Claude Code copies the plugin into
 `~/.claude/plugins/cache/sessionmemory/sessionmemory/<version>/`. A release reaches the
 hooks through `/plugin update sessionmemory@sessionmemory`, or a reinstall.
 
+The hooks do not control where other skills and plugins write their plans and specs. To
+send those files to the vault, add the rules in
+[Add rules to your CLAUDE.md](../README.md#add-rules-to-your-claudemd).
+
 ### Which CLI the hooks run
 
 Every hook, skill, and agent runs the `sessionmemory` on your `PATH` when it passes a

@@ -157,14 +157,18 @@ def claim_filename(directory: Path, title: str, *, stem: str | None = None) -> P
     raise PageError(msg)
 
 
-def _create(directory: Path, meta: dict[str, Any], body: str, *, stem: str | None) -> Path:
-    path = claim_filename(directory, str(meta["title"]), stem=stem)
+def _fill(path: Path, meta: dict[str, Any], body: str) -> Path:
+    """Write a freshly claimed file, releasing the claim if the write does not land."""
     try:
         atomic.write_text(path, serialize(meta, body))
     except BaseException:
         path.unlink(missing_ok=True)
         raise
     return path
+
+
+def _create(directory: Path, meta: dict[str, Any], body: str, *, stem: str | None) -> Path:
+    return _fill(claim_filename(directory, str(meta["title"]), stem=stem), meta, body)
 
 
 def new_page(directory: Path, *, title: str, summary: str, body: str, now: str) -> Path:
@@ -191,6 +195,32 @@ def new_document(directory: Path, *, title: str, body: str, now: str, day: str) 
     """
     meta = {"title": title, "created": now, "updated": now}
     return _create(directory, meta, body, stem=dated_stem(title, day))
+
+
+def new_reference(directory: Path, *, title: str, body: str, now: str) -> Path:
+    """Create a reference doc: a titled, undated file kept current by editing in place.
+
+    The name is the title's slug alone, since a date would claim an age the doc stops
+    having at its first edit. A taken name is refused rather than suffixed, because a
+    second copy of a living doc splits it into two that drift apart.
+
+    Raises:
+        PageError: If the title yields no slug or the name is taken.
+    """
+    try:
+        stem = slugify(title)
+    except ValueError as error:
+        raise PageError(str(error)) from error
+    path = directory / f"{stem}.md"
+    if not atomic.claim(path):
+        existing = read_page(path).title
+        if existing and existing != title:
+            # Two titles can share a slug once it is cut to the id limit.
+            msg = f"{path.name} in {directory} already holds {existing!r}; choose another title"
+        else:
+            msg = f"{path.name} already exists in {directory}; edit it instead"
+        raise PageError(msg)
+    return _fill(path, {"title": title, "created": now, "updated": now}, body)
 
 
 def dated_stem(title: str, day: str) -> str:

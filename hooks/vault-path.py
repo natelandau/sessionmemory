@@ -27,6 +27,7 @@ need to know which is which:
     vault-path.py --specs        # this project's specs folder
     vault-path.py --plans        # this project's plans folder
     vault-path.py --runbooks     # this project's runbooks folder
+    vault-path.py --reference    # this project's reference folder
     vault-path.py --logs         # this project's logs field
     vault-path.py --project      # the project's vault folder
     vault-path.py --cli          # the vault CLI itself
@@ -68,6 +69,7 @@ VAULT_KEYS = {
     "specs": "specs",
     "plans": "plans",
     "runbooks": "runbooks",
+    "reference": "reference",
     "logs": "logs",
 }
 

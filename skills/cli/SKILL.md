@@ -1,6 +1,6 @@
 ---
 name: cli
-description: Use when writing a spec, a plan, a runbook, or a learning that should outlive this session, or when looking for knowledge an earlier session in this repository recorded. Covers the project-memory vault CLI - searching this project's pages by meaning, creating a page, and finding where this project's files live.
+description: Use when writing a spec, a plan, a runbook, a reference doc, or a learning that should outlive this session, or when looking for knowledge an earlier session in this repository recorded. Covers the project-memory vault CLI - searching this project's pages by meaning, creating a page, and finding where this project's files live.
 ---
 
 # Vault CLI
@@ -10,7 +10,7 @@ holds:
 
 - `learnings/`, a flat field of markdown pages, searched by meaning.
 - `logs/`, a field with one page per past session, searched by meaning.
-- `specs/`, `plans/`, and `runbooks/`, ordinary files.
+- `specs/`, `plans/`, `runbooks/`, and `reference/`, ordinary files.
 - `backlog.md`, the list of open work.
 
 The CLI does only what Read, Grep, and Write cannot: it searches pages by meaning,
@@ -66,9 +66,10 @@ The path resolver prints one absolute path per call:
 | `--specs`     | the specs folder           |
 | `--plans`     | the plans folder           |
 | `--runbooks`  | the runbooks folder        |
+| `--reference` | the reference folder       |
 | `--backlog`   | `backlog.md`               |
 
-`backlog.md`, specs, plans, and runbooks are ordinary files. Read and Edit them directly.
+`backlog.md`, specs, plans, runbooks, and reference docs are ordinary files. Read and Edit them directly.
 The CLI only adds to them.
 
 ## Create a learning
@@ -105,6 +106,20 @@ EOF
 A runbook is a step-by-step procedure to follow by hand, such as configuring a
 service or rotating a credential. Every runbook goes in `runbooks/` through
 `new runbook`, never in another folder or the repository.
+
+## Create a reference doc
+
+A reference doc is a private document about the project that stays out of its
+repository, such as hosting settings, where each credential lives, or a data
+dictionary. Public documentation stays in the repository.
+
+```bash
+"$CLI" new reference --title "..." --cwd .
+```
+
+The filename is the title's slug with no date. A reference doc is kept current by
+editing it in place, so `new reference` refuses a title whose file already exists.
+Edit that file instead.
 
 ## Add a backlog item
 

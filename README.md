@@ -179,7 +179,8 @@ and the summary is what a search result shows. Both state the fact and not the t
 ## What a session sees
 
 `sessionmemory inject` prints the block a session starts with. This is the block for a
-project holding four learnings, one spec, one plan, and two open backlog items:
+project holding four learnings, one spec, one plan, one reference doc, and two open
+backlog items:
 
 ```
 ## Using this vault
@@ -187,7 +188,8 @@ project holding four learnings, one spec, one plan, and two open backlog items:
 Durable memory for this project lives in a vault of markdown pages. Nothing below is
 loaded for you: the titles are what the vault holds, and each is one `sessionmemory search`
 away. The project's folder has `learnings/` and `logs/`, searched by meaning, beside
-`specs/`, `runbooks/`, and `backlog.md`, which are ordinary files you Read and Edit.
+`specs/`, `runbooks/`, `reference/`, and `backlog.md`, which are ordinary files you Read
+and Edit.
 `sessionmemory project --json` prints every path.
 
   - Before assuming nothing was written down, search: `sessionmemory search "<words>"`
@@ -214,6 +216,12 @@ away. The project's folder has `learnings/` and `logs/`, searched by meaning, be
     configuring a service, rotating a credential, or recovering from an outage.
     Whenever you write one, create it with `sessionmemory new runbook --title "..." --cwd .`,
     which prints its path, never in another folder or the repository.
+  - Reference: `reference/` holds this project's private docs, such as hosting
+    settings, where each credential lives, or a data dictionary, kept out of its
+    repository. Any it holds are listed below; before working in an area, read the one
+    whose name matches. Keep a doc current by editing it in place. Create one with
+    `sessionmemory new reference --title "..." --cwd .`, which prints its path. Public
+    documentation stays in the repository.
   - Learnings are captured at session end, not by you mid-session. When the user asks
     to keep one now: `sessionmemory new learning --title "..." --summary "..." --cwd .`
     creates the page and prints the path to write prose into. Title and summary state
@@ -226,6 +234,10 @@ away. The project's folder has `learnings/` and `logs/`, searched by meaning, be
   - Stripe retries a webhook for 72 hours, so the handler must be idempotent
   - The nightly reconciliation job must start after the 02:00 bank feed
 
+## Reference docs
+
+  reference/hosting.md
+
 ## Open work
 
   2 open backlog items
@@ -234,6 +246,43 @@ away. The project's folder has `learnings/` and `logs/`, searched by meaning, be
 
 A page body never enters that block, so its cost grows with the number of pages and not
 with their length. The titles say what exists. `sessionmemory search` returns what they say.
+
+## Add rules to your CLAUDE.md
+
+The guidance block above tells a session how to read and write the vault. It does not
+control where other skills and plugins write their files. A planning skill writes its
+plans and specs to the path it chose for itself, often under the repository's `docs/`.
+Rules in a `CLAUDE.md` file send that work to the vault.
+
+Put the rules in your user file, `~/.claude/CLAUDE.md`, so that they apply in every
+registered project. A project `CLAUDE.md` is committed with the code. Other contributors
+read it, and they have no access to your vault.
+
+Copy this block into the file:
+
+```markdown
+## Session memory
+
+- Write every plan, spec, and design document into the sessionmemory vault, including
+  the ones a skill or plugin generates. Create them with
+  `sessionmemory new spec --title "..." --cwd .` and
+  `sessionmemory new plan --title "..." --cwd .`. Never write them under the
+  repository's `docs/`, which holds public documentation.
+- Write every runbook (a step-by-step procedure to follow by hand) with
+  `sessionmemory new runbook --title "..." --cwd .`.
+- Keep documentation that describes the code and is safe to publish in the repository.
+  Put private documentation about a project, such as hosting settings or where each
+  credential lives, in the vault with `sessionmemory new reference --title "..." --cwd .`,
+  and edit that file in place afterward.
+```
+
+If you use the CLI without the plugin, no hook injects the guidance block. Add this rule
+to the same block, so that each session reads the guidance itself:
+
+```markdown
+- At the start of each session in a registered project, run
+  `sessionmemory inject --cwd .` and follow the guidance it prints.
+```
 
 ## Documentation
 

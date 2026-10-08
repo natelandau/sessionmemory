@@ -125,6 +125,7 @@ none:
     "specs": "~/repos/my-vault/projects/invoice-api/specs",
     "plans": "~/repos/my-vault/projects/invoice-api/plans",
     "runbooks": "~/repos/my-vault/projects/invoice-api/runbooks",
+    "reference": "~/repos/my-vault/projects/invoice-api/reference",
     "backlog": "~/repos/my-vault/projects/invoice-api/backlog.md"
   }
 }
@@ -227,6 +228,33 @@ sessionmemory new runbook --title "Rotate the Stripe webhook signing secret" --c
 ✓ created 2026-09-03-rotate-the-stripe-webhook-signing-secret.md
   └─ ~/repos/my-vault/projects/invoice-api/runbooks/2026-09-03-rotate-the-stripe-webhook-signing-secret.md
 ```
+
+## `sessionmemory new reference`
+
+Create a reference doc for this project: a private document about the project that stays
+out of its repository, such as hosting settings or a data dictionary. It takes the same
+options as `sessionmemory new spec` and writes into `reference/`.
+
+```bash
+sessionmemory new reference --title "Hosting" --cwd .
+```
+
+```
+✓ created hosting.md
+  └─ ~/repos/my-vault/projects/invoice-api/reference/hosting.md
+```
+
+The filename is the title's slug with no date, because a reference doc is kept current by
+editing it in place. A title whose filename is already taken is refused rather than given
+a second file, so edit the existing doc instead:
+
+```
+✗ hosting.md already exists in ~/repos/my-vault/projects/invoice-api/reference; edit it instead
+```
+
+A long title is cut to fit the filename limit, so two different titles can produce the same
+name. When the existing file holds a different title, the error names that title and asks
+for another one.
 
 ## `sessionmemory new backlog`
 
@@ -449,7 +477,8 @@ sessionmemory inject --cwd ~/repos/invoice-api
 Durable memory for this project lives in a vault of markdown pages. Nothing below is
 loaded for you: the titles are what the vault holds, and each is one `sessionmemory search`
 away. The project's folder has `learnings/` and `logs/`, searched by meaning, beside
-`specs/`, `runbooks/`, and `backlog.md`, which are ordinary files you Read and Edit.
+`specs/`, `runbooks/`, `reference/`, and `backlog.md`, which are ordinary files you Read
+and Edit.
 `sessionmemory project --json` prints every path.
 
   - Before assuming nothing was written down, search: `sessionmemory search "<words>"`
@@ -476,6 +505,12 @@ away. The project's folder has `learnings/` and `logs/`, searched by meaning, be
     configuring a service, rotating a credential, or recovering from an outage.
     Whenever you write one, create it with `sessionmemory new runbook --title "..." --cwd .`,
     which prints its path, never in another folder or the repository.
+  - Reference: `reference/` holds this project's private docs, such as hosting
+    settings, where each credential lives, or a data dictionary, kept out of its
+    repository. Any it holds are listed below; before working in an area, read the one
+    whose name matches. Keep a doc current by editing it in place. Create one with
+    `sessionmemory new reference --title "..." --cwd .`, which prints its path. Public
+    documentation stays in the repository.
   - Learnings are captured at session end, not by you mid-session. When the user asks
     to keep one now: `sessionmemory new learning --title "..." --summary "..." --cwd .`
     creates the page and prints the path to write prose into. Title and summary state
@@ -488,6 +523,10 @@ away. The project's folder has `learnings/` and `logs/`, searched by meaning, be
   - Stripe retries a webhook for 72 hours, so the handler must be idempotent
   - The nightly reconciliation job must start after the 02:00 bank feed
 
+## Reference docs
+
+  reference/hosting.md
+
 ## Open work
 
   2 open backlog items
@@ -498,8 +537,12 @@ No page body enters the block, and the index is never read. `--command` changes 
 command name the guidance uses, which is how the plugin names an absolute path for a
 session with no `sessionmemory` on its `PATH`.
 
-`--json` emits the same content as five keys: `guidance`, `project`, `titles`,
-`open_backlog`, and `specs`, the last two being counts.
+A `## Reference docs` section lists every markdown file in `reference/` by name, and is
+left out when the folder is empty.
+
+`--json` emits the same content as six keys: `guidance`, `project`, `titles`,
+`open_backlog`, `specs`, and `reference`. `open_backlog` and `specs` are counts, and
+`reference` is a list of filenames.
 
 ## `sessionmemory reindex`
 

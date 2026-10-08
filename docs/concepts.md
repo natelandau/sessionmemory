@@ -29,12 +29,13 @@ commits the vault when a session starts and again when a session ends.
     specs/<date>-<slug>.md           plain files, not a field, never indexed
     plans/<date>-<slug>.md
     runbooks/<date>-<slug>.md
+    reference/<slug>.md
     backlog.md                       a list of open work, not a page
 ```
 
 `learnings/` and `logs/` are fields: flat directories of pages, each with its own
 index file. The format forbids indexing a page in a sub-directory, so `specs/`, `plans/`,
-`runbooks/`, and `backlog.md` sit outside both fields. That is what keeps a spec or the backlog from
+`runbooks/`, `reference/`, and `backlog.md` sit outside both fields. That is what keeps a spec or the backlog from
 being embedded as memory.
 
 A project's files are found by its slug and nothing else. There is no global folder, and
@@ -85,7 +86,7 @@ letter or a digit. `sessionmemory new learning` derives the name from the title 
 the first free one, so two pages written with the same title get two files. A page you add
 by hand under any other name is reported by `sessionmemory doctor` and is never indexed.
 
-## Specs, plans, runbooks, and the backlog
+## Specs, plans, runbooks, reference docs, and the backlog
 
 These sit beside the fields and are never embedded. `sessionmemory new spec`,
 `sessionmemory new plan`, and `sessionmemory new runbook` write `title`, `created`, and
@@ -96,6 +97,15 @@ directly.
 A runbook is a step-by-step procedure to follow by hand, such as configuring a service or
 rotating a credential. It has its own folder so a procedure someone will run again is not
 lost among plans for work that has already shipped.
+
+A reference doc is a private document about the project that does not belong in its
+repository, such as hosting settings, where each credential lives, or a data dictionary.
+Public documentation stays in the repository, where it changes with the code it describes.
+`sessionmemory new reference` writes the same three fields, but names the file for its
+title alone, as `hosting.md`. A reference doc is edited in place for as long as it is
+true, so a date in its name would be wrong after its first edit. A title whose name is
+already taken is refused rather than given a second file, since two copies of one living
+doc drift apart.
 
 `backlog.md` is a list of open work. Each item is one line, grouped under a heading for
 its commit type:
@@ -174,8 +184,8 @@ migration is needed.
 ## What a session receives
 
 `sessionmemory inject` prints one block: a fixed guidance section that says how to read
-and write the vault, then the title of every learning the project holds, then a count of
-open backlog items and a count of specs. No summaries, no bodies, no triggers.
+and write the vault, then the title of every learning the project holds, then the name of every reference
+doc, then a count of open backlog items and a count of specs. No summaries, no bodies, no triggers.
 
 Specs are counted rather than listed because a spec outlives the work it describes. A
 list of them is a changelog rather than open work, and it grows with every feature the
@@ -183,6 +193,10 @@ project ever shipped. The count says whether listing `specs/` is worth a call, a
 guidance says when to make it: before designing or changing a feature, since the file
 names are dated topic slugs and a matching one holds a decision already made. Plans are
 not mentioned at all. The tool that writes them manages them.
+
+Reference docs are listed by name, because they are few and are edited rather than
+accumulated. A session working on a deploy that sees `reference/hosting.md` knows to read
+it, which a count would not tell it.
 
 Titles rather than summaries, because injection is a push channel and must not grow into
 the thing it is trying to save. For a project with 62 pages, titles cost roughly 400

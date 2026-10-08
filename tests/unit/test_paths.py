@@ -16,6 +16,7 @@ def test_project_paths_names_every_location(tmp_path):
         "specs": str(tmp_path / "projects" / "demo" / "specs"),
         "plans": str(tmp_path / "projects" / "demo" / "plans"),
         "runbooks": str(tmp_path / "projects" / "demo" / "runbooks"),
+        "reference": str(tmp_path / "projects" / "demo" / "reference"),
         "backlog": str(tmp_path / "projects" / "demo" / "backlog.md"),
     }
 
