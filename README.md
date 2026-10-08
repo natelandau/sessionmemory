@@ -247,6 +247,43 @@ and Edit.
 A page body never enters that block, so its cost grows with the number of pages and not
 with their length. The titles say what exists. `sessionmemory search` returns what they say.
 
+## Add rules to your CLAUDE.md
+
+The guidance block above tells a session how to read and write the vault. It does not
+control where other skills and plugins write their files. A planning skill writes its
+plans and specs to the path it chose for itself, often under the repository's `docs/`.
+Rules in a `CLAUDE.md` file send that work to the vault.
+
+Put the rules in your user file, `~/.claude/CLAUDE.md`, so that they apply in every
+registered project. A project `CLAUDE.md` is committed with the code. Other contributors
+read it, and they have no access to your vault.
+
+Copy this block into the file:
+
+```markdown
+## Session memory
+
+- Write every plan, spec, and design document into the sessionmemory vault, including
+  the ones a skill or plugin generates. Create them with
+  `sessionmemory new spec --title "..." --cwd .` and
+  `sessionmemory new plan --title "..." --cwd .`. Never write them under the
+  repository's `docs/`, which holds public documentation.
+- Write every runbook (a step-by-step procedure to follow by hand) with
+  `sessionmemory new runbook --title "..." --cwd .`.
+- Keep documentation that describes the code and is safe to publish in the repository.
+  Put private documentation about a project, such as hosting settings or where each
+  credential lives, in the vault with `sessionmemory new reference --title "..." --cwd .`,
+  and edit that file in place afterward.
+```
+
+If you use the CLI without the plugin, no hook injects the guidance block. Add this rule
+to the same block, so that each session reads the guidance itself:
+
+```markdown
+- At the start of each session in a registered project, run
+  `sessionmemory inject --cwd .` and follow the guidance it prints.
+```
+
 ## Documentation
 
 | Page                                     | What it covers                                               |
