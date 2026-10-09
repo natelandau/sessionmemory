@@ -1,3 +1,9 @@
+## v0.9.0 (2026-10-09)
+
+### Feat
+
+- **sweep**: accept a dedicated Anthropic API key
+
 ## v0.8.0 (2026-10-07)
 
 ### Feat
