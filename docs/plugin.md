@@ -196,6 +196,20 @@ neither backstop, and the next commit records it. This is a real control against
 confused agent and a partial one against a deliberately steered one. Git history is what
 recovers the file.
 
+### Which credentials the sweep uses
+
+The pass runs `claude -p` with the environment of the session that ended, so by default
+it authenticates the same way that session did: an exported `ANTHROPIC_API_KEY`, then an
+`apiKeyHelper` in your Claude Code settings, then your `claude` login.
+
+To bill the pass to its own key, export `SESSIONMEMORY_ANTHROPIC_API_KEY` in the
+environment Claude Code starts in. When it is set and not blank, the pass runs with that
+value as its `ANTHROPIC_API_KEY`, ahead of all three. The pass also drops
+`ANTHROPIC_AUTH_TOKEN` and the `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`, and
+`CLAUDE_CODE_USE_FOUNDRY` switches, because `claude` ranks each of them above an API key.
+A signed-in Claude apps gateway outranks every credential and still wins. Your session
+itself never reads the variable.
+
 ## Settings
 
 Settings live in `sessionmemory.toml`. Two files are read, and the later one wins per

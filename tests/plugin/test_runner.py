@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import subprocess
 
+import pytest
 from sessionhooks import runner as runner_mod  # ty: ignore[unresolved-import]
 from sessionhooks.runner import (  # ty: ignore[unresolved-import]
     ClaudeRunner,
@@ -54,6 +55,54 @@ def test_build_env_pins_extra_variables_over_the_base() -> None:
     # Then the resolved value wins
     assert result["PROJECT_MEMORY_ROOT"] == "/resolved"
     assert result["HOME"] == "/home/user"
+
+
+def test_build_env_prefers_the_sweep_api_key() -> None:
+    """Verify a sweep-specific key replaces whatever ANTHROPIC_API_KEY the parent carried."""
+    # Given a base carrying both a general key and a sweep key
+    base = {"ANTHROPIC_API_KEY": "general", "SESSIONMEMORY_ANTHROPIC_API_KEY": "sweep"}
+    # When building the env
+    result = build_env(base=base)
+    # Then the child authenticates with the sweep key and never sees the sweep variable
+    assert result["ANTHROPIC_API_KEY"] == "sweep"
+    assert "SESSIONMEMORY_ANTHROPIC_API_KEY" not in result
+
+
+def test_build_env_drops_credentials_that_outrank_the_sweep_api_key() -> None:
+    """Verify a bearer token or cloud-provider switch cannot silently win over the sweep key."""
+    # Given a base whose credentials claude ranks above ANTHROPIC_API_KEY
+    base = {
+        "SESSIONMEMORY_ANTHROPIC_API_KEY": "sweep",
+        "ANTHROPIC_AUTH_TOKEN": "bearer",
+        "CLAUDE_CODE_USE_BEDROCK": "1",
+        "CLAUDE_CODE_USE_VERTEX": "1",
+        "CLAUDE_CODE_USE_FOUNDRY": "1",
+    }
+    # When building the env
+    result = build_env(base=base)
+    # Then only the sweep key remains to authenticate with
+    assert result["ANTHROPIC_API_KEY"] == "sweep"
+    assert not (set(base) - {"SESSIONMEMORY_ANTHROPIC_API_KEY"}) & set(result)
+
+
+@pytest.mark.parametrize(
+    ("base", "expected"),
+    [
+        ({"ANTHROPIC_API_KEY": "general"}, "general"),
+        ({"ANTHROPIC_API_KEY": "general", "SESSIONMEMORY_ANTHROPIC_API_KEY": ""}, "general"),
+        ({"ANTHROPIC_API_KEY": "general", "SESSIONMEMORY_ANTHROPIC_API_KEY": "  "}, "general"),
+        ({"SESSIONMEMORY_ANTHROPIC_API_KEY": ""}, None),
+        ({}, None),
+    ],
+)
+def test_build_env_without_a_sweep_api_key_leaves_auth_alone(
+    base: dict[str, str], expected: str | None
+) -> None:
+    """Verify an unset or blank sweep key leaves the inherited credentials untouched."""
+    # Given a base with no usable sweep key / When building the env
+    result = build_env(base=base)
+    # Then ANTHROPIC_API_KEY is whatever the parent had, or absent
+    assert result.get("ANTHROPIC_API_KEY") == expected
 
 
 def test_runner_carries_its_extra_env_into_the_subprocess_environment() -> None:

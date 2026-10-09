@@ -20,6 +20,16 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
 HEADLESS_ENV = "SESSIONMEMORY_HEADLESS"
+# A key reserved for the sweep, so its usage bills separately from the session's own login.
+SWEEP_API_KEY_ENV = "SESSIONMEMORY_ANTHROPIC_API_KEY"
+# Credentials `claude` ranks above ANTHROPIC_API_KEY, which would otherwise
+# silently win over the sweep's own key.
+OUTRANKING_AUTH_ENV = (
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_FOUNDRY",
+    "ANTHROPIC_AUTH_TOKEN",
+)
 # Tools that alter a file. Only these produce a path the containment backstop
 # may revert.
 MUTATING_TOOLS = frozenset({"Write", "Edit", "MultiEdit", "NotebookEdit"})
@@ -51,7 +61,12 @@ def build_env(*, base: Mapping[str, str], extra: Mapping[str, str] | None = None
 
     Sets the headless guard so the spawned agent's own session hooks no-op, and
     drops CLAUDECODE / CLAUDE_CODE_ENTRYPOINT so the child is not treated as
-    nested in the parent Claude Code process.
+    nested in the parent Claude Code process. A non-blank
+    SESSIONMEMORY_ANTHROPIC_API_KEY becomes the child's ANTHROPIC_API_KEY, and
+    the cloud-provider switches and bearer token `claude` ranks above that key are
+    dropped so the sweep's key is the one used; without it the child
+    authenticates exactly as the parent would. The sweep variable itself never
+    reaches the child.
 
     Args:
         base: The environment to derive from, normally `os.environ`.
@@ -62,6 +77,10 @@ def build_env(*, base: Mapping[str, str], extra: Mapping[str, str] | None = None
     env[HEADLESS_ENV] = "1"
     env.pop("CLAUDECODE", None)
     env.pop("CLAUDE_CODE_ENTRYPOINT", None)
+    if sweep_key := env.pop(SWEEP_API_KEY_ENV, "").strip():
+        env["ANTHROPIC_API_KEY"] = sweep_key
+        for name in OUTRANKING_AUTH_ENV:
+            env.pop(name, None)
     if extra:
         env.update(extra)
     return env
