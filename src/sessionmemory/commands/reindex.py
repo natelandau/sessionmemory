@@ -1,4 +1,4 @@
-"""The `reindex` command: rebuild a project's field indexes from its pages."""
+"""The `reindex` command: rebuild a project's indexes from its pages."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ JSON = typer.Option(False, "--json", help="Emit JSON instead of prose.")  # noqa
 def reindex_command(
     cwd: Path | None = CWD, *, all_projects: bool = ALL, as_json: bool = JSON
 ) -> None:
-    """Bring this project's learnings and logs indexes up to date, or every project's.
+    """Bring this project's learnings, logs, and specs indexes up to date, or every project's.
 
     Raises:
         Exit: When `--all` is combined with `--cwd`.
@@ -36,13 +36,14 @@ def reindex_command(
             fail("--all and --cwd are mutually exclusive", ["pass one or the other"])
         fields = [
             (directory.parent.name, directory.name, directory)
-            for directory in paths.iter_field_dirs(vault)
+            for directory in paths.iter_index_dirs(vault)
         ]
     else:
         slug = require_project(vault, cwd)
         fields = [
             (slug, paths.LEARNINGS_DIR, paths.learnings_dir(vault, slug)),
             (slug, paths.LOGS_DIR, paths.logs_dir(vault, slug)),
+            (slug, paths.SPECS_DIR, paths.specs_dir(vault, slug)),
         ]
     embedder = build_embedder()
 

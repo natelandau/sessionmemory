@@ -1,14 +1,12 @@
-"""Tests for the seven doctor checks."""
+"""Tests for the doctor checks."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import sqlite3
+from pathlib import Path
 
 from sessionmemory.lib import doctor, field, fieldindex, registry
 from sessionmemory.lib.embed import StubEmbedder
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 NOW = "2026-09-01T14:03:11Z"
 
@@ -165,6 +163,20 @@ def test_stale_indexes_reports_an_unreadable_index_and_a_stale_one(tmp_path):
     findings = doctor.stale_indexes(tmp_path, StubEmbedder())
 
     assert {f.path for f in findings} == {str(learnings), str(logs)}
+
+
+def test_stale_indexes_reports_a_specs_index_behind_its_specs(tmp_path):
+    """Verify the specs directory is checked for a stale index like a field."""
+    specs = tmp_path / "projects" / "demo" / "specs"
+    specs.mkdir(parents=True)
+    spec = specs / "2026-09-01-a.md"
+    spec.write_text("# A\n\nGoal text.\n", encoding="utf-8")
+    fieldindex.refresh(specs, StubEmbedder())
+    spec.write_text("# A\n\nChanged text.\n", encoding="utf-8")
+
+    findings = doctor.stale_indexes(tmp_path, StubEmbedder())
+
+    assert [f.path for f in findings] == [str(specs)]
 
 
 def test_run_on_a_clean_vault_finds_nothing(tmp_path):
@@ -340,4 +352,81 @@ def test_dangling_references_reports_each_mention_on_one_line(tmp_path):
     assert [f.message for f in findings] == [
         "line 1: names specs/one.md, which does not exist",
         "line 1: names runbooks/two.md, which does not exist",
+    ]
+
+
+def test_spec_statuses_reports_each_problem(tmp_path):
+    """Verify each bad spec yields its finding, and a good spec or one with no block yields none."""
+    _project_file(tmp_path, "demo", "specs", "new.md", "---\nstatus: draft\n---\n# New\n")
+    _project_file(tmp_path, "demo", "specs", "plain.md", "# Plain\n\nNo block at all.\n")
+    _project_file(tmp_path, "demo", "specs", "odd.md", "---\nstatus: done\n---\n# Odd\n")
+    _project_file(tmp_path, "demo", "specs", "bare.md", "---\nstatus: superseded\n---\n# Bare\n")
+    _project_file(
+        tmp_path,
+        "demo",
+        "specs",
+        "dangling.md",
+        "---\nstatus: superseded\nsuperseded_by: nope.md\n---\n# Dangling\n",
+    )
+    _project_file(
+        tmp_path,
+        "demo",
+        "specs",
+        "itself.md",
+        "---\nstatus: superseded\nsuperseded_by: itself\n---\n# Itself\n",
+    )
+    _project_file(
+        tmp_path,
+        "demo",
+        "specs",
+        "ok.md",
+        "---\nstatus: superseded\nsuperseded_by: new\n---\n# Ok\n",
+    )
+    _project_file(tmp_path, "demo", "specs", "broken.md", "---\nstatus: [x\n---\n# Broken\n")
+
+    findings = doctor.spec_statuses(tmp_path, StubEmbedder())
+
+    assert {(Path(f.path).name, f.message) for f in findings} == {
+        ("odd.md", "status 'done' is not one of draft, shipped, superseded, abandoned"),
+        ("bare.md", "superseded without superseded_by"),
+        ("dangling.md", "superseded_by 'nope.md' names no spec in specs/"),
+        ("itself.md", "superseded_by names this spec"),
+        ("broken.md", "frontmatter cannot be parsed; status ignored"),
+    }
+    assert {f.check for f in findings} == {"spec"}
+
+
+def test_run_reports_a_bad_spec_beside_a_project_without_specs(tmp_path):
+    """Verify `run` surfaces a spec finding and a project with no specs folder adds nothing."""
+    _learnings(tmp_path)
+    spec = _project_file(tmp_path, "other", "specs", "s.md", "---\nstatus: done\n---\n# S\n")
+
+    findings = doctor.run(tmp_path, StubEmbedder())
+
+    assert [(f.check, f.path) for f in findings] == [("spec", str(spec))]
+
+
+def test_nonconformant_names_reports_a_bad_spec_name(tmp_path):
+    """Verify a spec named outside the filename rule is reported, since it is never indexed."""
+    bad = _project_file(tmp_path, "demo", "specs", "Design Notes.md", "# Notes\n")
+    _project_file(tmp_path, "demo", "specs", "2026-10-13-fine.md", "# Fine\n")
+
+    findings = doctor.nonconformant_names(tmp_path, StubEmbedder())
+
+    assert [f.path for f in findings] == [str(bad)]
+
+
+def test_stale_indexes_reports_a_specs_index_built_under_another_input_version(tmp_path):
+    """Verify a specs index stamped with an old input version reads as behind its specs."""
+    spec = _project_file(tmp_path, "demo", "specs", "2026-09-01-a.md", "# A\n")
+    fieldindex.refresh(spec.parent, StubEmbedder())
+    conn = sqlite3.connect(fieldindex.index_path(spec.parent, StubEmbedder()))
+    conn.execute("PRAGMA user_version = 0")
+    conn.commit()
+    conn.close()
+
+    findings = doctor.stale_indexes(tmp_path, StubEmbedder())
+
+    assert [(f.path, f.message) for f in findings] == [
+        (str(spec.parent), "index is behind its pages; run: sessionmemory reindex")
     ]

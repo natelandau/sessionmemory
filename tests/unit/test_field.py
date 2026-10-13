@@ -147,6 +147,14 @@ def test_new_document_writes_title_and_dates_only(tmp_path):
     assert list(meta) == ["title", "created", "updated"]
 
 
+def test_new_document_with_status_appends_it_after_the_dates(tmp_path):
+    """Verify a given status becomes the fourth key."""
+    path = field.new_document(tmp_path, title="A Spec", body="", now=NOW, day=DAY, status="draft")
+
+    meta, _ = parse(path.read_text(encoding="utf-8"))
+    assert list(meta) == ["title", "created", "updated", "status"]
+
+
 def test_new_document_names_the_file_for_its_creation_date(tmp_path):
     """Verify a spec or plan is filed under the day it was created."""
     path = field.new_document(tmp_path, title="A Plan", body="", now=NOW, day=DAY)

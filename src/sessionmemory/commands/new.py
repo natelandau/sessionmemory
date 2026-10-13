@@ -17,7 +17,7 @@ from sessionmemory.commands._common import (
     require_vault,
     resolve_body,
 )
-from sessionmemory.lib import backlog, field, paths
+from sessionmemory.lib import backlog, field, paths, specs
 from sessionmemory.lib.config import now, today
 
 app = typer.Typer(
@@ -44,6 +44,9 @@ KIND = typer.Option(
 )
 SIZE = typer.Option(..., "--size", help="Effort: S, M, or L.")
 DESCRIPTION = typer.Option(..., "--title", help="The imperative description of the work.")
+SUPERSEDES = typer.Option(
+    None, "--supersedes", help="The spec this one replaces, by name; it is marked superseded."
+)
 TOPIC = typer.Option(None, "--topic", help="A topic tag, without the leading hash.")
 
 
@@ -96,21 +99,48 @@ def _new_living_document(folder: Path, title: str, body: str, *, as_json: bool) 
     _report(path, as_json=as_json)
 
 
-@app.command("spec")
+@app.command("spec", help="Create a spec for this project, optionally replacing an older one.")
 def new_spec(
     title: str = TITLE,
     body: str = BODY,
     body_file: Path | None = BODY_FILE,
+    supersedes: str | None = SUPERSEDES,
     cwd: Path | None = CWD,
     *,
     as_json: bool = JSON,
 ) -> None:
-    """Create a spec for this project."""
+    """Create a spec, and mark the one it replaces superseded.
+
+    The new spec is reported only once the old one is marked, so a printed path always
+    means both writes landed.
+
+    Raises:
+        typer.Exit: The named spec is missing or unreadable, or either spec cannot be written.
+    """
+    body = resolve_body(body, body_file)
     vault = require_vault()
     slug = require_project(vault, cwd)
-    _new_document(
-        paths.specs_dir(vault, slug), title, resolve_body(body, body_file), as_json=as_json
-    )
+    folder = paths.specs_dir(vault, slug)
+    old: Path | None = None
+    if supersedes is not None:
+        try:
+            old = specs.resolve_name(folder, supersedes)
+            specs.load_for_edit(old)
+        except specs.SpecError as error:
+            fail(str(error))
+    try:
+        path = field.new_document(
+            folder, title=title, body=body, now=now(), day=today(), status="draft"
+        )
+    except field.PageError as error:
+        fail(str(error))
+    if old is not None:
+        try:
+            specs.mark_superseded(old, by=path.name)
+        except (specs.SpecError, field.PageError, OSError) as error:
+            path.unlink(missing_ok=True)
+            fail(f"could not mark {old.name} superseded: {error}", [f"removed {path.name}"])
+    _report(path, as_json=as_json)
 
 
 @app.command("plan")

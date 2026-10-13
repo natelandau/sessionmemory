@@ -26,7 +26,8 @@ commits the vault when a session starts and again when a session ends.
     logs/                            a second field, one page per session
       <date>-<time>.md
       nomic-embed-text-v1.5.sqlite3
-    specs/<date>-<slug>.md           plain files, not a field, never indexed
+    specs/<date>-<slug>.md           plain files, indexed for search --specs, not a field
+      nomic-embed-text-v1.5.sqlite3  vector index (gitignored, derived)
     plans/<date>-<slug>.md           scratch (gitignored)
     runbooks/<slug>.md
     reference/<slug>.md
@@ -34,9 +35,11 @@ commits the vault when a session starts and again when a session ends.
 ```
 
 `learnings/` and `logs/` are fields: flat directories of pages, each with its own
-index file. The format forbids indexing a page in a sub-directory, so `specs/`, `plans/`,
-`runbooks/`, `reference/`, and `backlog.md` sit outside both fields. That is what keeps a spec or the backlog from
-being embedded as memory.
+index file. `specs/` has an index file of the same kind, but it is not a field. A spec has
+no summary field and no size limit, and the index embeds a derived text rather than the
+file (see [The index](#the-index)). `plans/`, `runbooks/`, `reference/`, and `backlog.md`
+are never indexed, which is what keeps the backlog or a plan from being embedded as
+memory.
 
 A project's files are found by its slug and nothing else. There is no global folder, and
 no page belongs to more than one project.
@@ -88,15 +91,28 @@ by hand under any other name is reported by `sessionmemory doctor` and is never 
 
 ## Specs, plans, runbooks, reference docs, and the backlog
 
-These sit beside the fields and are never embedded. `sessionmemory new spec`,
-`sessionmemory new plan`, `sessionmemory new runbook`, and `sessionmemory new reference`
-write `title`, `created`, and `updated`, and nothing else. After that they are ordinary
-files, so edit them directly.
+These sit beside the fields. Only specs are embedded, and only for `search --specs`.
+`sessionmemory new spec`, `sessionmemory new plan`, `sessionmemory new runbook`, and
+`sessionmemory new reference` write `title`, `created`, and `updated`, and a spec also
+gets `status: draft`. After that they are ordinary files, so edit them directly.
 
 A spec or plan records work at the time it was designed, so its file is named for its
 local creation date and title, as `2026-09-03-export-invoices-as-ubl.md`. A plan is
 scratch for the work it describes, so the vault's `.gitignore` and the plugin's commits
 both keep `plans/` out of git. A spec is committed like any other file.
+
+A spec carries a `status`, because it outlives the work it describes: `draft` (designed
+and not, or not fully, built), `shipped`, `superseded`, or `abandoned`. A spec with no
+`status` is current. `sessionmemory new spec --supersedes <old>` writes the replacement
+and marks the old spec `superseded`, with `superseded_by` naming the new file.
+`sessionmemory search --specs` leaves superseded and abandoned specs out unless asked
+with `--include-retired`.
+
+A search result shows a spec's summary: its frontmatter `summary`, else the first prose
+paragraph of its goal or purpose section, else the paragraph directly under the `# `
+title. Open every spec with a short paragraph there that says what the spec is for. For
+a spec with neither a `summary` nor a goal section, that paragraph is what a search shows
+and what a session decides by.
 
 A runbook is a step-by-step procedure to follow by hand, such as configuring a service or
 rotating a credential. It has its own folder so a procedure someone will run again is not
@@ -158,17 +174,29 @@ sessionmemory search "why did we reject ollama" --logs
 
 ## Deletion replaces status
 
-A page that is wrong or spent is deleted. There is no `draft`, no `active`, no
+A page that is wrong or spent is deleted. A page has no `draft`, no `active`, no
 `superseded`, and no `archived`, so nothing has to be moved through a state machine and
 nothing accumulates as a tombstone. Git holds the history, `sessionmemory delete` removes
 the page and its index row together, and the plugin's next commit records the removal.
 
+Specs are the exception. A spec is kept after its work ships, because it records why the
+work took the shape it has, so a spec carries a status that says whether it still
+describes the system.
+
 ## The index
 
-Each field carries one SQLite file named for the embedding model that filled it, such as
-`nomic-embed-text-v1.5.sqlite3`. It holds one row per page: the filename, the
-frontmatter, the modification time, the sha256 of the file, and the embedding of the
-whole file, frontmatter included.
+Each field, and `specs/`, carries one SQLite file named for the embedding model that
+filled it, such as `nomic-embed-text-v1.5.sqlite3`. It holds one row per file: the
+filename, the frontmatter, the modification time, the sha256 of the file, and an
+embedding. For a page the embedding is of the whole file, frontmatter included.
+
+For a spec it is not. Specs average 14KB and reach 40KB, and only the first 8192 bytes
+fit one embedding, so a spec embeds a derived text instead: its title, the text under its
+title, its `summary`, its goal and purpose sections, its `## ` headings joined by `; `,
+and its decision sections, cut at the last whole line within 8192 bytes. The body is never
+embedded. Search only has to land on the right spec, and a reader opens the file for the
+detail. A spec is found by its title and headings, which a file name cannot carry once a
+topic crosses several features.
 
 The index is derived and disposable. It is gitignored, it is never backed up, and
 deleting it costs nothing:
@@ -178,12 +206,19 @@ rm ~/repos/my-vault/projects/invoice-api/learnings/*.sqlite3
 sessionmemory reindex --cwd ~/repos/invoice-api
 ```
 
+```
+✓ reindexing
+  ├─ learnings: 1 added, 0 updated, 0 removed, 0 unchanged
+  ├─ logs: 0 added, 0 updated, 0 removed, 0 unchanged
+  └─ specs: 0 added, 0 updated, 0 removed, 3 unchanged
+```
+
 Freshness is the sha256 of each file, so a page edited in any editor is re-embedded on the
-next read. Every `sessionmemory search` refreshes the field's index before it queries,
-which means a page written moments ago is found without anyone running
-`sessionmemory reindex` first. `sessionmemory reindex` exists for the case where you want
-that work done up front, and `sessionmemory reindex --all` does it for every project in
-the vault at once, which is the whole restore procedure after a `git clone`.
+next read. Every `sessionmemory search` refreshes the index it queries first, which means
+a page written moments ago is found without anyone running `sessionmemory reindex`.
+`sessionmemory reindex` exists for the case where you want that work done up front, and
+`sessionmemory reindex --all` does it for every project in the vault at once, which is the
+whole restore procedure after a `git clone`.
 
 Changing the model changes the index filename, so two models never share a file and no
 migration is needed.
@@ -231,6 +266,13 @@ returns only pages within a cosine distance of 0.45 that also sit at least 0.11 
 the query than the median page in their field, the margin an unrelated query's nearest
 page does not reach. A field with fewer than 8 pages measures against a fixed median of
 0.49 instead. `--json` prints each hit's distance.
+
+Specs have their own cutoff, 0.38 and 0.07. Specs spread wide: the median distance from a
+query to a project's specs measured 0.53 to 0.56, so the margin alone let unrelated specs
+through at 0.42 to 0.44, and the absolute ceiling had to be tighter. At the learnings
+cutoff, 3 of 10 queries with no answer returned a spec. The two numbers were measured on 50 queries against one project's
+specs, and they are the cutoff that missed none of the 40 answered queries and returned a
+spec for none of the 10 unanswered ones.
 
 ## The memoryfield format
 

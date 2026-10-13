@@ -48,9 +48,10 @@ def test_a_built_field_conforms(workspace):
         ).exit_code
         == 0
     )
+    assert runner.invoke(app, ["new", "spec", "--title", "A Spec"]).exit_code == 0
     assert runner.invoke(app, ["reindex"]).exit_code == 0
 
-    for name in ("learnings", "logs"):
+    for name in ("learnings", "logs", "specs"):
         directory = vault / "projects" / "demo" / name
         # flat: no sub-directories with pages
         assert not [p for p in directory.rglob("*.md") if p.parent != directory]

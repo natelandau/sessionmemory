@@ -1,7 +1,8 @@
 """Where a project's files live inside the vault.
 
 `learnings/` and `logs/` are fields: flat directories of pages, each with its own
-index. `specs/`, `plans/`, `runbooks/`, `reference/`, and `backlog.md` sit beside them
+index. `specs/` is indexed too, with the same table but a derived embedding input, though
+it is not a field. `plans/`, `runbooks/`, `reference/`, and `backlog.md` sit beside them
 and are never indexed. A project's files are found by its slug and nothing else; there
 is no global scope.
 """
@@ -98,5 +99,15 @@ def iter_field_dirs(vault: Path) -> list[Path]:
         project_dir(vault, slug) / name
         for slug in iter_project_slugs(vault)
         for name in FIELD_DIRS
+        if (project_dir(vault, slug) / name).is_dir()
+    ]
+
+
+def iter_index_dirs(vault: Path) -> list[Path]:
+    """Return every existing indexed directory, sorted by project then learnings, logs, specs."""
+    return [
+        project_dir(vault, slug) / name
+        for slug in iter_project_slugs(vault)
+        for name in (*FIELD_DIRS, SPECS_DIR)
         if (project_dir(vault, slug) / name).is_dir()
     ]

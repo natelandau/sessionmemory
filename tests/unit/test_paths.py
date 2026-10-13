@@ -47,3 +47,16 @@ def test_iter_field_dirs_lists_every_existing_field(tmp_path):
         tmp_path / "projects" / "alpha" / "logs",
         tmp_path / "projects" / "beta" / "logs",
     ]
+
+
+def test_iter_index_dirs_adds_specs_after_the_fields(tmp_path):
+    """Verify specs directories are listed after a project's fields, projects sorted."""
+    root = tmp_path / "projects"
+    for name in ("a/learnings", "a/specs", "b/logs"):
+        (root / name).mkdir(parents=True)
+
+    assert paths.iter_index_dirs(tmp_path) == [
+        root / "a" / "learnings",
+        root / "a" / "specs",
+        root / "b" / "logs",
+    ]
