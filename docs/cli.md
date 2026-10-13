@@ -312,17 +312,17 @@ was finished.
 
 Record this session's work in the one page that belongs to it.
 
-| Option         | What it does                                        |
-| -------------- | --------------------------------------------------- |
-| `--session-id` | This session's identifier. Required.                |
+| Option         | What it does                                                                   |
+| -------------- | ------------------------------------------------------------------------------ |
+| `--session-id` | This session's identifier. Required.                                           |
 | `--title`      | The log's title. Required unless `SESSIONMEMORY_LOG_TITLE` is set, which wins. |
-| `--summary`    | One sentence a search result shows.                 |
-| `--body`       | Markdown body. Replaces what is there.              |
-| `--body-file`  | Read the body from a file, or stdin for `-`.        |
-| `--transcript` | Path to this session's transcript on disk.          |
-| `--url`        | Where this session can be opened online.            |
-| `--cwd`        | Directory to resolve the project from.              |
-| `--json`       | Emit JSON instead of prose.                         |
+| `--summary`    | One sentence a search result shows.                                            |
+| `--body`       | Markdown body. Replaces what is there.                                         |
+| `--body-file`  | Read the body from a file, or stdin for `-`.                                   |
+| `--transcript` | Path to this session's transcript on disk.                                     |
+| `--url`        | Where this session can be opened online.                                       |
+| `--cwd`        | Directory to resolve the project from.                                         |
+| `--json`       | Emit JSON instead of prose.                                                    |
 
 ```bash
 sessionmemory log --session-id 0f6c1f9a-4c1e-4a1b-9d2f-6f4b2a7c5e10 \
