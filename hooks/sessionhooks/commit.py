@@ -2,7 +2,8 @@
 
 Replaces the scheduled checkpoint job. SessionStart and SessionEnd call this, and so
 does the sweep worker once its writes are validated, so a page lands in git within the
-session that produced it. Two hooks committing at once race on git's own index lock;
+session that produced it. The message is built from the staged changes: the subject names
+the project and counts what changed, and the body lists every path. Two hooks committing at once race on git's own index lock;
 the loser reports `index lock` and the next call commits what it left behind. A merge,
 rebase, cherry-pick, revert, or detached HEAD is skipped as well.
 """
@@ -11,7 +12,6 @@ from __future__ import annotations
 
 import subprocess
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from sessionhooks import log
@@ -26,6 +26,19 @@ _log = log.logger("commit")
 # The commit landed; only its name could not be read back. A skip reason here
 # would send a reader hunting for a failure that never happened.
 SHA_UNAVAILABLE = "(sha unavailable)"
+
+_SUBJECT_LIMIT = 70
+_ELLIPSIS = "..."
+_VERBS = {"A": "add", "D": "delete"}  # every other status reads as an edit
+_NOUNS = {
+    "learnings": "learning",
+    "logs": "log",
+    "specs": "spec",
+    "plans": "plan",
+    "runbooks": "runbook",
+    "reference": "reference doc",
+}
+_VAULT_GROUP = "vault"
 
 # A commit landing during any of these bakes half-resolved state into history.
 _IN_PROGRESS = ("MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply")
@@ -88,6 +101,84 @@ def is_safe_to_commit(root: Path, *, env: Mapping[str, str], timeout: int = 10) 
     return _unsafe_reason(root, env=env, timeout=timeout) is None
 
 
+def _locate(path: str) -> tuple[str, str]:
+    """Split a repo-relative path into its group and the part below the group.
+
+    A vault nested in a larger repository has a prefix before `projects/` or
+    `_system/`, so the segment is located rather than assumed to be first.
+    """
+    parts = path.split("/")
+    for index, part in enumerate(parts):
+        if part == "projects" and index + 1 < len(parts):
+            return parts[index + 1], "/".join(parts[index + 2 :])
+        if part == "_system":
+            return _VAULT_GROUP, "/".join(parts[index + 1 :])
+    return _VAULT_GROUP, path
+
+
+def _noun(rest: str) -> str:
+    """The singular noun for a path below its project."""
+    if rest == "backlog.md":
+        return "backlog"
+    folder, sep, _ = rest.partition("/")
+    return _NOUNS.get(folder, "file") if sep else "file"
+
+
+def _truncate(subject: str) -> str:
+    """Cut an over-long subject at the last separator that fits and end it with `...`."""
+    if len(subject) <= _SUBJECT_LIMIT:
+        return subject
+    room = _SUBJECT_LIMIT - len(_ELLIPSIS)
+    cut = max(subject.rfind(", ", 0, room + 1), subject.rfind("; ", 0, room + 1))
+    return f"{subject[: cut if cut > 0 else room]}{_ELLIPSIS}"
+
+
+def _clause(verb: str, rests: list[str]) -> str:
+    """One verb's clause: `add 1 log, 2 learnings`, with the backlog named and never counted."""
+    counts: dict[str, int] = {}
+    for rest in rests:
+        noun = _noun(rest)
+        counts[noun] = counts.get(noun, 0) + 1
+    items = [
+        noun if noun == "backlog" else f"{count} {noun if count == 1 else noun + 's'}"
+        for noun, count in counts.items()
+    ]
+    return f"{verb} {', '.join(items)}"
+
+
+def message(changes: list[tuple[str, str]], *, note: str = "") -> tuple[str, str]:
+    """Build a commit's `(subject, body)` from `(status, path)` pairs.
+
+    The subject names the project and counts what changed. When several groups
+    changed it only counts files, since a per-kind breakdown would not fit.
+    """
+    verbed = [(_VERBS.get(status, "edit"), *_locate(path), path) for status, path in changes]
+    groups = sorted({group for _, group, _, _ in verbed})
+    if len(groups) > 1:
+        subject = f"{', '.join(groups)}: update {len(verbed)} file{'' if len(verbed) == 1 else 's'}"
+    else:
+        clauses = [
+            _clause(verb, [rest for v, _, rest, _ in verbed if v == verb])
+            for verb in ("add", "edit", "delete")
+            if any(v == verb for v, _, _, _ in verbed)
+        ]
+        subject = f"{groups[0]}: {'; '.join(clauses)}"
+    lines = [f"{verb}: {path}" for verb, _, _, path in verbed]
+    body = "\n".join([note, "", *lines] if note else lines)
+    return _truncate(subject), body
+
+
+def _staged(root: Path, *, env: Mapping[str, str], timeout: int) -> list[tuple[str, str]] | None:
+    """The staged `(status, path)` pairs, with paths relative to the repository top."""
+    proc = _git(
+        root, "diff", "--cached", "--name-status", "-z", "--no-renames", env=env, timeout=timeout
+    )
+    if proc is None or proc.returncode != 0:
+        return None
+    fields = proc.stdout.split("\0")
+    return [(fields[i], fields[i + 1]) for i in range(0, len(fields) - 1, 2)]
+
+
 def _failure(proc: subprocess.CompletedProcess[str] | None, step: str) -> str:
     """Name why a git step failed: a lost race on git's own lock, or the step itself."""
     if proc is not None and "index.lock" in (proc.stderr or ""):
@@ -96,12 +187,12 @@ def _failure(proc: subprocess.CompletedProcess[str] | None, step: str) -> str:
 
 
 def commit_vault(  # noqa: PLR0911 - each early return names a distinct reason nothing landed
-    root: Path, *, env: Mapping[str, str], timeout: int = 10
+    root: Path, *, env: Mapping[str, str], timeout: int = 10, note: str = ""
 ) -> CommitOutcome:
     """Stage and commit everything under `root`, reporting the sha or why nothing landed.
 
     A failed `git add` is not committed over: that would write a commit silently
-    missing the one file that needed attention.
+    missing the one file that needed attention. `note` opens the commit body.
     """
     if not is_repository(root, env=env, timeout=timeout):
         return CommitOutcome(reason="not a repository")
@@ -121,8 +212,12 @@ def commit_vault(  # noqa: PLR0911 - each early return names a distinct reason n
     )
     if added is None or added.returncode != 0:
         return CommitOutcome(reason=_failure(added, "add"))
-    stamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M")
-    committed = _git(root, "commit", "-q", "-m", f"checkpoint {stamp}", env=env, timeout=timeout)
+    staged = _staged(root, env=env, timeout=timeout)
+    if staged is None:
+        return CommitOutcome(reason="git unavailable")
+    subject, body = message(staged, note=note)
+    args = ["commit", "-q", "-m", subject, *(["-m", body] if body else [])]
+    committed = _git(root, *args, env=env, timeout=timeout)
     if committed is None or committed.returncode != 0:
         return CommitOutcome(reason=_failure(committed, "commit"))
     head = _git(root, "rev-parse", "--short", "HEAD", env=env, timeout=timeout)

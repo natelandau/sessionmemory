@@ -361,7 +361,7 @@ def test_commit_delegates_to_commit_vault(marked_vault, stub_cli, mocker):
     )
 
     assert cli.commit(env={}) == CommitOutcome(sha="abc1234")
-    spy.assert_called_once_with(marked_vault, env={}, timeout=COMMIT_GIT_TIMEOUT)
+    spy.assert_called_once_with(marked_vault, env={}, timeout=COMMIT_GIT_TIMEOUT, note="")
 
 
 def test_project_paths_yields_none_when_the_command_fails(marked_vault, stub_cli, tmp_path):

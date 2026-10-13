@@ -1027,6 +1027,7 @@ class _FakeVault:
         self.root = root or Path("/fake")
         self.cli = self.root / "bin" / "sessionmemory"
         self.command = str(self.cli)
+        self.notes: list[str] = []
 
     def project_lookup(self, *, cwd: Path, env: dict, timeout: int) -> Lookup:
         return Lookup(
@@ -1039,7 +1040,8 @@ class _FakeVault:
             }
         )
 
-    def commit(self, *, env: dict) -> CommitOutcome:
+    def commit(self, *, env: dict, note: str = "") -> CommitOutcome:
+        self.notes.append(note)
         return CommitOutcome(sha="abc1234")
 
 
@@ -1164,6 +1166,31 @@ def test_run_job_prompt_carries_only_user_and_agent_text(tmp_path: Path) -> None
     assert "secret-tool-call" not in runner.prompt
 
 
+def test_run_job_commit_carries_the_log_summary(tmp_path: Path) -> None:
+    """Verify the commit note is the summary of this session's log."""
+    store = _job_store(tmp_path)
+    vault_target = _target_at(tmp_path / "vault")
+    (vault_target.logs_dir / "2026-01-01-demo.md").write_text(
+        "---\nid: x\nsession_id: abc\nsummary: Made the handler idempotent\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    vault = _FakeVault(vault_target)
+    sweep = Sweep(store, SessionMemoryConfig(), _FakeRunner([]), vault)
+
+    sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="abc"))
+
+    assert vault.notes == ["Made the handler idempotent"]
+
+
+def test_log_summary_unquotes_the_first_summary_line(tmp_path: Path) -> None:
+    """Verify _log_summary reads a quoted frontmatter summary and ignores body lines."""
+    path = tmp_path / "log.md"
+    path.write_text('---\nsummary: "Fixed it: done"\n---\n\nsummary: not this\n', encoding="utf-8")
+
+    assert sweep_mod._log_summary(path) == "Fixed it: done"
+    assert sweep_mod._log_summary(tmp_path / "missing.md") == ""
+
+
 def test_run_job_clean_write_logs_and_releases_lock(tmp_path: Path) -> None:
     """Verify run_job validates writes, commits, logs, and releases the lock on a clean run."""
     # Given a store with a clean target file
@@ -1190,7 +1217,7 @@ def test_run_job_notes_a_skipped_commit(tmp_path: Path) -> None:
 
     # Given a vault whose commit call returns None
     class _NoCommitVault(_FakeVault):
-        def commit(self, *, env: dict) -> CommitOutcome:
+        def commit(self, *, env: dict, note: str = "") -> CommitOutcome:
             return CommitOutcome(reason="clean")
 
     store = _job_store(tmp_path)

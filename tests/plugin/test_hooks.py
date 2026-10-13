@@ -372,11 +372,11 @@ def test_sessionstart_commits_the_vault(tmp_path: Path) -> None:
     env = _isolated_env(tmp_path, proj, vault=vault)
     # When SessionStart runs
     _run("sessionstart", {"cwd": str(proj), "source": "startup"}, env)
-    # Then the outstanding page landed in a checkpoint commit
+    # Then the outstanding page landed in a commit
     log = subprocess.run(
         ["git", "log", "--oneline"], cwd=vault, capture_output=True, text=True, check=True
     )
-    assert "checkpoint" in log.stdout
+    assert "proj, vault: update" in log.stdout
 
 
 def test_sessionstart_disabled_inject_exits_silently(tmp_path: Path) -> None:
@@ -918,7 +918,7 @@ def test_sessionend_commits_the_vault(tmp_path: Path) -> None:
     env = _isolated_env(tmp_path, proj, vault=vault)
     # When SessionEnd runs with a below-threshold transcript, so no sweep spawns
     proc = _run("sessionend", {"cwd": str(proj), "transcript_path": ""}, env)
-    # Then the outstanding page still landed in a checkpoint commit
+    # Then the outstanding page still landed in a commit
     assert proc.returncode == 0, proc.stderr
     assert "sweep skipped: no transcript" in _hooks_log(tmp_path)
     assert re.search(
@@ -927,7 +927,7 @@ def test_sessionend_commits_the_vault(tmp_path: Path) -> None:
     log = subprocess.run(
         ["git", "log", "--oneline"], cwd=vault, capture_output=True, text=True, check=True
     )
-    assert "checkpoint" in log.stdout
+    assert "proj, vault: update" in log.stdout
 
 
 def test_sessionend_commits_when_the_sweep_is_disabled(tmp_path: Path) -> None:
@@ -955,13 +955,13 @@ def test_sessionend_commits_when_the_sweep_is_disabled(tmp_path: Path) -> None:
     env = _isolated_env(tmp_path, proj, vault=vault)
     # When SessionEnd runs with the sweep disabled
     proc = _run("sessionend", {"cwd": str(proj), "transcript_path": ""}, env)
-    # Then no sweep ran, but the outstanding page still landed in a checkpoint commit
+    # Then no sweep ran, but the outstanding page still landed in a commit
     assert proc.returncode == 0, proc.stderr
     assert "sweep skipped: disabled" in _hooks_log(tmp_path)
     log = subprocess.run(
         ["git", "log", "--oneline"], cwd=vault, capture_output=True, text=True, check=True
     )
-    assert "checkpoint" in log.stdout
+    assert "proj, vault: update" in log.stdout
 
 
 def test_sessionend_never_starts_the_vault_cli(tmp_path: Path) -> None:
@@ -1028,7 +1028,6 @@ def test_sessionend_skips_the_commit_while_a_sweep_worker_holds_the_lock(
         ["git", "log", "--oneline"], cwd=vault, capture_output=True, text=True, check=True
     )
     assert len(log.stdout.strip().splitlines()) == 1
-    assert "checkpoint" not in log.stdout
 
 
 def test_a_hook_with_a_bad_transcript_path_still_exits_zero_and_logs(tmp_path: Path) -> None:

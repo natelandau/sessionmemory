@@ -445,6 +445,10 @@ rather than a fixed set because the `GIT_CONFIG_KEY_<n>` family is indexed and c
 enumerated, and a config override such as `core.worktree` relocates a repository exactly
 as `GIT_DIR` does.
 
+The message is built from `git diff --cached --name-status` by `commit.message`: the subject
+groups paths by the segment after `projects/` (or `vault` for `_system/`) and counts them
+by kind, and the body lists every path, opened by the sweep log's summary when there is one.
+
 Staging is `git add -A -- :/ ':(exclude,glob)**/*.sqlite3*'`. `:/` keeps the whole
 repository in scope for a vault nested inside a larger one, and the exclusion keeps the
 derived index out of history whatever the vault's `.gitignore` says, since

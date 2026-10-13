@@ -220,6 +220,24 @@ def _strip_frontmatter(text: str) -> str:
     return _FRONTMATTER_RE.sub("", text, count=1).lstrip("\n")
 
 
+def _log_summary(path: Path) -> str:
+    """The first column-0 `summary:` line of a log's frontmatter, unquoted, or ''."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return ""
+    block = _FRONTMATTER_RE.match(text)
+    if not block:
+        return ""
+    for line in block.group(0).splitlines():
+        if line.startswith("summary:"):
+            value = line.removeprefix("summary:").strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":  # noqa: PLR2004
+                value = value[1:-1]
+            return value
+    return ""
+
+
 class Sweep:
     """The boundary-capture pipeline: gate -> detach -> run -> validate."""
 
@@ -395,24 +413,19 @@ class Sweep:
             return ""
         return proc.stdout.strip() if proc.returncode == 0 else ""
 
-    def _existing_log(self, target: Target, session_id: str) -> str:
-        """This session's log body, with no frontmatter, or '' when it has none yet.
+    def _find_log(self, target: Target, session_id: str) -> tuple[Path, str] | None:
+        """This session's log path and full text, or None when it has none yet.
 
-        `sessionmemory log` replaces the body on every call, so a second sweep of one
-        session has to resend everything the first sweep wrote. The matching
-        `session_id:` line is matched literally rather than parsed as YAML: the
-        hooks carry no dependencies, and the CLI is the only writer of this
-        field. The frontmatter block itself is stripped before returning, since
-        this text is interpolated straight into a template the model is told to
-        carry forward into the new body, and frontmatter carried into a note's body
-        corrupts it on the next `sessionmemory log`.
+        The matching `session_id:` line is matched literally rather than parsed as
+        YAML: the hooks carry no dependencies, and the CLI is the only writer of
+        this field.
         """
         if not session_id:
-            return ""
+            return None
         try:
             candidates = sorted(target.logs_dir.glob("*.md"))
         except OSError:
-            return ""
+            return None
         needle = f"session_id: {session_id}"
         for path in candidates:
             try:
@@ -420,8 +433,20 @@ class Sweep:
             except (OSError, UnicodeDecodeError):
                 continue
             if needle in text:
-                return _strip_frontmatter(text)
-        return ""
+                return path, text
+        return None
+
+    def _existing_log(self, target: Target, session_id: str) -> str:
+        """This session's log body, with no frontmatter, or '' when it has none yet.
+
+        `sessionmemory log` replaces the body on every call, so a second sweep of one
+        session has to resend everything the first sweep wrote. The frontmatter block
+        is stripped before returning, since this text is interpolated straight into a
+        template the model is told to carry forward into the new body, and frontmatter
+        carried into a note's body corrupts it on the next `sessionmemory log`.
+        """
+        found = self._find_log(target, session_id)
+        return _strip_frontmatter(found[1]) if found else ""
 
     def _run_job(self, job: SweepJob) -> list[str]:
         """Take the lock, build the prompt, run the agent, validate its writes, log.
@@ -476,7 +501,9 @@ class Sweep:
             # an actual write outranks it: a run that wrote something did record.
             if NOTHING_TO_RECORD in result.text and not changes.touched() and not changes.deleted:
                 notes.append("nothing to record")
-            outcome = self.vault.commit(env=self.env) if self.vault else None
+            found = self._find_log(target, job.session_id)
+            note = _log_summary(found[0]) if found else ""
+            outcome = self.vault.commit(env=self.env, note=note) if self.vault else None
             commit_clause = outcome.describe() if outcome else "commit skipped: no vault"
             self._log_result(result, changes=changes, commit=commit_clause, notes=notes)
         except Exception:  # noqa: BLE001 - the detached worker must never raise

@@ -137,7 +137,12 @@ Nothing is committed here, and the timeout is 10 seconds.
 ### Committing the vault
 
 A commit stages everything under the vault except the derived index files, and writes one
-message of the form `chore(vault): checkpoint 2026-09-02 09:44`.
+message that says what changed. The subject names the project and counts the changes by
+kind, such as `invoice-api: add 1 log, 2 learnings; edit backlog`, and the body lists
+every path. When a sweep wrote the commit, the body opens with the summary of the
+session's log. A commit that touches several projects reads
+`invoice-api, vault: update 5 files`, and a subject over 70 characters is cut at a
+separator and ends with `...`.
 
 Four situations are skipped rather than committed. A merge, rebase, cherry-pick, or
 revert in progress is skipped, because a commit landing in the middle of one bakes

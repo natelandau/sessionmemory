@@ -364,9 +364,9 @@ class VaultCLI:
         slug = payload.get("slug")
         return slug if isinstance(slug, str) and slug else None
 
-    def commit(self, *, env: Mapping[str, str]) -> CommitOutcome:
+    def commit(self, *, env: Mapping[str, str], note: str = "") -> CommitOutcome:
         """Commit the vault's outstanding changes and report what happened."""
         # Imported at call time so a test can patch sessionhooks.commit.commit_vault.
         from sessionhooks.commit import commit_vault
 
-        return commit_vault(self.root, env=env, timeout=COMMIT_GIT_TIMEOUT)
+        return commit_vault(self.root, env=env, timeout=COMMIT_GIT_TIMEOUT, note=note)
