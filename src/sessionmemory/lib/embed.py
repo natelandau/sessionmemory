@@ -33,6 +33,10 @@ DIM = 768
 DOCUMENT_PREFIX = "search_document: "
 QUERY_PREFIX = "search_query: "
 
+# fastembed pads each batch to its longest input, so a large batch of long pages costs
+# memory and time quadratic in the longest input. One page per batch measured fastest.
+EMBED_BATCH_SIZE = 1
+
 CACHE_ENV_VAR = "SESSIONMEMORY_MODEL_CACHE"
 DEFAULT_CACHE = Path.home() / ".cache" / "sessionmemory" / "models"
 
@@ -76,7 +80,9 @@ class FastEmbedder:
     def _encode(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
-        return [vector.tolist() for vector in self._load().embed(texts)]
+        return [
+            vector.tolist() for vector in self._load().embed(texts, batch_size=EMBED_BATCH_SIZE)
+        ]
 
     def encode_documents(self, texts: Sequence[str]) -> list[list[float]]:
         """Return one vector per page text, in the order given."""
