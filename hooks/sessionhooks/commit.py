@@ -161,10 +161,8 @@ def message(changes: list[tuple[str, str]], *, note: str = "") -> tuple[str, str
     # `vault` is not a project: beside a real project its paths live only in the body.
     projects = [group for group in groups if group != _VAULT_GROUP] or groups
     if len(projects) > 1:
-        scoped = [entry for entry in verbed if entry[1] in projects]
-        subject = (
-            f"{', '.join(projects)}: update {len(scoped)} file{'' if len(scoped) == 1 else 's'}"
-        )
+        count = len(verbed)
+        subject = f"{', '.join(projects)}: update {count} file{'' if count == 1 else 's'}"
     else:
         scoped = [entry for entry in verbed if entry[1] == projects[0]]
         clauses = [

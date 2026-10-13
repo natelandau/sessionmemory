@@ -433,16 +433,17 @@ def test_message_for_a_project_beside_the_vault():
 
 
 def test_message_for_two_projects_beside_the_vault_does_not_list_it():
-    """Verify the vault is not named among several projects."""
+    """Verify the vault is not named among several projects but is counted."""
     changes = [
         ("A", "projects/a/logs/x.md"),
         ("A", "projects/b/logs/x.md"),
         ("M", "_system/registry.toml"),
     ]
 
-    subject, _ = message(changes)
+    subject, body = message(changes)
 
-    assert subject == "a, b: update 2 files"
+    assert subject == "a, b: update 3 files"
+    assert len(body.splitlines()) == 3
 
 
 def test_commit_vault_skips_when_only_the_derived_index_changed(tmp_path):

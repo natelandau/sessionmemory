@@ -153,16 +153,16 @@ add: projects/invoice-api/logs/2026-10-13-retry-handling.md
 edit: projects/invoice-api/specs/retries.md
 ```
 
-A commit that touches several projects names them and counts files only, and the vault's
-own files appear in the body but not in the count:
+A commit that touches several projects names them and counts every changed file, the vault's
+own files included:
 
 ```text
-billing, invoice-api: update 3 files
+billing, invoice-api: update 4 files
 
 edit: _system/registry.toml
-add: projects/billing/learnings/invoices-round-half-up.md
-add: projects/invoice-api/learnings/idempotency-keys-expire.md
-add: projects/invoice-api/logs/2026-10-13-key-expiry.md
+add: projects/billing/learnings/invoices-round-half-up-2.md
+add: projects/invoice-api/learnings/idempotency-keys-expire-2.md
+add: projects/invoice-api/logs/2026-10-13-key-expiry-2.md
 ```
 
 A change to the vault's own files alone reads `vault: edit 1 file`. A subject over 70
