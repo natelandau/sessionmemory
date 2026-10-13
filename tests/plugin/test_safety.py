@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 
+import pytest
 from sessionhooks.safety import REDACTED, scrub  # ty: ignore[unresolved-import]
 
 
@@ -152,6 +153,47 @@ def test_scrub_many_header_lines_without_body_is_linear() -> None:
     """Verify a bare header followed by many RFC 1421-shaped lines is unchanged and scrubs quickly."""
     # Given a bare header followed by 20,000 header-shaped lines and no body
     text = "-----BEGIN " + "PRIVATE KEY-----\n" + "Aa: b\n" * 20_000
+    # When scrubbed
+    started = time.perf_counter()
+    out, changed = scrub(text)
+    elapsed = time.perf_counter() - started
+    # Then the text is unchanged and the scrub finishes well under a second
+    assert out == text
+    assert changed is False
+    assert elapsed < 1.0
+
+
+@pytest.mark.parametrize("prefix", ["    ", "\t", "> ", "  > "])
+def test_scrub_redacts_an_indented_pem_block(prefix: str) -> None:
+    """Verify a PEM block indented or quoted as a whole is redacted through its footer."""
+    # Given a complete PEM block whose every line carries the same prefix
+    header = "-----BEGIN RSA " + "PRIVATE KEY-----"
+    footer = "-----END RSA " + "PRIVATE KEY-----"
+    lines = [header, *_PEM_BODY, footer]
+    text = "Key:\n" + "".join(f"{prefix}{line}\n" for line in lines) + "after\n"
+    # When scrubbed
+    out, changed = scrub(text)
+    # Then no key line survives and the text around the block is kept
+    assert out == f"Key:\n{REDACTED}\nafter\n"
+    assert changed is True
+
+
+def test_scrub_redacts_an_indented_unterminated_pem_body() -> None:
+    """Verify an indented PEM block cut off before its footer is redacted through its body."""
+    # Given an indented PEM block with no footer
+    header = "-----BEGIN " + "PRIVATE KEY-----"
+    text = "".join(f"    {line}\n" for line in [header, *_PEM_BODY])
+    # When scrubbed
+    out, changed = scrub(text)
+    # Then the block is redacted
+    assert out == REDACTED + "\n"
+    assert changed is True
+
+
+def test_scrub_long_indented_line_without_a_header_is_linear() -> None:
+    """Verify a long run of indentation with no PEM header is unchanged and scrubs quickly."""
+    # Given 200,000 spaces and tabs before ordinary text
+    text = " \t" * 100_000 + "x\n"
     # When scrubbed
     started = time.perf_counter()
     out, changed = scrub(text)
