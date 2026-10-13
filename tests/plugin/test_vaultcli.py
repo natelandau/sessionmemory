@@ -7,6 +7,7 @@ point of the seam is that it can actually run the CLI.
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -16,6 +17,7 @@ from sessionhooks.commit import CommitOutcome  # ty: ignore[unresolved-import]
 from sessionhooks.vaultcli import (  # ty: ignore[unresolved-import]
     COMMIT_GIT_TIMEOUT,
     ROOT_ENV,
+    Lookup,
     VaultCLI,
     parse_version,
 )
@@ -480,3 +482,97 @@ def test_discover_logs_the_handshake_at_debug(tmp_path, marked_vault, caplog):
     empty.mkdir()
     VaultCLI.discover(env={"SESSIONMEMORY_VAULT": str(marked_vault), "PATH": str(empty)})
     assert "handshake: no sessionmemory on PATH" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# VaultCLI.project_lookup
+# ---------------------------------------------------------------------------
+
+
+def _completed(
+    returncode: int, stdout: str = "", stderr: str = ""
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.CompletedProcess(
+        args=["sessionmemory"], returncode=returncode, stdout=stdout, stderr=stderr
+    )
+
+
+def _lookup(tmp_path: Path) -> Lookup:
+    cli = VaultCLI(root=tmp_path / "vault", cli=tmp_path / "sessionmemory")
+    return cli.project_lookup(cwd=tmp_path, env={}, timeout=120)
+
+
+def test_project_lookup_returns_flattened_paths(tmp_path: Path, mocker) -> None:
+    """Verify a registered project's payload comes back flattened with no reason."""
+    mocker.patch(
+        "sessionhooks.vaultcli.subprocess.run",
+        autospec=True,
+        return_value=_completed(
+            0, '{"slug": "demo", "registered": true, "paths": {"learnings": "/v/learnings"}}'
+        ),
+    )
+    assert _lookup(tmp_path) == Lookup({"slug": "demo", "learnings": "/v/learnings"})
+
+
+def test_project_lookup_reports_a_timeout(tmp_path: Path, mocker) -> None:
+    """Verify a CLI that outruns the timeout is reported with the seconds it was given."""
+    mocker.patch(
+        "sessionhooks.vaultcli.subprocess.run",
+        autospec=True,
+        side_effect=subprocess.TimeoutExpired(cmd="sessionmemory", timeout=120),
+    )
+    assert _lookup(tmp_path) == Lookup(None, "project timed out after 120s")
+
+
+def test_project_lookup_reports_a_failure_to_start(tmp_path: Path, mocker) -> None:
+    """Verify an OSError on launch is named in the reason."""
+    mocker.patch(
+        "sessionhooks.vaultcli.subprocess.run", autospec=True, side_effect=OSError("no exec")
+    )
+    assert _lookup(tmp_path) == Lookup(None, "project could not start: no exec")
+
+
+def test_project_lookup_reports_an_unexpected_exit_with_the_stderr_tail(
+    tmp_path: Path, mocker
+) -> None:
+    """Verify an exit past 1 carries the last 200 characters of stderr."""
+    stderr = "x" * 300 + "boom"
+    mocker.patch(
+        "sessionhooks.vaultcli.subprocess.run",
+        autospec=True,
+        return_value=_completed(2, stderr=stderr),
+    )
+    assert _lookup(tmp_path) == Lookup(None, f"project exited 2: {stderr[-200:]}")
+
+
+def test_project_lookup_reports_an_unregistered_project(tmp_path: Path, mocker) -> None:
+    """Verify exit 1 with registered false reads as not registered."""
+    mocker.patch(
+        "sessionhooks.vaultcli.subprocess.run",
+        autospec=True,
+        return_value=_completed(1, '{"registered": false}'),
+    )
+    assert _lookup(tmp_path) == Lookup(None, "project not registered")
+
+
+def test_project_lookup_reports_output_that_is_not_json(tmp_path: Path, mocker) -> None:
+    """Verify stdout that does not parse as an object is reported."""
+    mocker.patch(
+        "sessionhooks.vaultcli.subprocess.run",
+        autospec=True,
+        return_value=_completed(0, "not json"),
+    )
+    assert _lookup(tmp_path) == Lookup(None, "project printed no JSON")
+
+
+def test_for_root_passes_the_version_timeout_to_the_handshake(tmp_path: Path, mocker) -> None:
+    """Verify for_root hands its version_timeout to the --version call."""
+    mocker.patch("sessionhooks.vaultcli.shutil.which", autospec=True, return_value="/bin/sm")
+    mocker.patch("sessionhooks.vaultcli.plugin_version", autospec=True, return_value=(0, 0, 1))
+    run = mocker.patch(
+        "sessionhooks.vaultcli.subprocess.run",
+        autospec=True,
+        return_value=_completed(0, "sessionmemory 9.9.9"),
+    )
+    VaultCLI.for_root(tmp_path, env={}, version_timeout=120)
+    assert run.call_args.kwargs["timeout"] == 120

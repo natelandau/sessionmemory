@@ -25,6 +25,7 @@ from sessionhooks.sweep import (  # ty: ignore[unresolved-import]
     Target,
     in_progress,
 )
+from sessionhooks.vaultcli import WORKER_CLI_TIMEOUT, Lookup  # ty: ignore[unresolved-import]
 
 from tests._env import clean_environ
 from tests.plugin._store_factory import store_at
@@ -1027,14 +1028,16 @@ class _FakeVault:
         self.cli = self.root / "bin" / "sessionmemory"
         self.command = str(self.cli)
 
-    def project_paths(self, *, cwd: Path, env: dict) -> dict[str, str]:
-        return {
-            "slug": "proj",
-            "project_dir": str(self.target.project_dir),
-            "learnings": str(self.target.learnings_dir),
-            "backlog": str(self.target.backlog_path),
-            "logs": str(self.target.logs_dir),
-        }
+    def project_lookup(self, *, cwd: Path, env: dict, timeout: int) -> Lookup:
+        return Lookup(
+            {
+                "slug": "proj",
+                "project_dir": str(self.target.project_dir),
+                "learnings": str(self.target.learnings_dir),
+                "backlog": str(self.target.backlog_path),
+                "logs": str(self.target.logs_dir),
+            }
+        )
 
     def commit(self, *, env: dict) -> CommitOutcome:
         return CommitOutcome(sha="abc1234")
@@ -1047,9 +1050,9 @@ class _EnvSpyVault(_FakeVault):
         super().__init__(target)
         self.seen_env: dict | None = None
 
-    def project_paths(self, *, cwd: Path, env: dict) -> dict[str, str]:
+    def project_lookup(self, *, cwd: Path, env: dict, timeout: int) -> Lookup:
         self.seen_env = dict(env)
-        return super().project_paths(cwd=cwd, env=env)
+        return super().project_lookup(cwd=cwd, env=env, timeout=timeout)
 
 
 def test_prepare_uses_the_threaded_env_not_a_fresh_os_environ_read(tmp_path: Path) -> None:
@@ -1080,38 +1083,38 @@ def test_prepare_uses_the_threaded_env_not_a_fresh_os_environ_read(tmp_path: Pat
     assert vault.seen_env.get("SESSIONMEMORY_TEST_MARKER") == "threaded"
 
 
-def test_prepare_returns_none_for_an_unregistered_project(tmp_path: Path) -> None:
-    """Verify _prepare skips a project the vault cannot resolve, rather than raising."""
+def test_prepare_returns_the_lookup_reason_for_an_unregistered_project(tmp_path: Path) -> None:
+    """Verify _prepare skips a project the vault cannot resolve, naming why."""
 
-    # Given a vault whose project_paths always resolves to None (unregistered)
+    # Given a vault whose lookup reports the project as unregistered
     class _UnregisteredVault(_FakeVault):
-        def project_paths(self, *, cwd: Path, env: dict) -> dict[str, str] | None:
-            return None
+        def project_lookup(self, *, cwd: Path, env: dict, timeout: int) -> Lookup:
+            return Lookup(None, "project not registered")
 
     store = store_at(tmp_path)
     target = _target_at(tmp_path / "vault")
     sweep = Sweep(store, SessionMemoryConfig(), _FakeRunner([]), _UnregisteredVault(target))
     job = SweepJob(window=[], cwd=str(tmp_path), session_id="")
 
-    # When preparing / Then nothing is returned
-    assert sweep._prepare(job) is None
+    # When preparing / Then the reason is returned
+    assert sweep._prepare(job) == "project not registered"
 
 
-def test_prepare_returns_none_when_the_resolved_paths_are_incomplete(tmp_path: Path) -> None:
+def test_prepare_names_the_first_missing_key_when_the_paths_are_incomplete(tmp_path: Path) -> None:
     """Verify _prepare skips a payload missing a key Target.from_paths requires."""
 
     # Given a vault whose resolved paths are missing required keys
     class _IncompleteVault(_FakeVault):
-        def project_paths(self, *, cwd: Path, env: dict) -> dict[str, str]:
-            return {"slug": "demo", "project_dir": str(self.target.project_dir)}
+        def project_lookup(self, *, cwd: Path, env: dict, timeout: int) -> Lookup:
+            return Lookup({"slug": "demo", "project_dir": str(self.target.project_dir)})
 
     store = store_at(tmp_path)
     target = _target_at(tmp_path / "vault")
     sweep = Sweep(store, SessionMemoryConfig(), _FakeRunner([]), _IncompleteVault(target))
     job = SweepJob(window=[], cwd=str(tmp_path), session_id="")
 
-    # When preparing / Then nothing is returned
-    assert sweep._prepare(job) is None
+    # When preparing / Then the first absent key is named
+    assert sweep._prepare(job) == "project payload lacked learnings"
 
 
 class _RecordingRunner:
@@ -1440,8 +1443,9 @@ def test_run_job_without_a_vault_logs_the_skip(tmp_path: Path) -> None:
     hooks_log = _capture_log(tmp_path)
     sweep = Sweep(store_at(tmp_path), SessionMemoryConfig(), _FakeRunner([]))
     sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="sess-novault"))
-    assert "sweep skipped: no vault or unregistered project (session=sess-nov)" in hooks_log_text(
-        hooks_log
+    assert (
+        "sweep skipped: no CLI: neither PATH nor the plugin shim (session=sess-nov)"
+        in hooks_log_text(hooks_log)
     )
 
 
@@ -1831,7 +1835,7 @@ def test_run_job_chooses_the_cli_for_the_located_vault(
     root = tmp_path / "vault"
     chosen: list[Path] = []
 
-    def _for_root(cls: type, found: Path, *, env: object) -> _FakeVault:
+    def _for_root(cls: type, found: Path, *, env: object, version_timeout: int) -> _FakeVault:
         chosen.append(found)
         return _FakeVault(_target_at(root), root=found)
 
@@ -1843,6 +1847,44 @@ def test_run_job_chooses_the_cli_for_the_located_vault(
 
     assert chosen == [root]
     assert runner.prompt
+
+
+def test_run_job_chooses_the_cli_with_the_worker_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify the worker gives its version handshake the worker timeout."""
+    store = _job_store(tmp_path)
+    root = tmp_path / "vault"
+    seen: list[int] = []
+
+    def _for_root(cls: type, found: Path, *, env: object, version_timeout: int) -> _FakeVault:
+        seen.append(version_timeout)
+        return _FakeVault(_target_at(root), root=found)
+
+    monkeypatch.setattr(sweep_mod.VaultCLI, "for_root", classmethod(_for_root))
+    sweep = Sweep(store, SessionMemoryConfig(), _RecordingRunner(), vault_root=root)
+
+    sweep._run_job(SweepJob(window=[_user("hi")], cwd=str(tmp_path), session_id="s"))
+
+    assert seen == [WORKER_CLI_TIMEOUT]
+
+
+def test_run_job_logs_the_skip_reason(tmp_path: Path) -> None:
+    """Verify a lookup failure is logged with its reason rather than a generic skip."""
+
+    class _TimedOutVault(_FakeVault):
+        def project_lookup(self, *, cwd: Path, env: dict, timeout: int) -> Lookup:
+            return Lookup(None, "project timed out after 120s")
+
+    hooks_log = _capture_log(tmp_path)
+    sweep = Sweep(
+        store_at(tmp_path),
+        SessionMemoryConfig(),
+        _FakeRunner([]),
+        _TimedOutVault(_target_at(tmp_path / "vault")),
+    )
+    sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="sess-timeout"))
+    assert "sweep skipped: project timed out after 120s" in hooks_log_text(hooks_log)
 
 
 def test_run_sweep_skips_before_gating_when_there_is_no_vault(

@@ -30,7 +30,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from sessionhooks import log, shape, snapshot, transcript
 from sessionhooks.config import SessionMemoryConfig
@@ -38,7 +38,7 @@ from sessionhooks.paths import is_within_root
 from sessionhooks.runner import LOG_TITLE_ENV, ClaudeRunner
 from sessionhooks.safety import scrub
 from sessionhooks.store import Store, git_safe_env
-from sessionhooks.vaultcli import ROOT_ENV, VaultCLI
+from sessionhooks.vaultcli import ROOT_ENV, WORKER_CLI_TIMEOUT, VaultCLI
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -85,11 +85,12 @@ class Target:
     backlog_path: Path
     logs_dir: Path
 
+    REQUIRED: ClassVar[tuple[str, ...]] = ("project_dir", "learnings", "backlog", "logs")
+
     @classmethod
     def from_paths(cls, payload: dict[str, str]) -> Target | None:
         """Build a target from a flattened `sessionmemory project` payload, or None when incomplete."""
-        needed = ("project_dir", "learnings", "backlog", "logs")
-        if not all(payload.get(k) for k in needed):
+        if not all(payload.get(k) for k in cls.REQUIRED):
             return None
         return cls(
             project_dir=Path(payload["project_dir"]),
@@ -327,8 +328,8 @@ class Sweep:
         _log.warning("sweep skipped: lock still held after %.0fs", polls * QUEUE_POLL)
         return False
 
-    def _prepare(self, job: SweepJob) -> tuple[Target, str] | None:
-        """Resolve where to write and compose this session's log command, or None to skip.
+    def _prepare(self, job: SweepJob) -> tuple[Target, str] | str:
+        """Resolve where to write and compose this session's log command, or the skip reason.
 
         The command is built here rather than run here: a session the model
         judges empty must leave no log behind, and a file scaffolded before the
@@ -337,15 +338,16 @@ class Sweep:
         the CLI still owns the filename, the frontmatter, and `## Changes`.
         """
         if self.vault is None:
-            return None
-        repo = Path(job.cwd)
-        env = dict(self.env)
-        paths = self.vault.project_paths(cwd=repo, env=env)
-        if paths is None:
-            return None  # unregistered, or the CLI could not answer
-        target = Target.from_paths(paths)
+            return "no CLI: neither PATH nor the plugin shim"
+        lookup = self.vault.project_lookup(
+            cwd=Path(job.cwd), env=dict(self.env), timeout=WORKER_CLI_TIMEOUT
+        )
+        if lookup.paths is None:
+            return lookup.reason
+        target = Target.from_paths(lookup.paths)
         if target is None:
-            return None
+            missing = next(k for k in Target.REQUIRED if not lookup.paths.get(k))
+            return f"project payload lacked {missing}"
         return target, self._log_command(job)
 
     def _log_command(self, job: SweepJob) -> str:
@@ -433,10 +435,12 @@ class Sweep:
             return []
         try:
             if self.vault is None and self.vault_root is not None:
-                self.vault = VaultCLI.for_root(self.vault_root, env=self.env)
+                self.vault = VaultCLI.for_root(
+                    self.vault_root, env=self.env, version_timeout=WORKER_CLI_TIMEOUT
+                )
             prepared = self._prepare(job)
-            if prepared is None:
-                _log.info("sweep skipped: no vault or unregistered project")
+            if isinstance(prepared, str):
+                _log.info("sweep skipped: %s", prepared)
                 return []
             target, log_command = prepared
             # A project registered on another machine has no folder until its first
