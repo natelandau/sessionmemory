@@ -315,7 +315,7 @@ Record this session's work in the one page that belongs to it.
 | Option         | What it does                                        |
 | -------------- | --------------------------------------------------- |
 | `--session-id` | This session's identifier. Required.                |
-| `--title`      | The log's title. Required.                          |
+| `--title`      | The log's title. Required unless `SESSIONMEMORY_LOG_TITLE` is set, which wins. |
 | `--summary`    | One sentence a search result shows.                 |
 | `--body`       | Markdown body. Replaces what is there.              |
 | `--body-file`  | Read the body from a file, or stdin for `-`.        |
@@ -329,6 +329,23 @@ sessionmemory log --session-id 0f6c1f9a-4c1e-4a1b-9d2f-6f4b2a7c5e10 \
   --title "2026-09-02 09:41" \
   --summary "Made the Stripe webhook handler idempotent." \
   --body-file - --cwd . <<'EOF'
+## Summary
+
+Added the webhook_events table and the duplicate check in the handler.
+EOF
+```
+
+```
+✓ created 2026-09-02-09-41.md
+  └─ ~/repos/my-vault/projects/invoice-api/logs/2026-09-02-09-41.md
+```
+
+The plugin's sweep sets `SESSIONMEMORY_LOG_TITLE` instead of passing `--title`, so the title
+it computed is the one that is written:
+
+```bash
+SESSIONMEMORY_LOG_TITLE="2026-09-02 09:41" sessionmemory log \
+  --session-id 0f6c1f9a-4c1e-4a1b-9d2f-6f4b2a7c5e10 --body-file - --cwd . <<'EOF'
 ## Summary
 
 Added the webhook_events table and the duplicate check in the handler.

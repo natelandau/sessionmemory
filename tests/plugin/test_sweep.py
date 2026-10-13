@@ -16,7 +16,7 @@ from sessionhooks import log as log_mod  # ty: ignore[unresolved-import]
 from sessionhooks import sweep as sweep_mod  # ty: ignore[unresolved-import]
 from sessionhooks.commit import CommitOutcome  # ty: ignore[unresolved-import]
 from sessionhooks.config import SessionMemoryConfig  # ty: ignore[unresolved-import]
-from sessionhooks.runner import RunResult  # ty: ignore[unresolved-import]
+from sessionhooks.runner import LOG_TITLE_ENV, RunResult  # ty: ignore[unresolved-import]
 from sessionhooks.sweep import (  # ty: ignore[unresolved-import]
     Lock,
     Sweep,
@@ -30,6 +30,8 @@ from tests.plugin._store_factory import store_at
 from tests.plugin.conftest import hooks_log_text
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from pytest_mock import MockerFixture
     from sessionhooks.store import Store  # ty: ignore[unresolved-import]
 
@@ -52,7 +54,9 @@ class _FakeRunner:
     def __init__(self, changed_files: list[str]) -> None:
         self.changed_files = changed_files
 
-    def run(self, prompt: str, *, cwd: str) -> RunResult:
+    def run(
+        self, prompt: str, *, cwd: str, extra_env: Mapping[str, str] | None = None
+    ) -> RunResult:
         return RunResult(
             success=True,
             exit_code=0,
@@ -1118,9 +1122,13 @@ class _RecordingRunner:
 
     def __init__(self) -> None:
         self.prompt: str | None = None
+        self.extra_env: Mapping[str, str] | None = None
 
-    def run(self, prompt: str, *, cwd: str) -> RunResult:
+    def run(
+        self, prompt: str, *, cwd: str, extra_env: Mapping[str, str] | None = None
+    ) -> RunResult:
         self.prompt = prompt
+        self.extra_env = extra_env
         return RunResult(success=True, exit_code=0, changed_files=[], text="done", stderr="")
 
 
@@ -1230,7 +1238,9 @@ def test_run_job_releases_lock_on_runner_failure(tmp_path: Path) -> None:
     # Given a runner that always raises
 
     class _Exploding:
-        def run(self, prompt: str, *, cwd: str) -> RunResult:
+        def run(
+            self, prompt: str, *, cwd: str, extra_env: Mapping[str, str] | None = None
+        ) -> RunResult:
             msg = "boom"
             raise RuntimeError(msg)
 
@@ -1256,7 +1266,9 @@ def test_run_job_returns_empty_and_releases_lock_when_the_agent_run_itself_raise
 
     # Given a vault present (so _prepare succeeds) and a runner that raises
     class _Exploding:
-        def run(self, prompt: str, *, cwd: str) -> RunResult:
+        def run(
+            self, prompt: str, *, cwd: str, extra_env: Mapping[str, str] | None = None
+        ) -> RunResult:
             msg = "boom"
             raise RuntimeError(msg)
 
@@ -1396,7 +1408,9 @@ def test_run_job_logs_a_failed_sweep_with_the_exit_code_and_stderr(tmp_path: Pat
     """Verify a failed run is distinguishable from one never attempted, and names the cause."""
 
     class _FailingRunner:
-        def run(self, prompt: str, *, cwd: str) -> RunResult:
+        def run(
+            self, prompt: str, *, cwd: str, extra_env: Mapping[str, str] | None = None
+        ) -> RunResult:
             return RunResult(
                 success=False,
                 exit_code=-3,
@@ -1451,7 +1465,9 @@ def test_run_job_logs_a_crash_inside_the_worker(tmp_path: Path) -> None:
     """Verify an exception the worker swallows is on record with its traceback."""
 
     class _ExplodingRunner:
-        def run(self, prompt: str, *, cwd: str) -> RunResult:
+        def run(
+            self, prompt: str, *, cwd: str, extra_env: Mapping[str, str] | None = None
+        ) -> RunResult:
             message = "kaboom"
             raise RuntimeError(message)
 
@@ -1481,7 +1497,9 @@ class _TextRunner:
         self.changed_files = changed_files or []
         self.prompt: str | None = None
 
-    def run(self, prompt: str, *, cwd: str) -> RunResult:
+    def run(
+        self, prompt: str, *, cwd: str, extra_env: Mapping[str, str] | None = None
+    ) -> RunResult:
         self.prompt = prompt
         return RunResult(
             success=True,
@@ -1602,7 +1620,9 @@ def test_run_sweep_pins_the_resolved_vault_root_for_the_agent(tmp_path: Path, mo
         def __init__(self, **kwargs: object) -> None:
             captured.update(kwargs)
 
-        def run(self, prompt: str, *, cwd: str) -> RunResult:  # pragma: no cover - never gated in
+        def run(
+            self, prompt: str, *, cwd: str, extra_env: Mapping[str, str] | None = None
+        ) -> RunResult:  # pragma: no cover - never gated in
             raise AssertionError
 
     def _fake_home() -> Path:
@@ -1783,39 +1803,55 @@ def utc_clock(monkeypatch: pytest.MonkeyPatch):
     time.tzset()
 
 
+def _title_handed_to_model(tmp_path: Path, job: SweepJob) -> str:
+    """Run `job` and return the log title the model's environment received."""
+    runner = _RecordingRunner()
+    sweep = Sweep(
+        _job_store(tmp_path), SessionMemoryConfig(), runner, _FakeVault(_target_at(tmp_path / "v"))
+    )
+    sweep._run_job(job)
+    assert runner.extra_env is not None
+    return runner.extra_env[LOG_TITLE_ENV]
+
+
 @pytest.mark.usefixtures("utc_clock")
-def test_the_log_title_names_the_session_start(sweep_factory, tmp_path):
-    """Verify the title carries the session's start date and clock time in local time."""
-    sweep = sweep_factory()
+def test_run_job_hands_the_title_to_the_model_env(tmp_path):
+    """Verify the title reaches the model through its environment, as the session's start."""
     job = SweepJob(window=[], cwd=str(tmp_path), session_id="abc", started="2026-09-03T17:53:10Z")
 
-    command = sweep._log_command(job)
-
-    assert "--title '2026-09-03 17:53'" in command
+    assert _title_handed_to_model(tmp_path, job) == "2026-09-03 17:53"
 
 
 @pytest.mark.usefixtures("utc_clock")
-def test_the_log_title_renders_the_start_in_local_time(sweep_factory, tmp_path):
+def test_the_log_title_renders_the_start_in_local_time(tmp_path):
     """Verify a start recorded with an offset is shown on the local clock, not the recorded one."""
-    sweep = sweep_factory()
     job = SweepJob(
         window=[], cwd=str(tmp_path), session_id="abc", started="2026-09-03T23:30:00-04:00"
     )
 
-    command = sweep._log_command(job)
-
-    assert "--title '2026-09-04 03:30'" in command
+    assert _title_handed_to_model(tmp_path, job) == "2026-09-04 03:30"
 
 
 @pytest.mark.parametrize("started", ["", "not a time"])
-def test_the_log_title_falls_back_to_now_without_a_usable_start(sweep_factory, tmp_path, started):
+def test_the_log_title_falls_back_to_now_without_a_usable_start(tmp_path, started):
     """Verify a session with no readable start is still titled with a date and a time."""
-    sweep = sweep_factory()
     job = SweepJob(window=[], cwd=str(tmp_path), session_id="abc", started=started)
 
-    command = sweep._log_command(job)
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}", _title_handed_to_model(tmp_path, job))
 
-    assert re.search(r"--title '\d{4}-\d{2}-\d{2} \d{2}:\d{2}'", command)
+
+def test_run_job_log_command_carries_no_title(tmp_path):
+    """Verify the prompt's log command omits --title, which the environment supplies."""
+    runner = _RecordingRunner()
+    sweep = Sweep(
+        _job_store(tmp_path), SessionMemoryConfig(), runner, _FakeVault(_target_at(tmp_path / "v"))
+    )
+
+    sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="abc"))
+
+    assert runner.prompt is not None
+    assert "--title" not in runner.prompt.split("--session-id abc")[1].splitlines()[0]
+    assert "--title '" not in runner.prompt
 
 
 def test_changes_are_empty_without_a_base_commit(sweep_factory, tmp_path):
@@ -2053,7 +2089,9 @@ class _CwdCheckingRunner:
     def __init__(self) -> None:
         self.cwd_existed: bool | None = None
 
-    def run(self, prompt: str, *, cwd: str) -> RunResult:
+    def run(
+        self, prompt: str, *, cwd: str, extra_env: Mapping[str, str] | None = None
+    ) -> RunResult:
         self.cwd_existed = Path(cwd).is_dir()
         return RunResult(success=True, exit_code=0, changed_files=[], text="done", stderr="")
 

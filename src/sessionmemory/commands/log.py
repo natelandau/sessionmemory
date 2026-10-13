@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path  # noqa: TC003
 
 import typer
@@ -17,8 +18,12 @@ from sessionmemory.commands._common import (
 from sessionmemory.lib import field, log
 from sessionmemory.lib.config import now, today
 
+# The sweep hook sets this name; hooks import nothing from src, so it is defined on both sides.
+LOG_TITLE_ENV = "SESSIONMEMORY_LOG_TITLE"
 SESSION_ID = typer.Option(..., "--session-id", help="This session's identifier.")
-TITLE = typer.Option(..., "--title", help="The log's title.")
+TITLE = typer.Option(
+    "", "--title", help=f"The log's title. Required unless {LOG_TITLE_ENV} is set, which wins."
+)
 SUMMARY = typer.Option("", "--summary", help="One sentence a search result shows.")
 BODY = typer.Option("", "--body", help="Markdown body. Replaces what is there.")
 BODY_FILE = typer.Option(None, "--body-file", help="Read the body from a file, or stdin for '-'.")
@@ -45,6 +50,9 @@ def log_command(  # noqa: PLR0913, PLR0917
     Raises:
         Exit: When the directory is not a registered project or the page cannot be written.
     """
+    title = os.environ.get(LOG_TITLE_ENV, "").strip() or title.strip()
+    if not title:
+        fail("a log needs --title")
     body = resolve_body(body, body_file)
     vault = require_vault()
     slug = require_project(vault, cwd)

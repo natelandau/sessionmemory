@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING, Any
 from sessionhooks import log, transcript
 from sessionhooks.config import SessionMemoryConfig
 from sessionhooks.paths import is_within_root
-from sessionhooks.runner import ClaudeRunner
+from sessionhooks.runner import LOG_TITLE_ENV, ClaudeRunner
 from sessionhooks.safety import scrub
 from sessionhooks.store import Store, git_safe_env
 from sessionhooks.vaultcli import ROOT_ENV, VaultCLI
@@ -353,15 +353,15 @@ class Sweep:
         The body is the one thing the model composes rather than runs, because the
         summary does not exist until it writes one, and it arrives on stdin through
         `--body-file -` so its quoting cannot be mangled. Everything that decides
-        placement, filename, and frontmatter stays resolved here.
+        placement, filename, and frontmatter stays resolved here. The title is not on
+        the line: the hook resolves it and hands it over in the environment, because a
+        model asked to type it rewrites it.
         """
         args = [
             self.vault.command if self.vault else "",
             "log",
             "--session-id",
             job.session_id,
-            "--title",
-            _log_moment(job.started),
             "--cwd",
             job.cwd,
         ]
@@ -455,7 +455,11 @@ class Sweep:
                 changes=self._changes(job),
                 existing_log=self._existing_log(target, job.session_id),
             )
-            result = self.runner.run(prompt, cwd=str(target.project_dir))
+            result = self.runner.run(
+                prompt,
+                cwd=str(target.project_dir),
+                extra_env={LOG_TITLE_ENV: _log_moment(job.started)},
+            )
             _log.debug("claude ran %.1fs", time.time() - started_at)
             notes = self._validate_writes(result.changed_files, target, started_at=started_at)
             # The sentinel also appears in the transcript the agent summarizes, so
