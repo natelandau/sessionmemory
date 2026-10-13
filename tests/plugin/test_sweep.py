@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import re
@@ -202,6 +203,100 @@ def test_lock_acquire_fails_when_the_parent_directory_cannot_be_created(tmp_path
     lock = Lock(blocker / "sweep.lock")
     # When acquiring / Then it fails rather than raising
     assert lock.acquire() is False
+
+
+def test_lock_reports_no_error_when_another_holder_has_it(tmp_path: Path) -> None:
+    """Verify contention is told apart from a failure: it leaves no error behind."""
+    first = Lock(tmp_path / "state" / "sweep.lock")
+    assert first.acquire() is True
+    second = Lock(first.path)
+    try:
+        assert second.acquire() is False
+        assert second.error == ""
+    finally:
+        first.release()
+
+
+def test_lock_names_the_error_when_its_directory_cannot_be_made(tmp_path: Path) -> None:
+    """Verify a lock that cannot be created records why, so a caller stops waiting on it."""
+    blocker = tmp_path / "blocker"
+    blocker.write_text("x", encoding="utf-8")
+    lock = Lock(blocker / "sweep.lock")
+    assert lock.acquire() is False
+    assert lock.error
+
+
+def test_lock_names_a_flock_failure_that_is_not_contention(tmp_path: Path, mocker) -> None:
+    """Verify only EWOULDBLOCK means held; any other flock error is recorded as a failure."""
+    mocker.patch.object(
+        sweep_mod.fcntl,
+        "flock",
+        autospec=True,
+        side_effect=OSError(errno.ENOLCK, "No locks available"),
+    )
+    lock = Lock(tmp_path / "state" / "sweep.lock")
+    assert lock.acquire() is False
+    assert "No locks available" in lock.error
+
+
+def _deny_open(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
+    """Make `os.open` refuse `path` the way a lock file with no permissions would."""
+    real = os.open
+
+    def _open(target: str | Path, flags: int, mode: int = 0o777) -> int:
+        if Path(target) == path:
+            raise PermissionError(errno.EACCES, "Permission denied", str(target))
+        return real(target, flags, mode)
+
+    monkeypatch.setattr(sweep_mod.os, "open", _open)
+
+
+def test_in_progress_false_when_the_lock_cannot_be_opened(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify an unopenable lock file reads as no sweep, so a commit is not skipped forever."""
+    # Given a lock file nobody can open, in a project and under the state root
+    store = store_at(tmp_path)
+    store.state_dir.mkdir(parents=True)
+    store.lock_path.touch()
+    env = {"XDG_STATE_HOME": str(tmp_path / "xdg")}
+    other = _project_lock(env, "other")
+    other.parent.mkdir(parents=True)
+    other.touch()
+    _deny_open(monkeypatch, store.lock_path)
+    _deny_open(monkeypatch, other)
+    # When checking / Then no sweep is reported
+    assert in_progress(store) is False
+    assert any_in_progress(env) is False
+
+
+def test_run_job_gives_up_at_once_when_the_lock_is_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify a lock that fails for a reason other than contention ends the wait immediately."""
+    # Given a lock file that cannot be opened
+    hooks_log = _capture_log(tmp_path)
+    store = _job_store(tmp_path)
+    store.lock_path.touch()
+    _deny_open(monkeypatch, store.lock_path)
+    waits: list[float] = []
+    runner = _RecordingRunner()
+    sweep = Sweep(
+        store,
+        SessionMemoryConfig(),
+        runner,
+        _FakeVault(_target_at(tmp_path / "vault")),
+        sleep=waits.append,
+    )
+    # When the worker runs
+    notes = sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id=""))
+    # Then it never waited or ran, and logged why
+    assert notes == []
+    assert waits == []
+    assert runner.prompt is None
+    assert re.search(
+        r"WARNING.*sweep skipped: lock unavailable: .*Permission denied", hooks_log_text(hooks_log)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2600,3 +2695,49 @@ def test_run_job_quarantines_a_stray_top_level_file(tmp_path: Path) -> None:
 
     assert not stray.exists()
     assert f"malformed-quarantined: {stray.resolve()} (stray top-level file)" in notes
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "learnings/.DS_Store",
+        "logs/2026-10-13-09-41.md~",
+        "Thumbs.db",
+        "learnings/page.sync-conflict-20260101-120000-ABCDEFG.md",
+    ],
+)
+def test_run_job_leaves_debris_alone(tmp_path: Path, relative: str) -> None:
+    """Verify sync, editor, and OS debris is never quarantined as a malformed page."""
+    store = _job_store(tmp_path)
+    target = _target_at(tmp_path / "vault")
+    debris = target.project_dir / relative
+    sweep = Sweep(
+        store,
+        SessionMemoryConfig(),
+        _WritingRunner(lambda: debris.write_text("x", encoding="utf-8")),
+        _FakeVault(target),
+    )
+
+    notes = sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="sess-debris"))
+
+    assert debris.exists()
+    assert not any(n.startswith("malformed") for n in notes)
+
+
+@pytest.mark.parametrize("field_name", ["learnings", "logs"])
+def test_run_job_quarantines_a_page_nested_in_a_field(tmp_path: Path, field_name: str) -> None:
+    """Verify a new file in a field's sub-directory is set aside, since no reader sees it."""
+    store = _job_store(tmp_path)
+    target = _target_at(tmp_path / "vault")
+    nested = target.project_dir / field_name / "sub" / "page.md"
+
+    def _write() -> None:
+        nested.parent.mkdir()
+        nested.write_text(_GOOD_LEARNING, encoding="utf-8")
+
+    sweep = Sweep(store, SessionMemoryConfig(), _WritingRunner(_write), _FakeVault(target))
+
+    notes = sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="sess-nest"))
+
+    assert not nested.exists()
+    assert f"malformed-quarantined: {nested.resolve()} (nested in a field)" in notes

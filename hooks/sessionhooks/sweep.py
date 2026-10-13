@@ -115,25 +115,37 @@ class Lock:
     never wedges the next one. The file is never deleted: a worker that unlinked it
     while another waited would let a third lock a fresh file at the same path, and
     two workers would then each hold "the" lock.
+
+    `acquire` returns False both when another process holds the lock and when the
+    lock cannot be taken at all. `error` tells the two apart: it is empty after
+    contention and names the failure otherwise, since waiting on a lock file that
+    cannot be opened would never end.
     """
 
     def __init__(self, path: Path) -> None:
         self.path = path
+        self.error = ""
         self._fd: int | None = None
 
     def acquire(self) -> bool:
-        """Take the lock without blocking, returning False when another holder has it."""
+        """Take the lock without blocking; False when held elsewhere or unavailable."""
+        self.error = ""
         if self._fd is not None:
             return True
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             fd = os.open(self.path, os.O_CREAT | os.O_RDWR, 0o600)
-        except OSError:
+        except OSError as exc:
+            self.error = str(exc)
             return False
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
+        except BlockingIOError:
             os.close(fd)
+            return False
+        except OSError as exc:
+            os.close(fd)
+            self.error = str(exc)
             return False
         self._fd = fd
         return True
@@ -147,14 +159,18 @@ class Lock:
 
 
 def _held(path: Path) -> bool:
-    """Report whether some process holds the lock at `path` right now."""
+    """Report whether some process holds the lock at `path` right now.
+
+    A lock that cannot be probed reads as free: the caller is deciding whether to
+    commit, and a lock file nobody can open would otherwise block every commit.
+    """
     if not path.exists():
         return False
     probe = Lock(path)
     if probe.acquire():
         probe.release()
         return False
-    return True
+    return not probe.error
 
 
 def in_progress(store: Store) -> bool:
@@ -388,11 +404,17 @@ class Sweep:
     def _await_lock(self, lock: Lock) -> bool:
         """Wait for the project's lock, returning False once QUEUE_WAIT has passed.
 
+        A lock that fails for any reason but contention ends the wait at once, since
+        polling cannot fix a lock file that cannot be opened.
+
         Counts polls rather than reading a clock, so the wait is the sum of the
         sleeps asked for and a test can drive it without real time passing.
         """
         if lock.acquire():
             return True
+        if lock.error:
+            _log.warning("sweep skipped: lock unavailable: %s", lock.error)
+            return False
         _log.info("sweep queued: another sweep holds the lock")
         polls = 0
         while polls * QUEUE_POLL < QUEUE_WAIT:
@@ -401,6 +423,9 @@ class Sweep:
             if lock.acquire():
                 _log.info("sweep dequeued after about %.0fs", polls * QUEUE_POLL)
                 return True
+            if lock.error:
+                _log.warning("sweep skipped: lock unavailable: %s", lock.error)
+                return False
         _log.warning("sweep skipped: lock still held after %.0fs", polls * QUEUE_POLL)
         return False
 
@@ -662,21 +687,26 @@ class Sweep:
         A new file that fails is quarantined. A modified learning that fails is
         restored from HEAD, so a good page the model rewrote into another format is
         not lost; only learnings are checked on edit, since a log or backlog edit
-        keeps its name and has no frontmatter to break.
+        keeps its name and has no frontmatter to break. Debris a sync tool, editor, or
+        OS drops is left alone, as the CLI ignores it too.
         """
         notes: list[str] = []
+        learnings = target.learnings_dir.resolve()
+        logs = target.logs_dir.resolve()
         judged = [(path, True) for path in changes.created]
         judged += [(path, False) for path in changes.modified]
         for path, is_new in judged:
-            if not path.exists():
+            if not path.exists() or shape.is_debris(path.name):
                 continue
             parent = path.parent
-            if parent == target.learnings_dir.resolve():
+            if parent == learnings:
                 problem = shape.learning_problem(path)
-            elif parent == target.logs_dir.resolve() and is_new:
+            elif parent == logs and is_new:
                 problem = shape.log_problem(path)
             elif is_new:
-                problem = shape.stray_problem(path, target.project_dir)
+                problem = shape.nested_problem(path, (learnings, logs)) or shape.stray_problem(
+                    path, target.project_dir
+                )
             else:
                 problem = None
             if problem is None:

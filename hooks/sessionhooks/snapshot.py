@@ -15,6 +15,10 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
     from pathlib import Path
 
+# Stands in for the hash of a file that exists but cannot be read, so a file unreadable
+# in one snapshot reads as modified rather than created or deleted.
+UNREADABLE = "unreadable"
+
 
 @dataclass(frozen=True, slots=True)
 class Changes:
@@ -39,6 +43,9 @@ class Changes:
 def take(root: Path) -> dict[Path, str]:
     """Hash every regular file under `root`, skipping symlinks and index files; never raises.
 
+    A file that exists but cannot be read is recorded as `UNREADABLE`, never left out:
+    a deletion means the file is gone, not that this snapshot failed to read it.
+
     The derived `.sqlite3` indexes are rewritten by any read of a field and hold
     nothing a person wrote, so they would only add noise to the diff.
     """
@@ -54,9 +61,13 @@ def take(root: Path) -> dict[Path, str]:
             # A symlink resolves outside the folder, and judging it would move the target.
             if path.is_symlink() or not path.is_file():
                 continue
-            hashes[path.resolve()] = hashlib.sha256(path.read_bytes()).hexdigest()
+            resolved = path.resolve()
         except OSError:
             continue
+        try:
+            hashes[resolved] = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            hashes[resolved] = UNREADABLE
     return hashes
 
 

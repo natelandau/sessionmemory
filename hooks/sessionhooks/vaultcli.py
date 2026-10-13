@@ -319,7 +319,8 @@ class VaultCLI:
         except (OSError, subprocess.SubprocessError) as exc:
             return Lookup(None, f"project could not start: {exc}")
         if proc.returncode not in (EXIT_OK, EXIT_REFUSED):
-            return Lookup(None, f"project exited {proc.returncode}: {proc.stderr.strip()[-200:]}")
+            tail = " ".join(proc.stderr.split())[-200:]
+            return Lookup(None, f"project exited {proc.returncode}: {tail}")
         payload = _json_object(proc.stdout)
         if payload is None:
             return Lookup(None, "project printed no JSON")

@@ -545,6 +545,16 @@ def test_project_lookup_reports_an_unexpected_exit_with_the_stderr_tail(
     assert _lookup(tmp_path) == Lookup(None, f"project exited 2: {stderr[-200:]}")
 
 
+def test_project_lookup_keeps_a_multiline_stderr_tail_on_one_line(tmp_path: Path, mocker) -> None:
+    """Verify a stderr tail spread over lines is collapsed so the log line stays whole."""
+    mocker.patch(
+        "sessionhooks.vaultcli.subprocess.run",
+        autospec=True,
+        return_value=_completed(2, stderr="Traceback:\n  File x\n\tboom\n"),
+    )
+    assert _lookup(tmp_path) == Lookup(None, "project exited 2: Traceback: File x boom")
+
+
 def test_project_lookup_reports_an_unregistered_project(tmp_path: Path, mocker) -> None:
     """Verify exit 1 with registered false reads as not registered."""
     mocker.patch(
