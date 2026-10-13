@@ -11,7 +11,7 @@
     description = "Durable memory for coding agents, one folder of searchable pages per project."
     name = "sessionmemory"
     readme = "README.md"
-    requires-python = ">=3.13,<3.15"
+    requires-python = ">=3.13,<3.16"
     version = "0.9.0"
 
     [project.scripts]
@@ -40,7 +40,7 @@
 
 [build-system]
     build-backend = "uv_build"
-    requires      = ["uv_build>=0.12.5,<0.13.0"]
+    requires      = ["uv_build>=0.13.0,<0.14"]
 
 [tool.commitizen]
     bump_message               = "bump(release): v$current_version → v$new_version"
@@ -81,15 +81,15 @@
 
 [tool.pytest.ini_options]
 
-    addopts        = "--color=yes --doctest-modules --strict-config --strict-markers -n auto --dist loadfile"
-    cache_dir      = ".cache/pytest"
+    addopts                 = "--color=yes --doctest-modules --strict-config --strict-markers -n auto --dist loadfile"
+    cache_dir               = ".cache/pytest"
     cli_runner_patch_result = true
-    columns        = 1000
-    filterwarnings = ['error', 'ignore:.*Pydantic.*:UserWarning', 'ignore::DeprecationWarning:']
-    markers        = ["serial"]
-    set_columns    = true
-    testpaths      = ["tests"]
-    xfail_strict   = true
+    columns                 = 1000
+    filterwarnings          = ['error', 'ignore:.*Pydantic.*:UserWarning', 'ignore::DeprecationWarning:']
+    markers                 = ["serial"]
+    set_columns             = true
+    testpaths               = ["tests"]
+    xfail_strict            = true
 
 [tool.ruff] # https://github.com/charliermarsh/ruff
 
