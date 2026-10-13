@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 import subprocess
+from pathlib import Path
 
 import pytest
-from typer.testing import CliRunner
+from typer.testing import CliRunner, Result
 
 from sessionmemory.cli import app
 from sessionmemory.lib.config import today
@@ -133,6 +134,26 @@ def test_new_living_document_names_the_doc_holding_a_shared_slug(workspace, kind
     assert "edit it instead" not in result.output
 
 
+def test_new_spec_prints_only_the_created_path(workspace):
+    """Verify prose output is the created file's path and nothing else."""
+    result = runner.invoke(app, ["new", "spec", "--title", "Only a path"])
+
+    assert result.exit_code == 0, result.output
+    printed = Path(result.stdout.strip())
+    assert len(result.stdout.strip().splitlines()) == 1
+    assert printed.is_file()
+
+
+def test_new_backlog_prints_the_line_then_the_path(workspace):
+    """Verify prose output is the written line, then the backlog path."""
+    result = runner.invoke(app, ["new", "backlog", "--kind", "fix", "--size", "S", "--title", "t"])
+
+    assert result.exit_code == 0, result.output
+    line, path = result.stdout.strip().splitlines()
+    assert line == f"- [S] t - {today()}"
+    assert Path(path).is_file()
+
+
 def test_new_document_json_carries_no_uuid(workspace):
     """Verify a spec's --json payload has no uuid, unlike a learning's."""
     result = runner.invoke(app, ["new", "spec", "--title", "A Plan", "--json"])
@@ -225,3 +246,112 @@ def test_new_backlog_with_empty_title_fails(workspace):
     result = runner.invoke(app, ["new", "backlog", "--kind", "docs", "--size", "S", "--title", " "])
 
     assert result.exit_code == 1
+
+
+def _new_backlog(*extra: str, title: str = "t") -> Result:
+    return runner.invoke(
+        app, ["new", "backlog", "--kind", "feat", "--size", "S", "--title", title, *extra]
+    )
+
+
+def test_new_backlog_warns_about_a_topic_no_line_uses(workspace):
+    """Verify a topic absent from a backlog that has topics warns and still writes."""
+    vault, _ = workspace
+    assert _new_backlog("--topic", "web").exit_code == 0
+
+    result = _new_backlog("--topic", "webb", title="second")
+
+    assert result.exit_code == 0, result.output
+    assert "[#webb]" in (vault / "projects" / "demo" / "backlog.md").read_text(encoding="utf-8")
+    assert "#webb is a new topic" in result.stderr
+    assert "in use: web\n" in result.stderr
+
+
+def test_new_backlog_does_not_warn_on_the_first_topic(workspace):
+    """Verify the first topic in an empty backlog raises no warning."""
+    result = _new_backlog("--topic", "web")
+
+    assert result.exit_code == 0, result.output
+    assert result.stderr == ""
+
+
+def test_new_backlog_warns_about_a_long_description(workspace):
+    """Verify a description over 200 characters warns and still writes the line."""
+    vault, _ = workspace
+
+    result = _new_backlog(title="x" * 201)
+
+    assert result.exit_code == 0, result.output
+    assert "x" * 201 in (vault / "projects" / "demo" / "backlog.md").read_text(encoding="utf-8")
+    assert "200" in result.stderr
+
+
+def test_new_backlog_json_stays_parseable_when_it_warns(workspace):
+    """Verify warnings go to stderr so the --json payload on stdout still parses."""
+    assert _new_backlog("--topic", "web").exit_code == 0
+
+    result = _new_backlog("--topic", "other", "--json", title="x" * 201)
+
+    assert result.exit_code == 0, result.output
+    assert result.stderr
+    payload = json.loads(result.stdout)
+    assert {"path", "line"} <= set(payload)
+
+
+def test_new_backlog_accepts_kind_decide(workspace):
+    """Verify decide is an accepted kind that writes under ## decide."""
+    vault, _ = workspace
+
+    result = runner.invoke(
+        app, ["new", "backlog", "--kind", "decide", "--size", "S", "--title", "which cache?"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "## decide\n" in (vault / "projects" / "demo" / "backlog.md").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("topic", ["web", "#web"])
+def test_new_backlog_does_not_warn_on_a_topic_already_in_use(workspace, topic):
+    """Verify reusing a topic, with or without the hash, prints no warning."""
+    assert _new_backlog("--topic", "web").exit_code == 0
+
+    result = _new_backlog("--topic", topic, title="second")
+
+    assert result.exit_code == 0, result.output
+    assert result.stderr == ""
+
+
+def test_new_backlog_warns_only_past_the_description_limit(workspace):
+    """Verify a 200-character description is silent and a 201-character one warns."""
+    assert _new_backlog(title="x" * 200).stderr == ""
+    assert "201" in _new_backlog(title="y" * 201).stderr
+
+
+def test_new_backlog_prints_bracketed_markup_literally(workspace):
+    """Verify a closed Rich tag in a title that warns prints literally in the line."""
+    title = "[bold]x[/bold] " + "y" * 200
+
+    result = _new_backlog(title=title)
+
+    assert result.exit_code == 0, result.output
+    assert f"{len(title)} characters" in result.stderr
+    assert f"- [S] {title} - " in result.stdout.splitlines()[0]
+
+
+def test_new_backlog_prints_no_topic_warning_for_a_rejected_topic(workspace):
+    """Verify an invalid topic fails without first warning that it is new."""
+    assert _new_backlog("--topic", "web").exit_code == 0
+
+    result = _new_backlog("--topic", "a b", title="second")
+
+    assert result.exit_code == 1
+    assert "new topic" not in result.stderr
+    assert "whitespace" in result.stderr
+
+
+def test_new_backlog_prints_no_length_warning_for_a_rejected_item(workspace):
+    """Verify a long description on an item that fails validation prints no length warning."""
+    result = _new_backlog("--topic", "a b", title="x" * 201)
+
+    assert result.exit_code == 1
+    assert "201" not in result.stderr

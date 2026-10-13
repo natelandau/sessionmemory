@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.metadata
 import json
 import os
 import sys
@@ -9,7 +10,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn
 
 import typer
+import typer.core
 from nclutils import pp
+
+# Typer vendors Click, so the `click` package's classes never match its errors.
+from typer._click import core as click_core
+from typer._click import exceptions as click_exceptions
 
 from sessionmemory.lib import embed, registry
 from sessionmemory.lib.bootstrap import is_empty
@@ -33,6 +39,44 @@ VAULT_FIX = [
     "export SESSIONMEMORY_VAULT=/path/to/your/vault",
     f"or set [vault] root in {CONFIG_FILE}",
 ]
+
+
+class VersionedGroup(typer.core.TyperGroup):
+    """A command group whose unknown-command error names the installed version."""
+
+    def resolve_command(
+        self, ctx: click_core.Context, args: list[str]
+    ) -> tuple[str | None, click_core.Command | None, list[str]]:
+        """Name the installed version and how to upgrade in an unknown command's error."""
+        try:
+            return super().resolve_command(ctx, args)
+        except click_exceptions.UsageError as error:
+            # Typer 0.27 raises a plain UsageError via ctx.fail with no typed signal for a miss.
+            if args and self.get_command(ctx, args[0]) is None:
+                error.message += f"\n{_unknown_command_hint(error.message)}"
+            raise
+
+
+def _unknown_command_hint(message: str) -> str:
+    """Return the lines naming the installed version and how to upgrade.
+
+    A miss Typer can correct is a typo, so a newer release is only offered as the cause
+    when no close match was suggested.
+    """
+    try:
+        version = importlib.metadata.version("sessionmemory")
+    except importlib.metadata.PackageNotFoundError:
+        version = ""
+    suggested = "Did you mean" in message
+    if version and suggested:
+        cause = f"Installed sessionmemory is {version}.\n"
+    elif version:
+        cause = f"Installed sessionmemory is {version}; a newer release may have it.\n"
+    elif suggested:
+        cause = ""
+    else:
+        cause = "A newer release may have it.\n"
+    return f"{cause}Upgrade with: uv tool upgrade sessionmemory"
 
 
 def build_embedder() -> Embedder:

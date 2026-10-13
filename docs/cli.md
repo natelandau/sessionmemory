@@ -42,6 +42,32 @@ on a directory is its whole job.
 | `--version`       | Print the installed version bare and exit. The plugin's hooks read it. |
 | `--body-file <p>` | Read a markdown body from a file, or from stdin for `-`.            |
 
+A command the installed version does not have names that version and the upgrade command,
+since a plugin newer than the tool on `PATH` is the usual cause:
+
+```
+Usage: sessionmemory [OPTIONS] COMMAND [ARGS]...
+Try 'sessionmemory --help' for help.
+╭─ Error ──────────────────────────────────────────────────────────────────────╮
+│ No such command 'frobnicate'.                                                │
+│ Installed sessionmemory is 0.9.0; a newer release may have it.               │
+│ Upgrade with: uv tool upgrade sessionmemory                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+A name close to a real command is a typo rather than a missing feature, so the error
+suggests the command and names the version without pointing at a newer release:
+
+```
+Usage: sessionmemory [OPTIONS] COMMAND [ARGS]...
+Try 'sessionmemory --help' for help.
+╭─ Error ──────────────────────────────────────────────────────────────────────╮
+│ No such command 'projects'. Did you mean 'project'?                          │
+│ Installed sessionmemory is 0.9.0.                                            │
+│ Upgrade with: uv tool upgrade sessionmemory                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
 The output below comes from real runs against a vault at `~/repos/my-vault` holding one
 registered project, `invoice-api`, checked out at `~/repos/invoice-api`. The CLI prints
 absolute paths; the home directory is shortened to `~` here.
@@ -70,18 +96,20 @@ sessionmemory init --force ~/old-notes   # a directory that already has contents
 ```
 
 It never overwrites a file, so it is safe to run again. Run it again after an upgrade
-that adds a file to that list.
+that adds a file to that list. The `.gitignore` it writes ignores the derived index files
+and `projects/*/plans/`, since a plan is scratch that never belongs in history.
 
 ## `sessionmemory project`
 
 Report which project a directory belongs to, or register it.
 
-| Option       | What it does                                                    |
-| ------------ | --------------------------------------------------------------- |
-| `--register` | Create this directory's registry entry.                         |
-| `--slug`     | Override the derived slug. Applies only with `--register`.       |
-| `--cwd`      | Directory to resolve. Defaults to the shell's.                   |
-| `--json`     | Emit JSON instead of prose.                                     |
+| Option            | What it does                                                    |
+| ----------------- | --------------------------------------------------------------- |
+| `--register`      | Create this directory's registry entry.                         |
+| `--slug`          | Override the derived slug. Applies only with `--register`.      |
+| `--mark-reviewed` | Record today as the day this project's learnings were reviewed. |
+| `--cwd`           | Directory to resolve. Defaults to the shell's.                  |
+| `--json`          | Emit JSON instead of prose.                                     |
 
 ```bash
 sessionmemory project --register --cwd .
@@ -131,6 +159,47 @@ none:
 }
 ```
 
+`--mark-reviewed` stores `reviewed = "YYYY-MM-DD"` on the project's entry in
+`_system/registry.toml`. `/sessionmemory:review` runs it when it finishes, and the session
+start stops nudging for a review until the date is more than 30 days old:
+
+```
+✓ reviewed 'invoice-api'
+  └─ root: ~/repos/invoice-api
+```
+
+A date edited in by hand may be written bare, as `reviewed = 2026-08-01`, and reads the
+same. Any other value reads as never reviewed rather than as a broken registry.
+
+## `sessionmemory path`
+
+Print one absolute path for this project and nothing else, so a script can use it
+directly.
+
+| Option   | What it does                                                                                        |
+| -------- | --------------------------------------------------------------------------------------------------- |
+| `<kind>` | `project`, `learnings`, `logs`, `specs`, `plans`, `runbooks`, `reference`, or `backlog`. Required. |
+| `--cwd`  | Directory to resolve the project from.                                                              |
+
+```bash
+sessionmemory path specs --cwd .
+```
+
+```
+~/repos/my-vault/projects/invoice-api/specs
+```
+
+```bash
+sessionmemory path backlog --cwd .
+```
+
+```
+~/repos/my-vault/projects/invoice-api/backlog.md
+```
+
+The path is printed whether or not the file or folder exists yet. `sessionmemory project
+--json` prints every path at once.
+
 ## `sessionmemory new learning`
 
 Create a memory page in this project's learnings field.
@@ -156,13 +225,13 @@ EOF
 ```
 
 ```
-✓ created stripe-retries-a-webhook-for-72-hours-so-the-handler-must-be-idempotent.md
-  └─ ~/repos/my-vault/projects/invoice-api/learnings/stripe-retries-a-webhook-for-72-hours-so-the-handler-must-be-idempotent.md
+~/repos/my-vault/projects/invoice-api/learnings/stripe-retries-a-webhook-for-72-hours-so-the-handler-must-be-idempotent.md
 ```
 
-The command writes the frontmatter and prints the path. Write the body into that file
-afterwards, or pass it with `--body-file`. `--json` prints the path, the title, and the
-uuid:
+Every `new` command prints the path of the file it wrote and nothing else, so
+`path=$(sessionmemory new spec --title "..." --cwd .)` captures it. The command writes the
+frontmatter. Write the body into that file afterwards, or pass it with `--body-file`.
+`--json` prints the path, the title, and the uuid:
 
 ```json
 {
@@ -193,13 +262,12 @@ sessionmemory new spec --title "Export invoices as UBL 2.1 XML" --cwd .
 ```
 
 ```
-✓ created 2026-09-03-export-invoices-as-ubl-2-1-xml.md
-  └─ ~/repos/my-vault/projects/invoice-api/specs/2026-09-03-export-invoices-as-ubl-2-1-xml.md
+~/repos/my-vault/projects/invoice-api/specs/2026-09-03-export-invoices-as-ubl-2-1-xml.md
 ```
 
 The filename leads with the local creation date, so a listing of `specs/` reads in the
-order the specs were written. Only `title`, `created`, and `updated` are written. After that the
-file is yours to edit.
+order the specs were written. Only `title`, `created`, and `updated` are written. After
+that the file is yours to edit.
 
 ## `sessionmemory new plan`
 
@@ -211,8 +279,7 @@ sessionmemory new plan --title "Move PDF rendering to a worker queue" --cwd .
 ```
 
 ```
-✓ created 2026-09-03-move-pdf-rendering-to-a-worker-queue.md
-  └─ ~/repos/my-vault/projects/invoice-api/plans/2026-09-03-move-pdf-rendering-to-a-worker-queue.md
+~/repos/my-vault/projects/invoice-api/plans/2026-09-03-move-pdf-rendering-to-a-worker-queue.md
 ```
 
 ## `sessionmemory new runbook`
@@ -225,8 +292,7 @@ sessionmemory new runbook --title "Rotate the Stripe webhook signing secret" --c
 ```
 
 ```
-✓ created rotate-the-stripe-webhook-signing-secret.md
-  └─ ~/repos/my-vault/projects/invoice-api/runbooks/rotate-the-stripe-webhook-signing-secret.md
+~/repos/my-vault/projects/invoice-api/runbooks/rotate-the-stripe-webhook-signing-secret.md
 ```
 
 The filename is the title's slug with no date, because a runbook is followed again and
@@ -245,8 +311,7 @@ sessionmemory new reference --title "Hosting" --cwd .
 ```
 
 ```
-✓ created hosting.md
-  └─ ~/repos/my-vault/projects/invoice-api/reference/hosting.md
+~/repos/my-vault/projects/invoice-api/reference/hosting.md
 ```
 
 The filename is the title's slug with no date, because a reference doc is kept current by
@@ -263,45 +328,86 @@ for another one.
 
 ## `sessionmemory new backlog`
 
-Add one open item to this project's `backlog.md`. The command writes the line in the one
-shape a session start counts, dates it, and puts it under the heading for its kind. It
-creates the file with its `# Backlog` heading when there is none, and adds the kind
-heading at the end when the file lacks it.
+Add one open item to this project's `backlog.md`. The command writes the full line,
+dates it, and puts it under the heading for its kind. It creates the file with its
+`# Backlog` heading when there is none, and adds the kind heading at the end when the
+file lacks it.
 
-| Option    | What it does                                                                                                          |
-| --------- | --------------------------------------------------------------------------------------------------------------------- |
-| `--kind`  | The commit type heading the item goes under: `feat`, `fix`, `refactor`, `perf`, `docs`, `test`, `build`, or `ci`. Required. |
-| `--size`  | Effort: `S`, `M`, or `L`. Required.                                                                                   |
-| `--title` | The imperative description of the work. Required.                                                                     |
-| `--topic` | A topic tag, without the leading hash.                                                                                |
-| `--cwd`   | Directory to resolve the project from.                                                                                |
-| `--json`  | Emit JSON instead of prose.                                                                                           |
+| Option    | What it does                                                                                                                           |
+| --------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `--kind`  | The heading the item goes under: `feat`, `fix`, `refactor`, `perf`, `docs`, `test`, `build`, `ci`, or `decide`. Required.            |
+| `--size`  | Effort: `S`, `M`, or `L`. Required.                                                                                                    |
+| `--title` | The imperative description of the work. Required.                                                                                      |
+| `--topic` | A topic tag, without the leading hash.                                                                                                 |
+| `--cwd`   | Directory to resolve the project from.                                                                                                 |
+| `--json`  | Emit JSON instead of prose.                                                                                                            |
+
+`decide` is for a question the user has to answer before work can start, such as a choice
+between two designs. It goes under a `## decide` heading and counts as an open item like
+any other.
 
 ```bash
 sessionmemory new backlog --kind feat --size M \
-  --title "cache the embedding model between reindex runs" --topic index --cwd .
+  --title "Export invoices as UBL" --topic ubl --cwd .
 ```
 
 ```
-✓ added to backlog.md
-  ├─ - [M] cache the embedding model between reindex runs - 2026-09-03 [#index]
-  └─ ~/repos/my-vault/projects/invoice-api/backlog.md
+- [M] Export invoices as UBL - 2026-10-13 [#ubl]
+~/repos/my-vault/projects/invoice-api/backlog.md
 ```
+
+The command prints the line it wrote, then the path. A question for the user:
+
+```bash
+sessionmemory new backlog --kind decide --size S \
+  --title "Should failed webhooks be retried?" --cwd .
+```
+
+```
+- [S] Should failed webhooks be retried? - 2026-10-13
+~/repos/my-vault/projects/invoice-api/backlog.md
+```
+
+Two warnings go to stderr, and neither stops the write. A topic that no other line uses
+is probably a typo, so the command lists the topics in use:
+
+```
+! #credit-notes is a new topic in this backlog
+  └─ in use: ubl
+- [M] Add a credit note PDF - 2026-10-13 [#credit-notes]
+~/repos/my-vault/projects/invoice-api/backlog.md
+```
+
+A description over 200 characters is a spec in disguise:
+
+```
+! the description is 203 characters, over the 200 limit
+  └─ keep a line to one sentence and put detail in a spec
+```
+
+Both warnings print only once the line is written, so an item that is refused prints the
+error alone.
 
 With `--json`, the payload names the file and the exact line written:
 
 ```json
 {
   "path": "~/repos/my-vault/projects/invoice-api/backlog.md",
-  "line": "- [M] cache the embedding model between reindex runs - 2026-09-03 [#index]"
+  "line": "- [S] Round tax per line, not per invoice - 2026-10-13"
 }
 ```
 
 A kind or size outside the set is refused before anything is written:
 
 ```
-Invalid value for '--kind': 'chore' is not one of 'feat', 'fix', 'refactor',
-'perf', 'docs', 'test', 'build', 'ci'.
+Invalid value for '--kind': 'chore' is not one of 'feat', 'fix', 'refactor', 'perf',
+'docs', 'test', 'build', 'ci', 'decide'.
+```
+
+So is a topic that holds whitespace or a bracket, since it would not read back as one tag:
+
+```
+✗ the topic cannot contain a bracket, which ends its [#topic] tag: 'ubl]'
 ```
 
 The command only adds. A finished item, and one that will never be done, is deleted
@@ -500,8 +606,9 @@ Durable memory for this project lives in a vault of markdown pages. Nothing belo
 loaded for you: the titles are what the vault holds, and each is one `sessionmemory search`
 away. The project's folder has `learnings/` and `logs/`, searched by meaning, beside
 `specs/`, `runbooks/`, `reference/`, and `backlog.md`, which are ordinary files you Read
-and Edit.
-`sessionmemory project --json` prints every path.
+and Edit. `sessionmemory path <kind>` prints one path, where kind is project, learnings,
+logs, specs, runbooks, reference, or backlog; `sessionmemory project --json` prints
+them all for a script.
 
   - Before assuming nothing was written down, search: `sessionmemory search "<words>"`
     prints each hit's path, title, and summary, and `--read` prints every hit's whole
@@ -511,11 +618,13 @@ and Edit.
   - Past sessions, one page each: `sessionmemory search "<words>" --logs`. Search them
     for why something was decided, what happened the last time an area changed, or
     whether a fix was already tried.
-  - Open work: read `backlog.md`. An item is one line under a `## <kind>` heading
-    (feat, fix, refactor, perf, docs, test, build, ci), sized S, M, or L:
-    `- [S] <imperative description> - <YYYY-MM-DD> [#topic]`. Add one with
+  - Open work: read `backlog.md`. Any top-level bullet is an open item. Under a
+    `## <kind>` heading (feat, fix, refactor, perf, docs, test, build, ci, decide), the
+    full shape is sized S, M, or L: `- [S] <imperative description> - <YYYY-MM-DD> [#topic]`.
+    Add one with
     `sessionmemory new backlog --kind <kind> --size <S|M|L> --title "..." --topic <topic> --cwd .`,
-    which creates the file or heading when missing. Delete a finished line, and one
+    which writes that shape and creates the file or heading when missing. Questions
+    for the user to answer go under `## decide`. Delete a finished line, and one
     that will never be done, directly; never tick or annotate it. Git history is the
     record of what was finished.
   - Specs: `specs/` holds one design record per feature, named `<date>-<topic>.md`
@@ -533,25 +642,29 @@ and Edit.
     whose name matches. Keep a doc current by editing it in place. Create one with
     `sessionmemory new reference --title "..." --cwd .`, which prints its path. Public
     documentation stays in the repository.
+  - The hooks commit the vault. Do not commit it, and do not tell the user vault
+    changes are left uncommitted.
   - Learnings are captured at session end, not by you mid-session. When the user asks
-    to keep one now: `sessionmemory new learning --title "..." --summary "..." --cwd .`
+    you to remember something about this project, or to keep a learning now, never
+    use your own memory files: `sessionmemory new learning --title "..." --summary "..." --cwd .`
     creates the page and prints the path to write prose into. Title and summary state
     the fact, not the topic. Keep a page under 8KB; more detail is another page.
 
 ## What this project knows
 
-  - Invoice numbers come from a Postgres sequence, never from max(id) plus one
-  - pytest-asyncio needs asyncio_mode = auto or every async test is skipped
-  - Stripe retries a webhook for 72 hours, so the handler must be idempotent
-  - The nightly reconciliation job must start after the 02:00 bank feed
+  - Stripe retries a webhook for 72 hours
 
 ## Reference docs
 
   reference/hosting.md
 
+## Runbooks
+
+  runbooks/rotate-the-stripe-webhook-signing-secret.md
+
 ## Open work
 
-  2 open backlog items
+  4 open backlog items
   1 spec in specs/
 ```
 
@@ -559,12 +672,22 @@ No page body enters the block, and the index is never read. `--command` changes 
 command name the guidance uses, which is how the plugin names an absolute path for a
 session with no `sessionmemory` on its `PATH`.
 
-A `## Reference docs` section lists every markdown file in `reference/` by name, and is
-left out when the folder is empty.
+A `## Reference docs` section lists every markdown file in `reference/` by name, and a
+`## Runbooks` section does the same for `runbooks/`. Each is left out when its folder is
+empty.
 
-`--json` emits the same content as six keys: `guidance`, `project`, `titles`,
-`open_backlog`, `specs`, and `reference`. `open_backlog` and `specs` are counts, and
-`reference` is a list of filenames.
+A project with at least 10 learnings that was never reviewed, or was last reviewed more
+than 30 days ago, gets one more line under its titles:
+
+```
+  Learnings last reviewed: never. At a natural stopping point, suggest /sessionmemory:review to the user.
+```
+
+`--json` emits the same content as nine keys: `guidance`, `project`, `titles`,
+`open_backlog`, `specs`, `reference`, `runbooks`, `reviewed`, and `review_due`.
+`open_backlog` and `specs` are counts, `reference` and `runbooks` are lists of filenames,
+`reviewed` is the date of the last review or an empty string when never reviewed, and
+`review_due` says whether the review line above is shown.
 
 ## `sessionmemory reindex`
 
@@ -717,7 +840,7 @@ sessionmemory doctor
 ]
 ```
 
-See [Vault health](vault-health.md) for the seven checks and what to do about each one.
+See [Vault health](vault-health.md) for the eight checks and what to do about each one.
 
 ## `sessionmemory export`
 

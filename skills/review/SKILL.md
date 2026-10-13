@@ -37,15 +37,17 @@ If a command exits non-zero, no vault is reachable. Say so and stop.
 
 It reports a page with a nonconformant filename, a page over 8KB, frontmatter that
 does not parse, a bare date in frontmatter, a project root that does not exist, a
-backlog line outside the item shape, and a stale index. Three of those have a
-fixed remedy. Apply it before you dispatch a reviewer:
+ticked backlog line (`- [x]`), a mention of a vault file that does not exist, and a
+stale index. Three of those have a fixed remedy. Apply it before you dispatch a
+reviewer:
 
 - Rename a nonconformant filename with `mv`.
 - Split an oversized page into two.
 - If the index is stale, run `"$CLI" reindex --cwd .`.
 
-Leave a `backlog` finding alone. The `backlog` skill clears it. Mention it in the
-report.
+Leave a `backlog` finding alone. The `backlog` skill clears it. Leave a `reference`
+finding alone too, since the right fix depends on what the page meant. Mention both in
+the report.
 
 ## Step 3: list the pages
 
@@ -114,3 +116,14 @@ sharpened, pages merged and deleted, backlog lines added, and each CLAUDE.md
 recommendation, stated as not applied. Then list every `DELETE` the reviewer
 returned with low confidence, each with its one-line reason, so a wrong one can be
 reverted from the vault's history.
+
+## Step 7: record the review
+
+After the report, record today's date as this project's last review, so the
+session start stops nudging for one:
+
+```bash
+"$CLI" project --mark-reviewed --cwd .
+```
+
+Say in the report that you did.

@@ -33,3 +33,85 @@ def test_version_flag_prints_the_installed_version():
 
     assert result.exit_code == 0
     assert result.output.strip() == importlib.metadata.version("sessionmemory")
+
+
+@pytest.mark.parametrize("argv", [["frobnicate"], ["new", "frobnicate"]])
+def test_unknown_command_names_the_version_and_the_upgrade(argv):
+    """Verify an unknown command or subcommand says which version is installed and how to upgrade."""
+    result = CliRunner().invoke(app, argv)
+
+    assert result.exit_code == 2
+    assert importlib.metadata.version("sessionmemory") in result.output
+    assert "uv tool upgrade sessionmemory" in result.output
+
+
+def test_unknown_command_without_installed_metadata_still_exits_with_usage_error(mocker):
+    """Verify a missing package version leaves the usage error intact."""
+    mocker.patch(
+        "importlib.metadata.version",
+        autospec=True,
+        side_effect=importlib.metadata.PackageNotFoundError,
+    )
+
+    result = CliRunner().invoke(app, ["frobnicate"])
+
+    assert result.exit_code == 2
+    assert "No such command" in result.output
+    assert "uv tool upgrade sessionmemory" in result.output
+
+
+def _error_lines(output: str) -> list[str]:
+    """Return the error panel's text lines with the box drawing stripped."""
+    return [line.strip("│ ").rstrip() for line in output.splitlines() if line.startswith("│")]
+
+
+def test_unknown_command_without_a_suggestion_says_a_newer_release_may_have_it():
+    """Verify a miss with no close match points at a newer release."""
+    version = importlib.metadata.version("sessionmemory")
+
+    result = CliRunner().invoke(app, ["frobnicate"])
+
+    assert _error_lines(result.output) == [
+        "No such command 'frobnicate'.",
+        f"Installed sessionmemory is {version}; a newer release may have it.",
+        "Upgrade with: uv tool upgrade sessionmemory",
+    ]
+
+
+def test_unknown_command_with_a_suggestion_does_not_blame_the_release():
+    """Verify a typo Typer can correct is not attributed to an old release."""
+    version = importlib.metadata.version("sessionmemory")
+
+    result = CliRunner().invoke(app, ["projects"])
+
+    assert _error_lines(result.output) == [
+        "No such command 'projects'. Did you mean 'project'?",
+        f"Installed sessionmemory is {version}.",
+        "Upgrade with: uv tool upgrade sessionmemory",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        pytest.param(
+            ["frobnicate"],
+            ["No such command 'frobnicate'.", "A newer release may have it."],
+            id="no-suggestion",
+        ),
+        pytest.param(
+            ["projects"], ["No such command 'projects'. Did you mean 'project'?"], id="suggestion"
+        ),
+    ],
+)
+def test_unknown_command_without_a_version_starts_its_own_sentence(mocker, argv, expected):
+    """Verify the hint reads as whole sentences when the installed version is unknown."""
+    mocker.patch(
+        "importlib.metadata.version",
+        autospec=True,
+        side_effect=importlib.metadata.PackageNotFoundError,
+    )
+
+    result = CliRunner().invoke(app, argv)
+
+    assert _error_lines(result.output) == [*expected, "Upgrade with: uv tool upgrade sessionmemory"]

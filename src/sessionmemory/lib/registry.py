@@ -9,9 +9,10 @@ path that happens to contain a colon followed by digits is never mistaken for on
 
 from __future__ import annotations
 
+import datetime
 import re
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -47,6 +48,7 @@ class Project:
     slug: str
     remotes: tuple[str, ...]
     root: str
+    reviewed: str = ""
 
 
 def normalize_remote(url: str) -> str:
@@ -99,6 +101,28 @@ def _string_tuple(entry: dict[str, object], key: str, slug: str) -> tuple[str, .
         msg = f"registry entry {slug!r} has a malformed {key!r} field"
         raise RegistryError(msg)
     return tuple(value)
+
+
+def _reviewed(value: object) -> str:
+    """Read a registry entry's review date as `YYYY-MM-DD`, or empty for never reviewed.
+
+    A hand-edited `reviewed = 2026-08-01` is TOML's own date type, and refusing it would
+    fail every command for every project. Any other value only costs a review nudge, so
+    it reads as never reviewed rather than as a broken registry.
+
+    Args:
+        value (object): The raw `reviewed` value from the entry.
+
+    Returns:
+        str: The review date, or an empty string.
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, datetime.datetime):
+        return value.date().isoformat()
+    if isinstance(value, datetime.date):
+        return value.isoformat()
+    return ""
 
 
 def load(vault: Path) -> dict[str, Project]:
@@ -156,6 +180,7 @@ def load(vault: Path) -> dict[str, Project]:
             slug=slug,
             remotes=_string_tuple(entry, "remotes", slug),
             root=root,
+            reviewed=_reviewed(entry.get("reviewed", "")),
         )
     return projects
 
@@ -178,11 +203,30 @@ def save(vault: Path, projects: Mapping[str, Project]) -> None:
             slug: {
                 "remotes": list(project.remotes),
                 "root": project.root,
+                **({"reviewed": project.reviewed} if project.reviewed else {}),
             }
             for slug, project in sorted(projects.items())
         }
     }
     atomic.write_text(path, tomli_w.dumps(document))
+
+
+def mark_reviewed(vault: Path, slug: str, day: str) -> None:
+    """Record the day a project's learnings were last reviewed.
+
+    Args:
+        vault (Path): The vault root.
+        slug (str): The registered project.
+        day (str): The review date as `YYYY-MM-DD`.
+
+    Raises:
+        RegistryError: If the slug is not registered.
+    """
+    projects = load(vault)
+    if slug not in projects:
+        msg = f"project {slug!r} is not registered"
+        raise RegistryError(msg)
+    save(vault, {**projects, slug: replace(projects[slug], reviewed=day)})
 
 
 def find_by_remote(projects: Mapping[str, Project], remotes: Iterable[str]) -> Project | None:

@@ -14,8 +14,7 @@ holds:
 - `backlog.md`, the list of open work.
 
 The CLI does only what Read, Grep, and Write cannot: it searches pages by meaning,
-it creates pages, and it writes a backlog item in the one shape the session start
-counts.
+it creates pages, and it writes a backlog item in its full shape.
 
 ## Resolve the CLI once
 
@@ -52,22 +51,14 @@ is recorded. Do not loosen `--max-distance` or `--min-margin`.
 
 ## Find this project's files
 
-The path resolver prints one absolute path per call:
+The path command prints one absolute path per call:
 
 ```bash
-"${CLAUDE_SKILL_DIR}/../../hooks/vault-path.py" --project
+"$CLI" path <kind> --cwd .
 ```
 
-| Flag          | Prints                     |
-| ------------- | -------------------------- |
-| `--project`   | the project's vault folder |
-| `--learnings` | the learnings field        |
-| `--logs`      | the logs field             |
-| `--specs`     | the specs folder           |
-| `--plans`     | the plans folder           |
-| `--runbooks`  | the runbooks folder        |
-| `--reference` | the reference folder       |
-| `--backlog`   | `backlog.md`               |
+`kind` is project, learnings, logs, specs, plans, runbooks, reference, or backlog.
+`"$CLI" project --cwd . --json` prints all of them at once, for a script.
 
 `backlog.md`, specs, plans, runbooks, and reference docs are ordinary files. Read and Edit them directly.
 The CLI only adds to them.
@@ -89,7 +80,9 @@ second page.
 
 Do not create a learning mid-session unless the user asks for one. A learning is a
 judgment about what mattered, and that judgment is only sound in hindsight. The
-end-of-session sweep makes it.
+end-of-session sweep makes it. When the user asks you to remember something about
+this project, or to keep a learning now, record it with `new learning`. Never use
+your own memory files for it.
 
 ## Create a spec, a plan, or a runbook
 
@@ -126,20 +119,28 @@ Edit that file instead.
 
 ## Add a backlog item
 
-A backlog item is one line under a `## <kind>` heading. It carries a size of S, M,
-or L, today's date, and a topic tag. The CLI writes the line, and it creates the
-file or the heading when either is missing, so the line always has the shape the
-session start counts:
+A backlog item is one top-level bullet, under any heading or none, and the session
+start counts every such bullet as open. The full shape carries a size of S, M, or
+L, today's date, and a topic tag, and the size, date, and topic are optional. The
+CLI writes the full shape under a `## <kind>` heading, and it creates the file or
+the heading when either is missing:
 
 ```bash
 "$CLI" new backlog --kind feat --size S --title "cache the model between reindex runs" --topic index --cwd .
 ```
 
-`--kind` is one of feat, fix, refactor, perf, docs, test, build, or ci.
+`--kind` is one of feat, fix, refactor, perf, docs, test, build, ci, or decide.
+Put a question for the user to answer under `--kind decide`. The command warns
+when a topic is new or a description is over 200 characters.
 
 Delete a finished item from `backlog.md` directly. Delete an item that will never
 be done the same way. The line has no checkbox to tick. Git history is the record
 of what was finished.
+
+## The vault is committed for you
+
+The hooks commit the vault. Do not commit it, and do not tell the user vault
+changes are left uncommitted.
 
 ## Delete a page
 
