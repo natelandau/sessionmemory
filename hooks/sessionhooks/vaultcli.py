@@ -248,20 +248,31 @@ class VaultCLI:
         """
         return {**env, ROOT_ENV: str(self.root)}
 
+    def _spawn(
+        self, args: list[str], *, cwd: Path, env: Mapping[str, str], timeout: int
+    ) -> subprocess.CompletedProcess[str]:
+        """Run one vault command and return its result, letting a failure to run raise.
+
+        Raises:
+            subprocess.TimeoutExpired: The command outran `timeout`.
+            OSError: The command could not be started.
+        """
+        return subprocess.run(  # noqa: S603
+            [str(self.cli), *args],
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+            env=self._child_env(env),
+        )
+
     def run(
         self, args: list[str], *, cwd: Path, env: Mapping[str, str], timeout: int = TIMEOUT
     ) -> subprocess.CompletedProcess[str] | None:
         """Run one vault command, or None when it could not be run at all."""
         try:
-            return subprocess.run(  # noqa: S603
-                [str(self.cli), *args],
-                cwd=str(cwd),
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                check=False,
-                env=self._child_env(env),
-            )
+            return self._spawn(args, cwd=cwd, env=env, timeout=timeout)
         except (OSError, subprocess.SubprocessError):
             return None
 
@@ -301,19 +312,12 @@ class VaultCLI:
     def project_lookup(self, *, cwd: Path, env: Mapping[str, str], timeout: int) -> Lookup:
         """Resolve the project owning `cwd` into flattened paths, or say why not.
 
-        Runs the CLI directly rather than through `run` so a timeout can be told
-        from a failure to start, which a caller logging a skip needs to name.
+        Calls `_spawn` rather than `run` so a timeout can be told from a failure to
+        start, which a caller logging a skip needs to name.
         """
+        args = ["project", "--cwd", str(cwd), "--json"]
         try:
-            proc = subprocess.run(  # noqa: S603
-                [str(self.cli), "project", "--cwd", str(cwd), "--json"],
-                cwd=str(cwd),
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                check=False,
-                env=self._child_env(env),
-            )
+            proc = self._spawn(args, cwd=cwd, env=env, timeout=timeout)
         except subprocess.TimeoutExpired:
             return Lookup(None, f"project timed out after {timeout}s")
         except (OSError, subprocess.SubprocessError) as exc:
