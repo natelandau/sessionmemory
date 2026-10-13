@@ -107,8 +107,8 @@ No vault is reachable, so this session has no memory and nothing it does will be
 
 The hook's timeout is 100 seconds, and it budgets its own worst case: resolving the
 project root 5s, reading the head commit 5s, two version handshakes 10s, the vault commit
-35s, one registration check 5s, one registration 5s, and `sessionmemory inject` 25s,
-which is 90 seconds in all. Injection reads no index and loads no model, so a first
+40s, one registration check 5s, one registration 5s, and `sessionmemory inject` 25s,
+which is 95 seconds in all. Injection reads no index and loads no model, so a first
 session never waits on the embedding model download.
 
 ### SessionEnd
@@ -153,8 +153,8 @@ add: projects/invoice-api/logs/2026-10-13-retry-handling.md
 edit: projects/invoice-api/specs/retries.md
 ```
 
-A commit that touches several projects names them and counts every changed file, the vault's
-own files included:
+A commit that touches several projects names them and counts every changed file, not
+the kind of change, the vault's own files included:
 
 ```text
 billing, invoice-api: update 4 files
@@ -347,7 +347,9 @@ near-duplicates, and nothing else in the system consolidates them.
 prints and which defaults to `~/.local/state/sessionmemory/hooks.log`. Every hook writes
 one line per decision, so a short session shows as `sweep skipped: below threshold` with
 each measure against its floor, and a session the worker swept shows as `sweep finished`
-with the files it changed and the commit it made. A `sweep failed` line carries the exit
+with the files it changed and the commit it made. A worker that cannot start the pass
+logs the reason on a `sweep skipped` line: no usable CLI, a project lookup that failed or
+ran past 120 seconds, or a project payload missing a path. A `sweep failed` line carries the exit
 code, the start of the result text, and the tail of stderr, which is what tells a missing
 `claude` binary from a timeout or a rejected key.
 The log rotates at 1 MB with two backups kept, so it holds weeks of ordinary use. Set
