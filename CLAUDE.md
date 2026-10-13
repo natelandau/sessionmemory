@@ -181,9 +181,11 @@ which has no Apple Silicon wheel, so on a Mac it runs only with that dependency 
 from a scratch copy.
 
 A project's `learnings/` and `logs/` are fields: flat directories of pages, each
-with its own index file. `specs/`, `plans/`, `runbooks/`, `reference/`, and
-`backlog.md` sit beside them and are never indexed, which is what keeps a spec or the
-backlog from being embedded as memory. There is no global scope and no cross-project read; `lib/paths.py`
+with its own index file. `specs/` sits beside them and is indexed for `search --specs`,
+but it is not a field: it has no page-size rule, and `lib/specs.py` derives its embedding
+input instead of embedding the file. `plans/`, `runbooks/`, `reference/`, and
+`backlog.md` are never indexed, which is what keeps the backlog or a plan from being
+embedded as memory. There is no global scope and no cross-project read; `lib/paths.py`
 finds a project's files by its slug and nothing else.
 
 **`lib/field.py` is the one place a page's shape is known.** The filename rule, the
@@ -239,9 +241,9 @@ someone else structured is theirs.
 
 ### The index
 
-One SQLite file per field, named `<embedder.name>.sqlite3` by `fieldindex.index_path`, so
-two embedders never share an index and changing the model needs no migration. It holds
-the spec's table and nothing else:
+One SQLite file per field, and one in `specs/`, named `<embedder.name>.sqlite3` by
+`fieldindex.index_path`, so two embedders never share an index and changing the model
+needs no migration. It holds the spec's table and nothing else:
 
 ```sql
 CREATE TABLE pages (
@@ -253,20 +255,36 @@ CREATE TABLE pages (
 );
 ```
 
-The embedding input is the whole file, frontmatter included, as the spec requires.
-Freshness is the sha256 of the raw bytes, so a page edited in any editor is re-embedded
-on the next read and nothing has to be told that a file changed. `search` calls the same
-`_refresh` before it queries, which is why a page written moments ago is found without a
-`reindex`. `reindex` exists to do that work up front, not because anything depends on it
-having been run.
+For a field the embedding input is the whole file, frontmatter included, as the spec
+requires. `fieldindex._embedding_text` dispatches on the directory name: a file in
+`specs/` embeds `specs.embedding_input` instead, which is the title, the text under the
+`# ` title minus metadata lines, the frontmatter `summary`, the purpose sections whole
+(`PURPOSE_HEADINGS`), every `## ` heading joined by `; `, and the decision sections whole
+(`DECISION_HEADINGS`), cut at the last whole line within `field.PAGE_LIMIT`. The body is
+never embedded. This revises the 2026-10-02 spec's rejection of an index over specs,
+which assumed one embedding of a spec's first 8KB: a filename fails once a topic crosses
+several features, specs reach 40KB so their detail cannot be embedded anyway, and search
+only has to land on the spec, which the reader then opens. The specs index keeps the
+spec's table and nothing else, and a spec is not subject to the page rules.
+
+Freshness is the sha256 of the raw bytes, so a page edited in any editor is re-embedded on
+the next read and nothing has to be told that a file changed. A hash cannot see a change
+to the derived spec input, so `specs.INPUT_VERSION` is stored in the specs index's
+`PRAGMA user_version`; `_refresh` empties a specs index whose version differs, so every
+spec is re-embedded, and `doctor` reads the mismatch as a stale index. Bump it whenever
+`specs.embedding_input` changes what it derives. Fields are never stamped. `search` calls
+the same `_refresh` before it queries, which is why a page written moments ago is found
+without a `reindex`. `reindex` exists to do that work up front, not because anything
+depends on it having been run.
 
 The index is derived, gitignored, and never backed up. Deleting `<field>/*.sqlite3` and
 running `sessionmemory reindex` reproduces it exactly, and the restore procedure for a
 whole vault is `git clone` followed by `sessionmemory reindex --all`, which walks every
-field `paths.iter_field_dirs` lists rather than resolving one project. `fieldindex._open`
-treats a corrupt file the same way: it deletes the file and its `-journal` sibling and
-reconnects once, rather than letting a damaged cache crash a read that has no reason to
-fail. Nothing may treat a value read from the index as authoritative.
+directory `paths.iter_index_dirs` lists rather than resolving one project.
+`fieldindex._open` treats a corrupt file the same way: it deletes the file and its
+`-journal` sibling and reconnects once, rather than letting a damaged cache crash a read
+that has no reason to fail. Nothing may treat a value read from the index as
+authoritative.
 
 **There is no application lock, and nothing here needs one.** A page write is an atomic
 rename, each field's index is one SQLite file under SQLite's own locking with a five
@@ -293,6 +311,19 @@ A median over fewer than `MIN_BACKGROUND_PAGES` is noise, so a smaller field mea
 against `FALLBACK_BACKGROUND` instead. All three numbers came from labeled queries
 against real vaults; the vault's spec on the search cutoff holds the measurements.
 Change them only by re-measuring, never by reasoning about one query.
+
+Specs have their own pair, `SPECS_MAX_DISTANCE` 0.38 and `SPECS_MIN_MARGIN` 0.07, which
+`search --specs` uses unless `--max-distance` or `--min-margin` is given. Specs spread
+wide: the median distance from a query to a project's specs measured 0.53 to 0.56, so the
+relative margin alone let unrelated specs through at 0.42 to 0.44, and the absolute
+ceiling had to be tighter. At the learnings pair 3 of 10 unanswerable queries returned a
+spec. The pair was measured on 50 labeled queries against one project's 51 specs and tuned
+in-sample, with the vault's spec on spec findability holding the table. Re-measure when
+the embedding input rule changes or a second project's specs are available. Retired specs
+(`superseded`, `abandoned`) are filtered out after the median is taken, so
+`--include-retired` changes what is shown and not what counts as a hit. Without `--specs`,
+`--include-retired` is a usage error, and only a spec hit is printed with a retired
+suffix.
 
 Two environment variables exist for tests rather than for a person configuring the CLI:
 
@@ -330,6 +361,10 @@ fastembed's default under the system temp directory. macOS purges that periodica
 a silent re-download of 520MB in the middle of a command is indistinguishable from a
 hang.
 
+`EMBED_BATCH_SIZE` is 1. fastembed pads every batch to its longest input, so a larger
+batch of long specs costs memory and time quadratic in the longest one, and one page per
+batch measured fastest and leanest.
+
 ### Injection
 
 `sessionmemory inject` emits a fixed guidance block, then every learning's title, then
@@ -340,14 +375,14 @@ days old; `sessionmemory project --mark-reviewed` writes that key, and the revie
 runs it last.
 
 Specs are counted rather than listed because they outlive the work they describe, so a
-list is a changelog that grows forever rather than open work; the guidance tells a
-session to list `specs/` before designing a feature. Reference docs and runbooks are listed
+list is a changelog that grows forever rather than open work; the guidance tells a session
+to search `specs/` before designing a feature. Reference docs and runbooks are listed
 because they are few and edited in place rather than accumulated, and `_listed_docs` lists
 every markdown file rather than only conformant names, since a doc moved in by hand keeps
-the name it had. Plans are never mentioned, since the tool that writes them manages them. **The
-index is never read here**, and no page body ever enters an injection, which is what makes its cost
-proportional to the number of pages rather than to their length. `lib/inject.build` reads
-the files directly.
+the name it had. Plans are never mentioned, since the tool that writes them manages them.
+**The index is never read here**, and no page body ever enters an injection, which is what
+makes its cost proportional to the number of pages rather than to their length.
+`lib/inject.build` reads the files directly.
 
 Titles rather than summaries, because injection is a push channel and must not grow into
 the thing it is trying to save. Titles rather than nothing, because pushing titles trades
@@ -369,7 +404,11 @@ nothing.
 The guidance also names `path <kind>` as the way to find a file, routes "remember this"
 to `new learning` rather than the agent's own memory files, says the hooks commit the
 vault, states the bullet rule for the backlog, and sends questions for the user to
-`## decide`.
+`## decide`. For specs it teaches `search --specs`, a short paragraph directly under the
+`# ` title, what a search shows (the frontmatter `summary`, else a goal or purpose
+section's first paragraph, else that opening paragraph, as `specs.hit_summary` picks it),
+the four statuses, setting `status: shipped` when the work ships, and
+`new spec --supersedes` to replace one.
 
 Injection is deliberately unranked and unlimited. If the titles prove not to be read, the
 next thing to try is a `UserPromptSubmit` hook that embeds each prompt and injects the
@@ -546,21 +585,26 @@ it stays plaintext.
 
 ### Doctor
 
-`lib/doctor.py` holds eight checks and the `CHECKS` tuple that runs them. There are no
+`lib/doctor.py` holds nine checks and the `CHECKS` tuple that runs them. There are no
 tiers: every finding is a suggestion, `doctor_command` always exits 0, and nothing here
 can fail a build. Semantic retrieval never surfaces a page that does not match, so an
 imperfect page costs nothing, and a check that failed a build over one would fail it
 forever.
 
-The eight are a nonconformant filename, a page over `PAGE_LIMIT`, frontmatter that cannot
-be parsed or a learnings page missing `title` or `summary`, a bare date or datetime in
-frontmatter, a registered project whose root no longer exists, a ticked `- [x]` or
-`- [X]` line in a `backlog.md` (any other top-level bullet is an open item, so nothing
-else there is reported), a reference to a vault file that does not exist, and an index
-that is unreadable or behind its pages. The reference check scans specs, runbooks,
-reference docs, and learnings for a mention such as `runbooks/deploy-the-worker.md` and
-reports each one that names no file. Plans are never a target, since a plan is scratch
-and may be gone by design. A file that is not valid UTF-8 is reported by the
+The nine are a nonconformant filename in a field or `specs/`, a page over `PAGE_LIMIT`,
+frontmatter that cannot be parsed or a learnings page missing `title` or `summary`, a bare
+date or datetime in frontmatter, a registered project whose root no longer exists, a
+ticked `- [x]` or `- [X]` line in a `backlog.md` (any other top-level bullet is an open
+item, so nothing else there is reported), a reference to a vault file that does not exist,
+a spec with an unusable status, and an index that is unreadable or behind its pages, which
+covers the specs index too. The reference check scans specs, runbooks, reference docs, and
+learnings for a mention such as `runbooks/deploy-the-worker.md` and reports each one that
+names no file. Plans are never a target, since a plan is scratch and may be gone by
+design. The spec check reports a `status` outside `specs.STATUSES`, a superseded spec with
+no `superseded_by`, a `superseded_by` naming no spec in `specs/` or naming the spec
+itself, and a frontmatter block that cannot be parsed, since that silently makes the spec
+current; a spec with no block at all is current and silent, and a `superseded_by` without
+`status: superseded` is not reported. A file that is not valid UTF-8 is reported by the
 frontmatter check. A logs page with no frontmatter block at all is fine, since a log has
 nothing a search result would show. The datetime check has its own reader,
 `frontmatter.unquoted_datetime_keys`, because `frontmatter.parse` stringifies a date
@@ -600,7 +644,7 @@ Four pages sit under `docs/`, and a change to behavior belongs in whichever ones
 - `cli.md`: every command, its options, and its real output.
 - `plugin.md`: the hooks, the sweep, every setting key and default, the slash commands,
   the review subagents.
-- `vault-health.md`: the eight `doctor` checks and what to do about each.
+- `vault-health.md`: the nine `doctor` checks and what to do about each.
 
 A new command, a new option, a new `doctor` check, a new settings key, or a changed
 default is a documentation change as much as a code change. The output in those pages is
