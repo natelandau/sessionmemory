@@ -514,6 +514,22 @@ def test_project_lookup_returns_flattened_paths(tmp_path: Path, mocker) -> None:
     assert _lookup(tmp_path) == Lookup({"slug": "demo", "learnings": "/v/learnings"})
 
 
+def test_project_lookup_returns_paths_from_a_registered_payload_on_exit_1(
+    tmp_path: Path, mocker
+) -> None:
+    """Verify exit 1 with a registered payload still yields the flattened paths."""
+    # Given a CLI that exits 1 but reports the project as registered
+    mocker.patch(
+        "sessionhooks.vaultcli.subprocess.run",
+        autospec=True,
+        return_value=_completed(
+            1, '{"slug": "demo", "registered": true, "paths": {"logs": "/v/logs"}}'
+        ),
+    )
+    # When looking it up / Then the payload is the answer
+    assert _lookup(tmp_path) == Lookup({"slug": "demo", "logs": "/v/logs"})
+
+
 def test_project_lookup_reports_a_timeout(tmp_path: Path, mocker) -> None:
     """Verify a CLI that outruns the timeout is reported with the seconds it was given."""
     mocker.patch(

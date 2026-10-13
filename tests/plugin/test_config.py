@@ -227,17 +227,23 @@ def _write_global(home: Path, body: str) -> None:
 
 def test_sweep_timeout_defaults_to_600(tmp_path):
     """Verify the sweep timeout defaults to ten minutes with no config file."""
+    # Given no config file
+    # When loading / Then the default applies
     assert SessionMemoryConfig.load(home=tmp_path).sweep_timeout == 600
 
 
 def test_sweep_timeout_reads_the_sweep_table(tmp_path):
     """Verify sweep.timeout overrides the default."""
+    # Given a global config setting the timeout
     _write_global(tmp_path, "[sweep]\ntimeout = 900\n")
+    # When loading / Then the configured value applies
     assert SessionMemoryConfig.load(home=tmp_path).sweep_timeout == 900
 
 
 @pytest.mark.parametrize("raw", ["0", "-5", '"soon"', "true", "1.5"])
 def test_sweep_timeout_falls_back_on_a_value_that_cannot_be_a_timeout(tmp_path, raw):
     """Verify a zero, negative, non-integer, or boolean timeout falls back to 600."""
+    # Given a global config whose timeout cannot be a number of seconds
     _write_global(tmp_path, f"[sweep]\ntimeout = {raw}\n")
+    # When loading / Then the default applies
     assert SessionMemoryConfig.load(home=tmp_path).sweep_timeout == 600
