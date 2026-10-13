@@ -1,11 +1,13 @@
-"""Verify the sweep: lock lifecycle, gate threshold, write validation, and run_job."""
+"""Verify the sweep: lock, queue, gate threshold, write validation, and run_job."""
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import re
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -15,22 +17,28 @@ from sessionhooks import log as log_mod  # ty: ignore[unresolved-import]
 from sessionhooks import sweep as sweep_mod  # ty: ignore[unresolved-import]
 from sessionhooks.commit import CommitOutcome  # ty: ignore[unresolved-import]
 from sessionhooks.config import SessionMemoryConfig  # ty: ignore[unresolved-import]
-from sessionhooks.runner import RunResult  # ty: ignore[unresolved-import]
+from sessionhooks.runner import LOG_TITLE_ENV, RunResult  # ty: ignore[unresolved-import]
+from sessionhooks.snapshot import Changes  # ty: ignore[unresolved-import]
+from sessionhooks.store import LOCK_NAME, Store, state_root  # ty: ignore[unresolved-import]
 from sessionhooks.sweep import (  # ty: ignore[unresolved-import]
     Lock,
     Sweep,
     SweepJob,
     Target,
+    any_in_progress,
     in_progress,
 )
+from sessionhooks.vaultcli import WORKER_CLI_TIMEOUT, Lookup  # ty: ignore[unresolved-import]
 
+from sessionmemory.lib.frontmatter import serialize
 from tests._env import clean_environ
 from tests.plugin._store_factory import store_at
 from tests.plugin.conftest import hooks_log_text
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Mapping
+
     from pytest_mock import MockerFixture
-    from sessionhooks.store import Store  # ty: ignore[unresolved-import]
 
 
 def _capture_log(tmp_path: Path) -> Path:
@@ -51,7 +59,9 @@ class _FakeRunner:
     def __init__(self, changed_files: list[str]) -> None:
         self.changed_files = changed_files
 
-    def run(self, prompt: str, *, cwd: str) -> RunResult:
+    def run(
+        self, prompt: str, *, cwd: str, extra_env: Mapping[str, str] | None = None
+    ) -> RunResult:
         return RunResult(
             success=True,
             exit_code=0,
@@ -59,6 +69,20 @@ class _FakeRunner:
             text="done",
             stderr="",
         )
+
+
+class _WritingRunner:
+    """Runner that performs filesystem actions during the run without reporting them."""
+
+    def __init__(self, action: Callable[[], object], *, text: str = "done") -> None:
+        self.action = action
+        self.text = text
+
+    def run(
+        self, prompt: str, *, cwd: str, extra_env: Mapping[str, str] | None = None
+    ) -> RunResult:
+        self.action()
+        return RunResult(success=True, exit_code=0, changed_files=[], text=self.text, stderr="")
 
 
 # ---------------------------------------------------------------------------
@@ -92,133 +116,222 @@ def test_target_needs_every_key():
 # ---------------------------------------------------------------------------
 
 
-def test_lock_acquire_succeeds_first(tmp_path: Path) -> None:
-    """Verify acquire returns True and writes the timestamp when the lock is free."""
+def test_lock_acquire_succeeds_when_free(tmp_path: Path) -> None:
+    """Verify acquire returns True and creates the lock file when nobody holds it."""
     # Given a lock path under a not-yet-created dir
     lock = Lock(tmp_path / "state" / "sweep.lock")
-    # When acquiring for the first time
-    assert lock.acquire(now=1000.0) is True
-    # Then the file exists and stores the timestamp
-    assert float(lock.path.read_text(encoding="utf-8").strip()) == 1000.0
+    # When acquiring / Then it succeeds and the file exists
+    assert lock.acquire() is True
+    assert lock.path.exists()
+    lock.release()
 
 
-def test_lock_held_second_acquire_fails(tmp_path: Path) -> None:
-    """Verify a second acquire within the stale window returns False."""
-    # Given an already-held fresh lock
-    lock = Lock(tmp_path / "state" / "sweep.lock")
-    assert lock.acquire(now=1000.0) is True
-    # When acquiring again well within the stale window
-    second = Lock(tmp_path / "state" / "sweep.lock")
-    # Then it fails (the lock is still fresh)
-    assert second.acquire(now=1100.0) is False
-
-
-def test_lock_steals_stale(tmp_path: Path) -> None:
-    """Verify a lock older than stale_after is stolen and re-stamped."""
-    # Given a lock acquired at t=1000 with a 300s window
-    Lock(tmp_path / "state" / "sweep.lock").acquire(now=1000.0)
-    # When acquiring 400s later (past the threshold)
-    stealer = Lock(tmp_path / "state" / "sweep.lock", stale_after=300.0)
-    # Then the stale lock is stolen and the new timestamp written
-    assert stealer.acquire(now=1400.0) is True
-    assert float(stealer.path.read_text(encoding="utf-8").strip()) == 1400.0
-
-
-def test_lock_steals_malformed(tmp_path: Path) -> None:
-    """Verify a lock with a non-numeric timestamp is treated as stale and stolen."""
-    # Given an existing lock file with corrupt content
-    lock = Lock(tmp_path / "state" / "sweep.lock")
-    lock.path.parent.mkdir(parents=True)
-    lock.path.write_text("not-a-float", encoding="utf-8")
-    # When acquiring (corrupt parses to stored=0.0, always stale)
-    assert lock.acquire(now=400.0) is True
-
-
-def test_lock_release_removes_file(tmp_path: Path) -> None:
-    """Verify release unlinks the lock file and never raises when already gone."""
+def test_lock_second_holder_is_refused(tmp_path: Path) -> None:
+    """Verify a second Lock on the same path is refused while the first holds it."""
     # Given a held lock
+    first = Lock(tmp_path / "state" / "sweep.lock")
+    assert first.acquire() is True
+    # When a second holder tries / Then it is refused
+    try:
+        assert Lock(tmp_path / "state" / "sweep.lock").acquire() is False
+    finally:
+        first.release()
+
+
+def test_lock_is_free_again_after_release(tmp_path: Path) -> None:
+    """Verify releasing frees the lock for a new holder and a second release never raises."""
+    # Given a lock acquired then released twice
     lock = Lock(tmp_path / "state" / "sweep.lock")
-    lock.acquire(now=1.0)
-    # When released twice
+    assert lock.acquire() is True
     lock.release()
     lock.release()
-    # Then the file is gone and no error was raised
-    assert not lock.path.exists()
+    # When a new holder tries / Then it succeeds
+    again = Lock(tmp_path / "state" / "sweep.lock")
+    assert again.acquire() is True
+    again.release()
+
+
+def test_lock_release_by_a_non_holder_leaves_the_holder_alone(tmp_path: Path) -> None:
+    """Verify releasing a Lock that never acquired does not free another holder's lock."""
+    # Given a held lock
+    path = tmp_path / "state" / "sweep.lock"
+    holder = Lock(path)
+    assert holder.acquire() is True
+    try:
+        # When a never-acquired Lock on the same path releases
+        Lock(path).release()
+        # Then the holder still holds it
+        assert Lock(path).acquire() is False
+    finally:
+        holder.release()
+
+
+def test_lock_left_on_disk_by_a_dead_holder_is_free(tmp_path: Path) -> None:
+    """Verify a lock file nobody holds a lock on is free, whatever it contains."""
+    # Given a lock file left behind with old content
+    path = tmp_path / "state" / "sweep.lock"
+    path.parent.mkdir(parents=True)
+    path.write_text("12345.0", encoding="utf-8")
+    lock = Lock(path)
+    # When acquiring / Then it succeeds
+    assert lock.acquire() is True
+    lock.release()
+
+
+def test_lock_is_released_when_its_holder_process_exits(tmp_path: Path) -> None:
+    """Verify the kernel frees the lock when a holder exits without releasing it."""
+    # Given a process that takes the lock and exits without unlocking
+    path = tmp_path / "state" / "sweep.lock"
+    path.parent.mkdir(parents=True)
+    code = (
+        "import fcntl, os, sys\n"
+        "fd = os.open(sys.argv[1], os.O_CREAT | os.O_RDWR, 0o600)\n"
+        "fcntl.flock(fd, fcntl.LOCK_EX)\n"
+    )
+    subprocess.run([sys.executable, "-c", code, str(path)], check=True)
+    lock = Lock(path)
+    # When acquiring / Then it succeeds
+    assert lock.acquire() is True
+    lock.release()
 
 
 def test_lock_acquire_fails_when_the_parent_directory_cannot_be_created(tmp_path: Path) -> None:
-    """Verify acquire fails open rather than raising when mkdir cannot succeed."""
+    """Verify acquire fails open when the lock's parent directory cannot be made."""
     # Given a plain file occupying the path the lock's parent directory needs
     blocker = tmp_path / "blocker"
     blocker.write_text("x", encoding="utf-8")
     lock = Lock(blocker / "sweep.lock")
-    # Then acquiring never raises, and reports failure
-    assert lock.acquire(now=1.0) is False
+    # When acquiring / Then it fails rather than raising
+    assert lock.acquire() is False
 
 
-def test_lock_acquire_fails_when_the_stale_lock_cannot_be_unlinked(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Verify a steal that cannot remove the stale file fails open rather than raising."""
-    # Given a stale lock the steal attempt cannot unlink
-    lock_path = tmp_path / "state" / "sweep.lock"
-    Lock(lock_path).acquire(now=1.0)
-    stealer = Lock(lock_path, stale_after=0.0)
-
-    def _raise(self, *_args, **_kwargs) -> None:
-        message = "cannot unlink"
-        raise OSError(message)
-
-    monkeypatch.setattr(Path, "unlink", _raise)
-
-    # Then the steal fails rather than raising
-    assert stealer.acquire(now=1000.0) is False
+def test_lock_reports_no_error_when_another_holder_has_it(tmp_path: Path) -> None:
+    """Verify contention is told apart from a failure: it leaves no error behind."""
+    first = Lock(tmp_path / "state" / "sweep.lock")
+    assert first.acquire() is True
+    second = Lock(first.path)
+    try:
+        assert second.acquire() is False
+        assert second.error == ""
+    finally:
+        first.release()
 
 
-def test_lock_acquire_fails_when_recreation_after_a_steal_loses_a_race(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Verify acquire fails open when re-creating the lock after a steal cannot succeed.
-
-    os.open is forced to always fail, so the first _try_create (before the
-    steal) fails for the same reason a real race would, and so does the
-    second _try_create right after the stale lock is unlinked.
-    """
-    # Given a stale lock to steal, and os.open forced to always fail
-    lock_path = tmp_path / "state" / "sweep.lock"
-    Lock(lock_path).acquire(now=1.0)  # a stale lock to steal
-
-    def _raise(*_args, **_kwargs) -> None:
-        message = "cannot open"
-        raise OSError(message)
-
-    monkeypatch.setattr(os, "open", _raise)
-    stealer = Lock(lock_path, stale_after=0.0)
-
-    # When acquiring, well past the stale window
-    result = stealer.acquire(now=1000.0)
-
-    # Then acquire fails open, and the stale lock was still removed even
-    # though recreation lost the race
-    assert result is False
-    assert not lock_path.exists()
+def test_lock_names_the_error_when_its_directory_cannot_be_made(tmp_path: Path) -> None:
+    """Verify a lock that cannot be created records why, so a caller stops waiting on it."""
+    blocker = tmp_path / "blocker"
+    blocker.write_text("x", encoding="utf-8")
+    lock = Lock(blocker / "sweep.lock")
+    assert lock.acquire() is False
+    assert lock.error
 
 
-def test_lock_acquire_fails_when_the_write_fails(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Verify a write failure after creating the lock file fails open, not raises."""
-    # Given a fresh lock and os.write forced to always fail
+def test_lock_names_a_flock_failure_that_is_not_contention(tmp_path: Path, mocker) -> None:
+    """Verify only EWOULDBLOCK means held; any other flock error is recorded as a failure."""
+    mocker.patch.object(
+        sweep_mod.fcntl,
+        "flock",
+        autospec=True,
+        side_effect=OSError(errno.ENOLCK, "No locks available"),
+    )
     lock = Lock(tmp_path / "state" / "sweep.lock")
+    assert lock.acquire() is False
+    assert "No locks available" in lock.error
 
-    def _raise(*_args, **_kwargs) -> None:
-        message = "cannot write"
-        raise OSError(message)
 
-    monkeypatch.setattr(os, "write", _raise)
+def _deny_open(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
+    """Make `os.open` refuse `path` the way a lock file with no permissions would."""
+    real = os.open
 
-    # When acquiring / Then it fails open rather than raising
-    assert lock.acquire(now=1.0) is False
+    def _open(target: str | Path, flags: int, mode: int = 0o777) -> int:
+        if Path(target) == path:
+            raise PermissionError(errno.EACCES, "Permission denied", str(target))
+        return real(target, flags, mode)
+
+    monkeypatch.setattr(sweep_mod.os, "open", _open)
+
+
+def test_in_progress_false_when_the_lock_cannot_be_opened(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify an unopenable lock file reads as no sweep, so a commit is not skipped forever."""
+    # Given a lock file nobody can open, in a project and under the state root
+    store = store_at(tmp_path)
+    store.state_dir.mkdir(parents=True)
+    store.lock_path.touch()
+    env = {"XDG_STATE_HOME": str(tmp_path / "xdg")}
+    other = _project_lock(env, "other")
+    other.parent.mkdir(parents=True)
+    other.touch()
+    _deny_open(monkeypatch, store.lock_path)
+    _deny_open(monkeypatch, other)
+    # When checking / Then no sweep is reported
+    assert in_progress(store) is False
+    assert any_in_progress(env) is False
+
+
+def test_run_job_gives_up_at_once_when_the_lock_is_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify a lock that fails for a reason other than contention ends the wait immediately."""
+    # Given a lock file that cannot be opened
+    hooks_log = _capture_log(tmp_path)
+    store = _job_store(tmp_path)
+    store.lock_path.touch()
+    _deny_open(monkeypatch, store.lock_path)
+    waits: list[float] = []
+    runner = _RecordingRunner()
+    sweep = Sweep(
+        store,
+        SessionMemoryConfig(),
+        runner,
+        _FakeVault(_target_at(tmp_path / "vault")),
+        sleep=waits.append,
+    )
+    # When the worker runs
+    notes = sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id=""))
+    # Then it never waited or ran, and logged why
+    assert notes == []
+    assert waits == []
+    assert runner.prompt is None
+    assert re.search(
+        r"WARNING.*sweep skipped: lock unavailable: .*Permission denied", hooks_log_text(hooks_log)
+    )
+
+
+def test_run_job_stops_waiting_when_the_lock_becomes_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify a queued worker stops polling once the lock fails for a reason other than contention."""
+    # Given a lock another worker holds, whose file stops opening while this one waits
+    hooks_log = _capture_log(tmp_path)
+    store = _job_store(tmp_path)
+    held = Lock(store.lock_path)
+    assert held.acquire() is True
+    waits: list[float] = []
+
+    def _sleep(seconds: float) -> None:
+        waits.append(seconds)
+        _deny_open(monkeypatch, store.lock_path)
+
+    runner = _RecordingRunner()
+    sweep = Sweep(
+        store,
+        SessionMemoryConfig(),
+        runner,
+        _FakeVault(_target_at(tmp_path / "vault")),
+        sleep=_sleep,
+    )
+    try:
+        # When the worker runs
+        notes = sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id=""))
+    finally:
+        held.release()
+    # Then it gave up after one poll without running
+    assert notes == []
+    assert waits == [sweep_mod.QUEUE_POLL]
+    assert runner.prompt is None
+    assert "sweep skipped: lock unavailable: " in hooks_log_text(hooks_log)
 
 
 # ---------------------------------------------------------------------------
@@ -226,22 +339,32 @@ def test_lock_acquire_fails_when_the_write_fails(
 # ---------------------------------------------------------------------------
 
 
-def test_in_progress_true_for_a_fresh_lock(tmp_path: Path) -> None:
-    """Verify a lock stamped just now reads as a worker still holding it."""
-    # Given a store whose lock a worker acquired a moment ago
+def test_in_progress_true_while_a_worker_holds_the_lock(tmp_path: Path) -> None:
+    """Verify a held lock reads as a worker in progress."""
+    # Given a store whose lock a worker holds
     store = store_at(tmp_path)
-    Lock(store.lock_path).acquire(now=1000.0)
-    # When checking shortly after / Then a worker is reported in progress
-    assert in_progress(store, now=1001.0) is True
+    worker = Lock(store.lock_path)
+    assert worker.acquire() is True
+    try:
+        # When checking / Then a worker is reported
+        assert in_progress(store) is True
+    finally:
+        worker.release()
 
 
-def test_in_progress_false_for_a_stale_lock(tmp_path: Path) -> None:
-    """Verify a lock older than stale_after reads as no worker holding it."""
-    # Given a store whose lock was stamped well in the past
+def test_in_progress_false_after_the_worker_releases(tmp_path: Path) -> None:
+    """Verify a released lock reads as no worker, and the probe leaves it free."""
+    # Given a store whose worker released its lock
     store = store_at(tmp_path)
-    Lock(store.lock_path).acquire(now=1000.0)
-    # When checking past the stale window / Then no worker is reported
-    assert in_progress(store, now=2000.0, stale_after=300.0) is False
+    worker = Lock(store.lock_path)
+    assert worker.acquire() is True
+    worker.release()
+    # When checking / Then no worker is reported
+    assert in_progress(store) is False
+    # And the probe released what it took
+    after = Lock(store.lock_path)
+    assert after.acquire() is True
+    after.release()
 
 
 def test_in_progress_false_when_no_lock_exists(tmp_path: Path) -> None:
@@ -249,17 +372,55 @@ def test_in_progress_false_when_no_lock_exists(tmp_path: Path) -> None:
     # Given a store with no lock file at all
     store = store_at(tmp_path)
     # When checking / Then no worker is reported
-    assert in_progress(store, now=1000.0) is False
+    assert in_progress(store) is False
+    assert not store.lock_path.exists()
 
 
-def test_in_progress_false_for_a_malformed_lock(tmp_path: Path) -> None:
-    """Verify a lock file with non-numeric content reads as no worker holding it."""
-    # Given a lock file with corrupt content
-    store = store_at(tmp_path)
-    store.state_dir.mkdir(parents=True)
-    store.lock_path.write_text("not-a-float", encoding="utf-8")
-    # When checking / Then no worker is reported
-    assert in_progress(store, now=1000.0) is False
+# ---------------------------------------------------------------------------
+# any_in_progress
+# ---------------------------------------------------------------------------
+
+
+def _project_lock(env: dict[str, str], name: str) -> Path:
+    """The sweep lock path of a project's store under the state root `env` names."""
+    return state_root(env) / name / LOCK_NAME
+
+
+def test_any_in_progress_sees_another_projects_lock(tmp_path: Path) -> None:
+    """Verify a lock held by any project under the state root reads as a sweep running."""
+    # Given two project stores under one state root, one of them locked
+    env = {"XDG_STATE_HOME": str(tmp_path / "xdg")}
+    held = Lock(_project_lock(env, "aaaa"))
+    assert held.acquire() is True
+    idle = _project_lock(env, "bbbb")
+    idle.parent.mkdir(parents=True)
+    idle.touch()
+    try:
+        # When checking / Then a sweep is reported
+        assert any_in_progress(env) is True
+    finally:
+        held.release()
+    # And none once it is released
+    assert any_in_progress(env) is False
+
+
+def test_any_in_progress_false_with_no_state_root(tmp_path: Path) -> None:
+    """Verify a machine with no state root yet reads as no sweep running."""
+    assert any_in_progress({"XDG_STATE_HOME": str(tmp_path / "missing")}) is False
+
+
+def test_any_in_progress_skips_the_excepted_lock(tmp_path: Path) -> None:
+    """Verify a worker asking about other sweeps does not count its own lock."""
+    # Given a worker holding its own project's lock
+    env = {"XDG_STATE_HOME": str(tmp_path / "xdg")}
+    own = Lock(_project_lock(env, "aaaa"))
+    assert own.acquire() is True
+    try:
+        # When checking with its own lock excepted / Then no other sweep is reported
+        assert any_in_progress(env, except_path=own.path) is False
+        assert any_in_progress(env) is True
+    finally:
+        own.release()
 
 
 # ---------------------------------------------------------------------------
@@ -287,8 +448,8 @@ def _write_transcript(path: Path, entries: list[dict]) -> None:
     path.write_text("\n".join(json.dumps(e) for e in entries) + "\n", encoding="utf-8")
 
 
-def test_gate_below_threshold_returns_none_and_releases(tmp_path: Path) -> None:
-    """Verify gate returns None and releases the lock below min_exchanges."""
+def test_gate_below_threshold_returns_none(tmp_path: Path) -> None:
+    """Verify gate returns None below min_exchanges."""
     # Given a sparse transcript (2 meaningful) and a threshold of 5
     store = store_at(tmp_path)
     t_file = tmp_path / "sparse.jsonl"
@@ -296,10 +457,9 @@ def test_gate_below_threshold_returns_none_and_releases(tmp_path: Path) -> None:
     sweep = Sweep(store, SessionMemoryConfig(min_exchanges=5), _FakeRunner([]))
     event = {"cwd": str(tmp_path), "transcript_path": str(t_file)}
     # When gating
-    result = sweep._gate(event, now=1000.0)
-    # Then None is returned and the lock is cleaned up
+    result = sweep._gate(event)
+    # Then None is returned
     assert result is None
-    assert not store.lock_path.exists()
 
 
 def test_gate_logs_a_below_threshold_skip_with_every_count(tmp_path: Path) -> None:
@@ -309,7 +469,7 @@ def test_gate_logs_a_below_threshold_skip_with_every_count(tmp_path: Path) -> No
     t_file = tmp_path / "sparse.jsonl"
     _write_transcript(t_file, [_user("hi"), _assistant("yo")])
     sweep = Sweep(store, SessionMemoryConfig(min_exchanges=5), _FakeRunner([]))
-    sweep._gate({"cwd": str(tmp_path), "transcript_path": str(t_file)}, now=1000.0)
+    sweep._gate({"cwd": str(tmp_path), "transcript_path": str(t_file)})
     text = hooks_log_text(hooks_log)
     assert (
         "sweep skipped: below threshold (exchanges 2/5, user messages 1/3, user chars 2/400)"
@@ -317,21 +477,11 @@ def test_gate_logs_a_below_threshold_skip_with_every_count(tmp_path: Path) -> No
     )
 
 
-def test_gate_logs_a_held_lock(tmp_path: Path) -> None:
-    """Verify a sweep refused because another holds the lock says so."""
-    hooks_log = _capture_log(tmp_path)
-    store = store_at(tmp_path)
-    assert Lock(store.lock_path).acquire(now=1000.0)
-    sweep = Sweep(store, SessionMemoryConfig(), _FakeRunner([]))
-    sweep._gate({"cwd": str(tmp_path), "transcript_path": ""}, now=1000.5)
-    assert "sweep skipped: lock held" in hooks_log_text(hooks_log)
-
-
 def test_gate_logs_a_missing_transcript(tmp_path: Path) -> None:
     """Verify a session with no transcript path and no saved pointer is named as such."""
     hooks_log = _capture_log(tmp_path)
     sweep = Sweep(store_at(tmp_path), SessionMemoryConfig(), _FakeRunner([]))
-    sweep._gate({"cwd": str(tmp_path), "transcript_path": ""}, now=1000.0)
+    sweep._gate({"cwd": str(tmp_path), "transcript_path": ""})
     assert "sweep skipped: no transcript" in hooks_log_text(hooks_log)
 
 
@@ -343,14 +493,13 @@ def test_gate_prefers_the_payload_session_id(tmp_path: Path) -> None:
     sweep = Sweep(store, SessionMemoryConfig(min_exchanges=5), _FakeRunner([]))
     job = sweep._gate(
         {"cwd": str(tmp_path), "transcript_path": str(t_file), "session_id": "from-payload"},
-        now=1000.0,
     )
     assert job is not None
     assert job.session_id == "from-payload"
 
 
-def test_gate_above_threshold_returns_job_and_holds_lock(tmp_path: Path) -> None:
-    """Verify gate returns a SweepJob with the window and keeps the lock held."""
+def test_gate_above_threshold_returns_job(tmp_path: Path) -> None:
+    """Verify gate returns a SweepJob carrying the window."""
     # Given a rich transcript (6 meaningful, threshold 5)
     store = store_at(tmp_path)
     entries = _meaningful(6)
@@ -359,12 +508,11 @@ def test_gate_above_threshold_returns_job_and_holds_lock(tmp_path: Path) -> None
     sweep = Sweep(store, SessionMemoryConfig(min_exchanges=5), _FakeRunner([]))
     event = {"cwd": str(tmp_path / "proj"), "transcript_path": str(t_file)}
     # When gating
-    result = sweep._gate(event, now=1000.0)
-    # Then a job covering all entries is returned and the lock stays held for run_job
+    result = sweep._gate(event)
+    # Then a job covering all entries is returned
     assert result is not None
     assert result.cwd == str(tmp_path / "proj")
     assert len(result.window) == len(entries)
-    assert store.lock_path.exists()
 
 
 def test_gate_carries_the_transcript_path_and_online_link(tmp_path: Path) -> None:
@@ -376,7 +524,7 @@ def test_gate_carries_the_transcript_path_and_online_link(tmp_path: Path) -> Non
     _write_transcript(t_file, entries)
     sweep = Sweep(store, SessionMemoryConfig(min_exchanges=5), _FakeRunner([]))
     # When gating
-    result = sweep._gate({"cwd": str(tmp_path), "transcript_path": str(t_file)}, now=1000.0)
+    result = sweep._gate({"cwd": str(tmp_path), "transcript_path": str(t_file)})
     # Then both are carried on the job
     assert result is not None
     assert result.transcript_path == str(t_file)
@@ -392,7 +540,7 @@ def test_gate_carries_the_session_start(tmp_path: Path) -> None:
     _write_transcript(t_file, entries)
     sweep = Sweep(store, SessionMemoryConfig(min_exchanges=5), _FakeRunner([]))
     # When gating
-    result = sweep._gate({"cwd": str(tmp_path), "transcript_path": str(t_file)}, now=1000.0)
+    result = sweep._gate({"cwd": str(tmp_path), "transcript_path": str(t_file)})
     # Then the start is carried on the job
     assert result is not None
     assert result.started == "2026-09-03T17:53:10.187Z"
@@ -408,7 +556,7 @@ def test_gate_falls_back_to_transcript_pointer(tmp_path: Path) -> None:
     store.save_transcript_pointer(str(t_file))
     sweep = Sweep(store, SessionMemoryConfig(min_exchanges=5), _FakeRunner([]))
     # When gating with an empty event transcript path
-    result = sweep._gate({"cwd": str(tmp_path), "transcript_path": ""}, now=1000.0)
+    result = sweep._gate({"cwd": str(tmp_path), "transcript_path": ""})
     # Then the job is built from the pointer's transcript
     assert result is not None
     assert len(result.window) == len(entries)
@@ -423,10 +571,9 @@ def test_gate_rejects_a_session_the_human_barely_spoke_in(tmp_path: Path) -> Non
     _write_transcript(t_file, entries)
     sweep = Sweep(store, SessionMemoryConfig(min_exchanges=5), _FakeRunner([]))
     # When gating
-    result = sweep._gate({"cwd": str(tmp_path), "transcript_path": str(t_file)}, now=1000.0)
+    result = sweep._gate({"cwd": str(tmp_path), "transcript_path": str(t_file)})
     # Then the human's single message fails the substance floor
     assert result is None
-    assert not store.lock_path.exists()
 
 
 def test_gate_rejects_a_session_of_terse_commands(tmp_path: Path) -> None:
@@ -438,10 +585,9 @@ def test_gate_rejects_a_session_of_terse_commands(tmp_path: Path) -> None:
     _write_transcript(t_file, entries)
     sweep = Sweep(store, SessionMemoryConfig(min_exchanges=5), _FakeRunner([]))
     # When gating
-    result = sweep._gate({"cwd": str(tmp_path), "transcript_path": str(t_file)}, now=1000.0)
+    result = sweep._gate({"cwd": str(tmp_path), "transcript_path": str(t_file)})
     # Then the character floor rejects it
     assert result is None
-    assert not store.lock_path.exists()
 
 
 def test_gate_accepts_an_exploratory_session_with_no_commits(tmp_path: Path) -> None:
@@ -458,29 +604,34 @@ def test_gate_accepts_an_exploratory_session_with_no_commits(tmp_path: Path) -> 
     _write_transcript(t_file, entries)
     sweep = Sweep(store, SessionMemoryConfig(min_exchanges=4, min_user_messages=2), _FakeRunner([]))
     # When gating
-    result = sweep._gate({"cwd": str(tmp_path), "transcript_path": str(t_file)}, now=1000.0)
+    result = sweep._gate({"cwd": str(tmp_path), "transcript_path": str(t_file)})
     # Then it is swept despite no commits
     assert result is not None
-    assert store.lock_path.exists()
 
 
-def test_gate_returns_none_when_the_lock_is_already_held(tmp_path: Path) -> None:
-    """Verify a session cannot gate while another sweep already holds the lock."""
-    # Given a lock another process holds, fresh
+def test_gate_yields_a_job_while_another_sweep_holds_the_lock(tmp_path: Path) -> None:
+    """Verify a running sweep never stops a later session from gating through."""
+    # Given a rich transcript and another sweep holding the project's lock
     store = store_at(tmp_path)
-    Lock(store.lock_path).acquire(now=1000.0)
-    sweep = Sweep(store, SessionMemoryConfig(min_exchanges=1), _FakeRunner([]))
-    # When gating shortly after
-    result = sweep._gate({"cwd": str(tmp_path), "transcript_path": ""}, now=1000.5)
-    # Then nothing is returned, and the other holder's lock is left alone
-    assert result is None
-    assert store.lock_path.exists()
+    t_file = tmp_path / "rich.jsonl"
+    _write_transcript(t_file, _meaningful(6))
+    held = Lock(store.lock_path)
+    assert held.acquire() is True
+    sweep = Sweep(store, SessionMemoryConfig(min_exchanges=5), _FakeRunner([]))
+    try:
+        # When gating
+        result = sweep._gate({"cwd": str(tmp_path), "transcript_path": str(t_file)})
+        # Then a job is still returned, and the other holder keeps its lock
+        assert result is not None
+        assert in_progress(store) is True
+    finally:
+        held.release()
 
 
-def test_gate_releases_the_lock_and_returns_none_on_an_unexpected_error(
+def test_gate_returns_none_on_an_unexpected_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Verify the gate never raises or leaks the lock when something inside it breaks."""
+    """Verify the gate never raises when something inside it breaks."""
     # Given a rich transcript that would otherwise gate through
     store = store_at(tmp_path)
     entries = _meaningful(6)
@@ -495,11 +646,10 @@ def test_gate_releases_the_lock_and_returns_none_on_an_unexpected_error(
     monkeypatch.setattr(sweep_mod.transcript, "window_since_compact", _raise)
 
     # When gating
-    result = sweep._gate({"cwd": str(tmp_path), "transcript_path": str(t_file)}, now=1000.0)
+    result = sweep._gate({"cwd": str(tmp_path), "transcript_path": str(t_file)})
 
-    # Then the error is swallowed and the lock is released
+    # Then the error is swallowed
     assert result is None
-    assert not store.lock_path.exists()
 
 
 def test_trigger_spawns_the_detached_worker_when_the_gate_yields_a_job(tmp_path: Path) -> None:
@@ -527,8 +677,7 @@ def test_trigger_never_raises_when_the_gate_itself_blows_up(
     """Verify a hook calling trigger is never at risk from an internal sweep failure.
 
     The failure is forced inside the real `_gate`, not by replacing `_gate`
-    itself, so `_gate`'s own lock-release-on-error path actually runs; a
-    faked `_gate` would never have acquired the lock it was meant to protect.
+    itself, so `_gate`'s own error path actually runs.
     """
     # Given a rich transcript that would otherwise gate through, an internal
     # failure inside _gate, and _spawn_detached spied on so nothing forks
@@ -549,9 +698,8 @@ def test_trigger_never_raises_when_the_gate_itself_blows_up(
     # When triggering
     sweep.trigger({"cwd": str(tmp_path), "transcript_path": str(t_file)})  # must not raise
 
-    # Then no worker is spawned and the lock the gate acquired is released
+    # Then no worker is spawned
     spawn.assert_not_called()
-    assert not store.lock_path.exists()
     assert "sweep gate failed" in hooks_log_text(hooks_log)
     assert "Traceback" in hooks_log_text(hooks_log)
 
@@ -710,7 +858,7 @@ def test_validate_writes_escaped_file_quarantined(tmp_path: Path) -> None:
     outside = tmp_path / "outside.md"
     outside.write_text("nope", encoding="utf-8")
     # When validating
-    notes = sweep._validate_writes([str(outside)], target, started_at=0.0)
+    notes = sweep._validate_writes([str(outside)], target, Changes())
     # Then the file is gone from its original path, its content survives in
     # quarantine, and the note says so
     assert not outside.exists()
@@ -734,7 +882,7 @@ def test_validate_writes_rejects_a_sibling_project(tmp_path: Path) -> None:
     other.parent.mkdir(parents=True)
     other.write_text("not mine", encoding="utf-8")
     # When validating
-    notes = sweep._validate_writes([str(other)], target, started_at=0.0)
+    notes = sweep._validate_writes([str(other)], target, Changes())
     # Then it is gone from the sibling project's folder, its content survives
     # in quarantine, and the note says so
     assert not other.exists()
@@ -751,7 +899,7 @@ def test_validate_writes_anchors_a_relative_path_to_the_project(tmp_path: Path) 
     written = target.project_dir / "learnings" / "rel.md"
     written.write_text("a learning", encoding="utf-8")
     # When validating
-    notes = sweep._validate_writes(["learnings/rel.md"], target, started_at=0.0)
+    notes = sweep._validate_writes(["learnings/rel.md"], target, Changes())
     # Then it is treated as contained and left alone
     assert written.exists()
     assert notes == []
@@ -782,7 +930,7 @@ def test_validate_writes_restores_a_tracked_escape(tmp_path: Path) -> None:
         _FakeVault(target, root=vault_root),
     )
     # When validating
-    notes = sweep._validate_writes([str(tracked)], target, started_at=0.0)
+    notes = sweep._validate_writes([str(tracked)], target, Changes())
     # Then the note survives with its committed content
     assert tracked.read_text(encoding="utf-8") == "the original"
     assert notes == [f"escaped-reverted: {tracked}"]
@@ -794,7 +942,17 @@ def test_validate_writes_restores_a_tracked_escape(tmp_path: Path) -> None:
         ("aws", "AKIAIOSFODNN7EXAMPLE", "key: {secret}"),
         ("github", "ghp_" + "a" * 36, "token: {secret}"),
         # Split so a secret scanner does not flag this file as holding a real key.
-        ("pem", "-----BEGIN RSA " + "PRIVATE KEY-----", "{secret}\nMIIEow==\n"),
+        (
+            "pem",
+            (
+                "-----BEGIN RSA "
+                "PRIVATE KEY-----\n"
+                "MIIEowIBAAKCAQEAu1SU1LfVLPHCozMxH2Mo4lgOEePzNm0tRgeLYgJ\n"
+                "-----END RSA "
+                "PRIVATE KEY-----"
+            ),
+            "{secret}\n",
+        ),
         ("apikey", "s3cr3tv4lu3" + "x" * 12, 'api_key = "{secret}"'),
     ],
 )
@@ -807,7 +965,7 @@ def test_validate_writes_redacts_a_secret(
     written = target.project_dir / f"{name}.md"
     written.write_text(content.format(secret=secret), encoding="utf-8")
     # When validating
-    notes = sweep._validate_writes([str(written)], target, started_at=0.0)
+    notes = sweep._validate_writes([str(written)], target, Changes())
     # Then the secret is gone, the file remains, and the redaction is noted
     after = written.read_text(encoding="utf-8")
     assert secret not in after
@@ -822,7 +980,7 @@ def test_validate_writes_clean_file_untouched(tmp_path: Path) -> None:
     written = target.project_dir / "clean.md"
     written.write_text("nothing secret here", encoding="utf-8")
     # When validating
-    notes = sweep._validate_writes([str(written)], target, started_at=0.0)
+    notes = sweep._validate_writes([str(written)], target, Changes())
     # Then it is unchanged and unremarked
     assert written.read_text(encoding="utf-8") == "nothing secret here"
     assert notes == []
@@ -834,7 +992,7 @@ def test_validate_writes_missing_file_no_note(tmp_path: Path) -> None:
     sweep, target = _sweep_with_data(tmp_path)
     ghost = target.project_dir / "ghost.md"
     # When validating
-    notes = sweep._validate_writes([str(ghost)], target, started_at=0.0)
+    notes = sweep._validate_writes([str(ghost)], target, Changes())
     # Then nothing is reported
     assert notes == []
 
@@ -852,7 +1010,7 @@ def test_validate_writes_reports_escaped_for_a_reported_but_nonexistent_path(
     ghost = tmp_path / "outside-ghost.md"
 
     # When validating writes
-    notes = sweep._validate_writes([str(ghost)], target, started_at=0.0)
+    notes = sweep._validate_writes([str(ghost)], target, Changes())
 
     # Then it is reported escaped, with nothing quarantined
     assert notes == [f"escaped: {ghost}"]
@@ -932,42 +1090,6 @@ def test_existing_log_skips_files_for_a_different_session(tmp_path: Path) -> Non
 
 
 # ---------------------------------------------------------------------------
-# Sweep._touched_since
-# ---------------------------------------------------------------------------
-
-
-def test_touched_since_returns_empty_for_a_missing_directory(tmp_path: Path) -> None:
-    """Verify a directory that was never created reads as having nothing touched."""
-    # Given a directory that was never created
-    sweep, target = _sweep_with_data(tmp_path)
-    missing = target.project_dir / "does-not-exist"
-
-    # When listing what was touched / Then nothing is reported
-    assert sweep._touched_since(missing, 0.0) == []
-
-
-def test_touched_since_returns_empty_when_listing_raises(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Verify a directory that cannot be listed (e.g. permission denied) fails open, not raises.
-
-    A merely-missing directory does not raise from rglob (covered above); this
-    forces the actual OSError-handling branch by making the walk itself fail.
-    """
-    # Given a real directory and Path.rglob forced to always fail
-    sweep, target = _sweep_with_data(tmp_path)
-
-    def _raise(self, _pattern) -> None:
-        message = "permission denied"
-        raise OSError(message)
-
-    monkeypatch.setattr(Path, "rglob", _raise)
-
-    # When listing what was touched / Then it fails open to an empty list
-    assert sweep._touched_since(target.project_dir, 0.0) == []
-
-
-# ---------------------------------------------------------------------------
 # Sweep._existing_memory
 # ---------------------------------------------------------------------------
 
@@ -1007,49 +1129,57 @@ def test_existing_memory_concatenates_backlog_and_learnings(tmp_path: Path) -> N
 
 
 # ---------------------------------------------------------------------------
-# Sweep._validate_writes (mtime-derived: writes Bash made, never reported)
+# Sweep._validate_writes (hash-derived: writes Bash made, never reported)
 # ---------------------------------------------------------------------------
 
 
-def test_a_secret_bash_wrote_into_the_project_dir_is_scrubbed_by_mtime(tmp_path, sweep_factory):
-    """Verify a file written after the run started is scrubbed even when no tool reported it."""
+def test_a_secret_bash_wrote_into_the_project_dir_is_scrubbed(tmp_path, sweep_factory):
+    """Verify a changed file is scrubbed even when no tool reported it."""
     target = _target_at(tmp_path / "vault")
-    target.learnings_dir.mkdir(parents=True, exist_ok=True)
-    started_at = time.time() - 1
     leaked = target.learnings_dir / "leak.md"
     leaked.write_text("token = 'ghp_" + "a" * 36 + "'", encoding="utf-8")
 
-    notes = sweep_factory()._validate_writes([], target, started_at=started_at)
+    notes = sweep_factory()._validate_writes([], target, Changes(created=(leaked.resolve(),)))
 
     assert any(note.startswith("secret-redacted") for note in notes)
     assert "ghp_" not in leaked.read_text(encoding="utf-8")
 
 
-def test_a_file_untouched_since_the_run_started_is_not_rescanned(tmp_path, sweep_factory):
-    """Verify the mtime pass skips files older than the run."""
+def test_a_file_the_run_did_not_change_is_not_rescanned(tmp_path, sweep_factory):
+    """Verify the hash pass skips files absent from the change set."""
     target = _target_at(tmp_path / "vault")
-    target.learnings_dir.mkdir(parents=True, exist_ok=True)
     old = target.learnings_dir / "old.md"
     old.write_text("token = 'ghp_" + "b" * 36 + "'", encoding="utf-8")
 
-    notes = sweep_factory()._validate_writes([], target, started_at=time.time() + 60)
+    notes = sweep_factory()._validate_writes([], target, Changes())
 
     assert notes == []
 
 
-def test_a_binary_file_does_not_abort_the_mtime_scrub(tmp_path, sweep_factory):
+def test_a_binary_file_does_not_abort_the_scrub(tmp_path, sweep_factory):
     """Verify an undecodable file next to a leaking page is skipped, not fatal to the pass."""
     target = _target_at(tmp_path / "vault")
-    target.learnings_dir.mkdir(parents=True, exist_ok=True)
-    started_at = time.time() - 1
-    (target.learnings_dir / "stub.sqlite3").write_bytes(b"\x00\x8a\xff")
+    binary = target.learnings_dir / "stub.bin"
+    binary.write_bytes(b"\x00\x8a\xff")
     leaked = target.learnings_dir / "leak.md"
     leaked.write_text("token = 'ghp_" + "a" * 36 + "'", encoding="utf-8")
 
-    notes = sweep_factory()._validate_writes([], target, started_at=started_at)
+    notes = sweep_factory()._validate_writes(
+        [], target, Changes(created=(binary.resolve(), leaked.resolve()))
+    )
 
     assert any(note.startswith("secret-redacted") for note in notes)
     assert "ghp_" not in leaked.read_text(encoding="utf-8")
+
+
+def test_validate_writes_names_each_deletion(tmp_path, sweep_factory):
+    """Verify a deleted file is reported in the notes."""
+    target = _target_at(tmp_path / "vault")
+    gone = target.learnings_dir / "gone.md"
+
+    notes = sweep_factory()._validate_writes([], target, Changes(deleted=(gone,)))
+
+    assert notes == [f"deleted: {gone}"]
 
 
 # ---------------------------------------------------------------------------
@@ -1060,7 +1190,6 @@ def test_a_binary_file_does_not_abort_the_mtime_scrub(tmp_path, sweep_factory):
 def _job_store(tmp_path: Path) -> Store:
     store = store_at(tmp_path)
     store.state_dir.mkdir(parents=True)
-    store.lock_path.write_text("12345.0", encoding="utf-8")  # pre-held lock
     return store
 
 
@@ -1077,17 +1206,21 @@ class _FakeVault:
         self.root = root or Path("/fake")
         self.cli = self.root / "bin" / "sessionmemory"
         self.command = str(self.cli)
+        self.notes: list[str] = []
 
-    def project_paths(self, *, cwd: Path, env: dict) -> dict[str, str]:
-        return {
-            "slug": "proj",
-            "project_dir": str(self.target.project_dir),
-            "learnings": str(self.target.learnings_dir),
-            "backlog": str(self.target.backlog_path),
-            "logs": str(self.target.logs_dir),
-        }
+    def project_lookup(self, *, cwd: Path, env: dict, timeout: int) -> Lookup:
+        return Lookup(
+            {
+                "slug": "proj",
+                "project_dir": str(self.target.project_dir),
+                "learnings": str(self.target.learnings_dir),
+                "backlog": str(self.target.backlog_path),
+                "logs": str(self.target.logs_dir),
+            }
+        )
 
-    def commit(self, *, env: dict) -> CommitOutcome:
+    def commit(self, *, env: dict, note: str = "") -> CommitOutcome:
+        self.notes.append(note)
         return CommitOutcome(sha="abc1234")
 
 
@@ -1098,9 +1231,9 @@ class _EnvSpyVault(_FakeVault):
         super().__init__(target)
         self.seen_env: dict | None = None
 
-    def project_paths(self, *, cwd: Path, env: dict) -> dict[str, str]:
+    def project_lookup(self, *, cwd: Path, env: dict, timeout: int) -> Lookup:
         self.seen_env = dict(env)
-        return super().project_paths(cwd=cwd, env=env)
+        return super().project_lookup(cwd=cwd, env=env, timeout=timeout)
 
 
 def test_prepare_uses_the_threaded_env_not_a_fresh_os_environ_read(tmp_path: Path) -> None:
@@ -1131,38 +1264,38 @@ def test_prepare_uses_the_threaded_env_not_a_fresh_os_environ_read(tmp_path: Pat
     assert vault.seen_env.get("SESSIONMEMORY_TEST_MARKER") == "threaded"
 
 
-def test_prepare_returns_none_for_an_unregistered_project(tmp_path: Path) -> None:
-    """Verify _prepare skips a project the vault cannot resolve, rather than raising."""
+def test_prepare_returns_the_lookup_reason_for_an_unregistered_project(tmp_path: Path) -> None:
+    """Verify _prepare skips a project the vault cannot resolve, naming why."""
 
-    # Given a vault whose project_paths always resolves to None (unregistered)
+    # Given a vault whose lookup reports the project as unregistered
     class _UnregisteredVault(_FakeVault):
-        def project_paths(self, *, cwd: Path, env: dict) -> dict[str, str] | None:
-            return None
+        def project_lookup(self, *, cwd: Path, env: dict, timeout: int) -> Lookup:
+            return Lookup(None, "project not registered")
 
     store = store_at(tmp_path)
     target = _target_at(tmp_path / "vault")
     sweep = Sweep(store, SessionMemoryConfig(), _FakeRunner([]), _UnregisteredVault(target))
     job = SweepJob(window=[], cwd=str(tmp_path), session_id="")
 
-    # When preparing / Then nothing is returned
-    assert sweep._prepare(job) is None
+    # When preparing / Then the reason is returned
+    assert sweep._prepare(job) == "project not registered"
 
 
-def test_prepare_returns_none_when_the_resolved_paths_are_incomplete(tmp_path: Path) -> None:
+def test_prepare_names_the_first_missing_key_when_the_paths_are_incomplete(tmp_path: Path) -> None:
     """Verify _prepare skips a payload missing a key Target.from_paths requires."""
 
     # Given a vault whose resolved paths are missing required keys
     class _IncompleteVault(_FakeVault):
-        def project_paths(self, *, cwd: Path, env: dict) -> dict[str, str]:
-            return {"slug": "demo", "project_dir": str(self.target.project_dir)}
+        def project_lookup(self, *, cwd: Path, env: dict, timeout: int) -> Lookup:
+            return Lookup({"slug": "demo", "project_dir": str(self.target.project_dir)})
 
     store = store_at(tmp_path)
     target = _target_at(tmp_path / "vault")
     sweep = Sweep(store, SessionMemoryConfig(), _FakeRunner([]), _IncompleteVault(target))
     job = SweepJob(window=[], cwd=str(tmp_path), session_id="")
 
-    # When preparing / Then nothing is returned
-    assert sweep._prepare(job) is None
+    # When preparing / Then the first absent key is named
+    assert sweep._prepare(job) == "project payload lacked learnings"
 
 
 class _RecordingRunner:
@@ -1170,9 +1303,13 @@ class _RecordingRunner:
 
     def __init__(self) -> None:
         self.prompt: str | None = None
+        self.extra_env: Mapping[str, str] | None = None
 
-    def run(self, prompt: str, *, cwd: str) -> RunResult:
+    def run(
+        self, prompt: str, *, cwd: str, extra_env: Mapping[str, str] | None = None
+    ) -> RunResult:
         self.prompt = prompt
+        self.extra_env = extra_env
         return RunResult(success=True, exit_code=0, changed_files=[], text="done", stderr="")
 
 
@@ -1208,9 +1345,96 @@ def test_run_job_prompt_carries_only_user_and_agent_text(tmp_path: Path) -> None
     assert "secret-tool-call" not in runner.prompt
 
 
+def test_run_job_commit_carries_the_log_summary(tmp_path: Path) -> None:
+    """Verify the commit note is the summary of this session's log."""
+    store = _job_store(tmp_path)
+    vault_target = _target_at(tmp_path / "vault")
+    (vault_target.logs_dir / "2026-01-01-demo.md").write_text(
+        "---\nid: x\nsession_id: abc\nsummary: Made the handler idempotent\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    vault = _FakeVault(vault_target)
+    sweep = Sweep(store, SessionMemoryConfig(), _FakeRunner([]), vault)
+
+    sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="abc"))
+
+    assert vault.notes == ["Made the handler idempotent"]
+
+
+def test_log_summary_unquotes_the_first_summary_line(tmp_path: Path) -> None:
+    """Verify _log_summary reads a quoted frontmatter summary and ignores body lines."""
+    path = tmp_path / "log.md"
+    path.write_text('---\nsummary: "Fixed it: done"\n---\n\nsummary: not this\n', encoding="utf-8")
+
+    assert sweep_mod._log_summary(path) == "Fixed it: done"
+    assert sweep_mod._log_summary(tmp_path / "missing.md") == ""
+
+
+# Rendered by the CLI's own `frontmatter.serialize`, which wraps at 88 columns.
+_WRAPPED_SUMMARIES = [
+    (
+        (
+            "summary: Made the charge handler idempotent so retried webhooks never double-bill"
+            " a customer,\n  and documented the key expiry window in the learnings\n"
+        ),
+        (
+            "Made the charge handler idempotent so retried webhooks never double-bill a customer,"
+            " and documented the key expiry window in the learnings"
+        ),
+    ),
+    (
+        (
+            "summary: 'Fixed it: the handler now retries, and it''s idempotent across every"
+            " webhook delivery\n  the provider sends after a timeout'\n"
+        ),
+        (
+            "Fixed it: the handler now retries, and it's idempotent across every webhook delivery"
+            " the provider sends after a timeout"
+        ),
+    ),
+    (
+        (
+            'summary: "Tab\\there \\"quoted\\" and a long tail that keeps going on and on past'
+            ' the eighty-eight\\\n  \\ column width limit"\n'
+        ),
+        (
+            'Tab here "quoted" and a long tail that keeps going on and on past the eighty-eight'
+            " column width limit"
+        ),
+    ),
+]
+
+
+@pytest.mark.parametrize(("summary_yaml", "expected"), _WRAPPED_SUMMARIES)
+def test_log_summary_folds_a_wrapped_summary(
+    tmp_path: Path, summary_yaml: str, expected: str
+) -> None:
+    """Verify a summary the CLI wrapped onto continuation lines is read whole and unquoted."""
+    # Given a log whose summary the serializer folded across lines
+    path = tmp_path / "log.md"
+    path.write_text(
+        f"---\ntitle: t\n{summary_yaml}session_id: abc\n---\n\nbody\n", encoding="utf-8"
+    )
+    # When reading the summary / Then the whole sentence comes back on one line
+    assert sweep_mod._log_summary(path) == expected
+
+
+def test_log_summary_matches_the_cli_serializer(tmp_path: Path) -> None:
+    """Verify every wrapped form the CLI's serializer produces reads back to the original."""
+    summaries = [expected for _, expected in _WRAPPED_SUMMARIES]
+    for index, summary in enumerate(summaries):
+        # Given a log written by the CLI's own serializer
+        path = tmp_path / f"log-{index}.md"
+        path.write_text(
+            serialize({"summary": summary, "session_id": "s"}, "body"), encoding="utf-8"
+        )
+        # When reading the summary / Then it round-trips
+        assert sweep_mod._log_summary(path) == summary
+
+
 def test_run_job_clean_write_logs_and_releases_lock(tmp_path: Path) -> None:
     """Verify run_job validates writes, commits, logs, and releases the lock on a clean run."""
-    # Given a store with a clean target file and a pre-held lock
+    # Given a store with a clean target file
     hooks_log = _capture_log(tmp_path)
     store = _job_store(tmp_path)
     vault_target = _target_at(tmp_path / "vault")
@@ -1226,7 +1450,7 @@ def test_run_job_clean_write_logs_and_releases_lock(tmp_path: Path) -> None:
     # the log is written, and the lock is freed
     assert notes == ["committed abc1234"]
     assert "sweep finished" in hooks_log_text(hooks_log)
-    assert not store.lock_path.exists()
+    assert not in_progress(store)
 
 
 def test_run_job_notes_a_skipped_commit(tmp_path: Path) -> None:
@@ -1234,7 +1458,7 @@ def test_run_job_notes_a_skipped_commit(tmp_path: Path) -> None:
 
     # Given a vault whose commit call returns None
     class _NoCommitVault(_FakeVault):
-        def commit(self, *, env: dict) -> CommitOutcome:
+        def commit(self, *, env: dict, note: str = "") -> CommitOutcome:
             return CommitOutcome(reason="clean")
 
     store = _job_store(tmp_path)
@@ -1251,6 +1475,37 @@ def test_run_job_notes_a_skipped_commit(tmp_path: Path) -> None:
 
     # Then the run notes the skip rather than a sha
     assert notes == ["commit skipped: clean"]
+
+
+def test_run_job_skips_its_commit_while_another_projects_sweep_runs(tmp_path: Path) -> None:
+    """Verify a worker leaves the vault commit to another sweep still writing."""
+    # Given another project's sweep lock held under this machine's state root
+    env = {"XDG_STATE_HOME": str(tmp_path / "xdg")}
+    other = Lock(_project_lock(env, "other"))
+    assert other.acquire() is True
+    vault = _FakeVault(_target_at(tmp_path / "vault"))
+    sweep = Sweep(_job_store(tmp_path), SessionMemoryConfig(), _FakeRunner([]), vault, env=env)
+    try:
+        # When this project's worker finishes
+        notes = sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id=""))
+    finally:
+        other.release()
+    # Then it does not commit, since the other worker commits the whole vault when it ends
+    assert vault.notes == []
+    assert notes == ["commit skipped: another sweep in progress"]
+
+
+def test_run_job_commits_when_only_its_own_lock_is_held(tmp_path: Path) -> None:
+    """Verify a worker's own lock under the state root never blocks its commit."""
+    # Given a store that lives under the state root the worker probes
+    env = {"XDG_STATE_HOME": str(tmp_path / "xdg")}
+    store = Store(key="k", state_dir=_project_lock(env, "self").parent)
+    vault = _FakeVault(_target_at(tmp_path / "vault"))
+    sweep = Sweep(store, SessionMemoryConfig(), _FakeRunner([]), vault, env=env)
+    # When the worker runs, holding its own lock throughout
+    notes = sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id=""))
+    # Then it commits
+    assert notes == ["committed abc1234"]
 
 
 def test_run_job_escaped_write_quarantined_and_lock_released(tmp_path: Path) -> None:
@@ -1271,7 +1526,7 @@ def test_run_job_escaped_write_quarantined_and_lock_released(tmp_path: Path) -> 
     # released
     assert not outside.exists()
     assert notes == [f"escaped-quarantined: {outside}", "committed abc1234"]
-    assert not store.lock_path.exists()
+    assert not in_progress(store)
     quarantined = list((store.state_dir / "quarantine").glob("*-outside.md"))
     assert len(quarantined) == 1
     assert quarantined[0].read_text(encoding="utf-8") == "nope"
@@ -1282,7 +1537,9 @@ def test_run_job_releases_lock_on_runner_failure(tmp_path: Path) -> None:
     # Given a runner that always raises
 
     class _Exploding:
-        def run(self, prompt: str, *, cwd: str) -> RunResult:
+        def run(
+            self, prompt: str, *, cwd: str, extra_env: Mapping[str, str] | None = None
+        ) -> RunResult:
             msg = "boom"
             raise RuntimeError(msg)
 
@@ -1293,7 +1550,7 @@ def test_run_job_releases_lock_on_runner_failure(tmp_path: Path) -> None:
     notes = sweep._run_job(job)
     # Then it returns no notes and the lock is still released
     assert notes == []
-    assert not store.lock_path.exists()
+    assert not in_progress(store)
 
 
 def test_run_job_returns_empty_and_releases_lock_when_the_agent_run_itself_raises(
@@ -1308,7 +1565,9 @@ def test_run_job_returns_empty_and_releases_lock_when_the_agent_run_itself_raise
 
     # Given a vault present (so _prepare succeeds) and a runner that raises
     class _Exploding:
-        def run(self, prompt: str, *, cwd: str) -> RunResult:
+        def run(
+            self, prompt: str, *, cwd: str, extra_env: Mapping[str, str] | None = None
+        ) -> RunResult:
             msg = "boom"
             raise RuntimeError(msg)
 
@@ -1322,7 +1581,86 @@ def test_run_job_returns_empty_and_releases_lock_when_the_agent_run_itself_raise
 
     # Then the failure is swallowed and the lock is still released
     assert notes == []
-    assert not store.lock_path.exists()
+    assert not in_progress(store)
+
+
+def test_run_job_waits_for_a_held_lock_then_runs(tmp_path: Path) -> None:
+    """Verify a sweep queued behind another waits for its lock, then runs."""
+    # Given another sweep holding the lock, released during the first wait
+    hooks_log = _capture_log(tmp_path)
+    store = _job_store(tmp_path)
+    held = Lock(store.lock_path)
+    assert held.acquire() is True
+    waits: list[float] = []
+
+    def _sleep(seconds: float) -> None:
+        waits.append(seconds)
+        held.release()
+
+    runner = _RecordingRunner()
+    sweep = Sweep(
+        store,
+        SessionMemoryConfig(),
+        runner,
+        _FakeVault(_target_at(tmp_path / "vault")),
+        sleep=_sleep,
+    )
+    job = SweepJob(window=[], cwd=str(tmp_path), session_id="")
+
+    # When running the job
+    sweep._run_job(job)
+
+    # Then it waited once, ran, and logged the queue and dequeue
+    assert waits == [sweep_mod.QUEUE_POLL]
+    assert runner.prompt is not None
+    text = hooks_log_text(hooks_log)
+    assert "sweep queued" in text
+    assert "sweep dequeued after about 5s" in text
+
+
+def test_run_job_gives_up_after_the_queue_wait(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify a sweep whose lock never frees gives up after the queue wait and never runs."""
+    # Given a lock held for the whole run and a short queue wait
+    monkeypatch.setattr(sweep_mod, "QUEUE_WAIT", 10.0)
+    hooks_log = _capture_log(tmp_path)
+    store = _job_store(tmp_path)
+    held = Lock(store.lock_path)
+    assert held.acquire() is True
+    runner = _RecordingRunner()
+    sweep = Sweep(
+        store,
+        SessionMemoryConfig(),
+        runner,
+        _FakeVault(_target_at(tmp_path / "vault")),
+        sleep=lambda _: None,
+    )
+    job = SweepJob(window=[], cwd=str(tmp_path), session_id="")
+
+    try:
+        # When running the job
+        notes = sweep._run_job(job)
+        # Then it gives up without running, and the holder keeps its lock
+        assert notes == []
+        assert runner.prompt is None
+        assert in_progress(store) is True
+    finally:
+        held.release()
+    assert re.search(r"WARNING.*lock still held after 10s", hooks_log_text(hooks_log))
+
+
+def test_run_job_releases_the_lock_it_took(tmp_path: Path) -> None:
+    """Verify a finished sweep leaves the lock free for the next one."""
+    # Given a free lock
+    store = _job_store(tmp_path)
+    sweep = Sweep(
+        store, SessionMemoryConfig(), _RecordingRunner(), _FakeVault(_target_at(tmp_path / "vault"))
+    )
+    # When running the job
+    sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id=""))
+    # Then no sweep is in progress
+    assert not in_progress(store)
 
 
 def test_render_inlines_capture_criteria() -> None:
@@ -1354,13 +1692,17 @@ def test_run_job_logs_a_successful_sweep_under_the_worker_name(tmp_path: Path) -
     hooks_log = _capture_log(tmp_path)
     store = store_at(tmp_path)
     target = _target_at(tmp_path / "vault")
-    written = target.project_dir / "note.md"
-    written.write_text("clean", encoding="utf-8")
-    sweep = Sweep(store, SessionMemoryConfig(), _FakeRunner([str(written)]), _FakeVault(target))
+    written = target.logs_dir / "note.md"
+    sweep = Sweep(
+        store,
+        SessionMemoryConfig(),
+        _WritingRunner(lambda: written.write_text("clean", encoding="utf-8")),
+        _FakeVault(target),
+    )
     sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="sess-123"))
     (line,) = [x for x in hooks_log_text(hooks_log).splitlines() if "sweep finished" in x]
     assert (
-        "INFO  [sweep       ] demo: sweep finished: ok, 1 file(s) changed, committed abc1234 (session=sess-123)"
+        "INFO  [sweep       ] demo: sweep finished: ok, 1 created, 0 modified, 0 deleted, committed abc1234 (session=sess-123)"
         in line
     )
 
@@ -1369,7 +1711,9 @@ def test_run_job_logs_a_failed_sweep_with_the_exit_code_and_stderr(tmp_path: Pat
     """Verify a failed run is distinguishable from one never attempted, and names the cause."""
 
     class _FailingRunner:
-        def run(self, prompt: str, *, cwd: str) -> RunResult:
+        def run(
+            self, prompt: str, *, cwd: str, extra_env: Mapping[str, str] | None = None
+        ) -> RunResult:
             return RunResult(
                 success=False,
                 exit_code=-3,
@@ -1388,9 +1732,104 @@ def test_run_job_logs_a_failed_sweep_with_the_exit_code_and_stderr(tmp_path: Pat
     sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="fail-001"))
     text = hooks_log_text(hooks_log)
     assert (
-        "ERROR [sweep       ] demo: sweep failed: claude exited -3 (claude CLI not found) (session=fail-001)"
-        in text
+        "ERROR [sweep       ] demo: sweep failed: claude exited -3 (stderr: claude CLI not found),"
+        " 0 created, 0 modified, 0 deleted, committed abc1234 (session=fail-001)" in text
     )
+
+
+def test_run_job_logs_the_result_text_of_a_failed_run(tmp_path: Path) -> None:
+    """Verify a failed run logs the result text beside the stderr tail."""
+
+    class _FailingRunner:
+        def run(
+            self, prompt: str, *, cwd: str, extra_env: Mapping[str, str] | None = None
+        ) -> RunResult:
+            return RunResult(
+                success=False,
+                exit_code=1,
+                changed_files=[],
+                text="Invalid API key",
+                stderr="⚠ claude.ai connectors are disabled because ANTHROPIC_API_KEY is set",
+            )
+
+    hooks_log = _capture_log(tmp_path)
+    sweep = Sweep(
+        store_at(tmp_path),
+        SessionMemoryConfig(),
+        _FailingRunner(),
+        _FakeVault(_target_at(tmp_path / "vault")),
+    )
+    sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="fail-002"))
+    text = hooks_log_text(hooks_log)
+    assert "Invalid API key" in text
+    assert "stderr: ⚠ claude.ai connectors are disabled" in text
+
+
+def _failed_run_log(tmp_path: Path, *, text: str, stderr: str, session: str) -> str:
+    class _FailingRunner:
+        def run(
+            self, prompt: str, *, cwd: str, extra_env: Mapping[str, str] | None = None
+        ) -> RunResult:
+            return RunResult(success=False, exit_code=1, changed_files=[], text=text, stderr=stderr)
+
+    hooks_log = _capture_log(tmp_path)
+    sweep = Sweep(
+        store_at(tmp_path),
+        SessionMemoryConfig(),
+        _FailingRunner(),
+        _FakeVault(_target_at(tmp_path / "vault")),
+    )
+    sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id=session))
+    return hooks_log_text(hooks_log)
+
+
+def test_run_job_logs_only_the_result_text_when_stderr_is_empty(tmp_path: Path) -> None:
+    """Verify a failed run with no stderr logs the result text without a stderr label."""
+    text = _failed_run_log(tmp_path, text="Invalid API key", stderr="", session="f-3")
+    assert "claude exited 1 (Invalid API key), 0 created" in text
+
+
+def test_run_job_logs_no_output_when_a_failed_run_says_nothing(tmp_path: Path) -> None:
+    """Verify a failed run with neither result text nor stderr still names the gap."""
+    text = _failed_run_log(tmp_path, text="", stderr="", session="f-4")
+    assert "claude exited 1 (no output), 0 created" in text
+
+
+def test_run_job_logs_a_multiline_failure_on_one_line(tmp_path: Path) -> None:
+    """Verify newlines in the result text and stderr never split the log line."""
+    text = _failed_run_log(tmp_path, text="bad\nkey\n", stderr="a\nb", session="f-5")
+    assert "claude exited 1 (bad key; stderr: a b), 0 created" in text
+
+
+def test_run_job_logs_what_a_failed_run_wrote_and_committed(tmp_path: Path) -> None:
+    """Verify a failed run still reports its writes, its notes, and the commit outcome."""
+
+    # Given a run that writes a malformed learning and then exits non-zero
+    class _WriteThenFail:
+        def __init__(self, page: Path) -> None:
+            self.page = page
+
+        def run(
+            self, prompt: str, *, cwd: str, extra_env: Mapping[str, str] | None = None
+        ) -> RunResult:
+            self.page.write_text("no frontmatter\n", encoding="utf-8")
+            return RunResult(success=False, exit_code=2, changed_files=[], text="", stderr="")
+
+    hooks_log = _capture_log(tmp_path)
+    target = _target_at(tmp_path / "vault")
+    page = target.learnings_dir / "half-done.md"
+    sweep = Sweep(
+        _job_store(tmp_path), SessionMemoryConfig(), _WriteThenFail(page), _FakeVault(target)
+    )
+    # When the worker finishes
+    sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="f-6"))
+    # Then the error line names the change counts, the commit, and the notes
+    (line,) = [x for x in hooks_log_text(hooks_log).splitlines() if "sweep failed" in x]
+    assert (
+        "sweep failed: claude exited 2 (no output), 1 created, 0 modified, 0 deleted,"
+        " committed abc1234 (notes: malformed-quarantined: "
+    ) in line
+    assert "(no frontmatter)) (session=f-6)" in line
 
 
 def test_run_job_without_a_vault_logs_the_skip(tmp_path: Path) -> None:
@@ -1398,8 +1837,9 @@ def test_run_job_without_a_vault_logs_the_skip(tmp_path: Path) -> None:
     hooks_log = _capture_log(tmp_path)
     sweep = Sweep(store_at(tmp_path), SessionMemoryConfig(), _FakeRunner([]))
     sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="sess-novault"))
-    assert "sweep skipped: no vault or unregistered project (session=sess-nov)" in hooks_log_text(
-        hooks_log
+    assert (
+        "sweep skipped: no CLI: neither PATH nor the plugin shim (session=sess-nov)"
+        in hooks_log_text(hooks_log)
     )
 
 
@@ -1415,7 +1855,7 @@ def test_run_job_records_the_decline_when_the_model_found_nothing(tmp_path: Path
     sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="sess-quiet"))
     text = hooks_log_text(hooks_log)
     assert (
-        "sweep finished: ok, 0 file(s) changed, committed abc1234 (notes: nothing to record)"
+        "sweep finished: ok, 0 created, 0 modified, 0 deleted, committed abc1234 (notes: nothing to record)"
         in text
     )
 
@@ -1424,7 +1864,9 @@ def test_run_job_logs_a_crash_inside_the_worker(tmp_path: Path) -> None:
     """Verify an exception the worker swallows is on record with its traceback."""
 
     class _ExplodingRunner:
-        def run(self, prompt: str, *, cwd: str) -> RunResult:
+        def run(
+            self, prompt: str, *, cwd: str, extra_env: Mapping[str, str] | None = None
+        ) -> RunResult:
             message = "kaboom"
             raise RuntimeError(message)
 
@@ -1441,6 +1883,94 @@ def test_run_job_logs_a_crash_inside_the_worker(tmp_path: Path) -> None:
     assert "RuntimeError: kaboom" in text
 
 
+def test_run_job_scrubs_a_file_written_through_bash(tmp_path: Path) -> None:
+    """Verify a secret written without a tool report is redacted after the run."""
+    store = _job_store(tmp_path)
+    target = _target_at(tmp_path / "vault")
+    leaked = target.logs_dir / "leak.md"
+    sweep = Sweep(
+        store,
+        SessionMemoryConfig(),
+        _WritingRunner(lambda: leaked.write_text("token: ghp_" + "a" * 36, encoding="utf-8")),
+        _FakeVault(target),
+    )
+
+    sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="sess-bash"))
+
+    assert "ghp_" not in leaked.read_text(encoding="utf-8")
+
+
+def test_run_job_reports_created_modified_and_deleted(tmp_path: Path) -> None:
+    """Verify the result line counts each kind of change and a deletion is noted, not undone."""
+    hooks_log = _capture_log(tmp_path)
+    store = _job_store(tmp_path)
+    target = _target_at(tmp_path / "vault")
+    edited = target.learnings_dir / "edited.md"
+    edited.write_text("before", encoding="utf-8")
+    doomed = target.learnings_dir / "doomed.md"
+    doomed.write_text("bye", encoding="utf-8")
+    created = target.learnings_dir / "created.md"
+
+    def _act() -> None:
+        created.write_text("new", encoding="utf-8")
+        edited.write_text("after", encoding="utf-8")
+        doomed.unlink()
+
+    sweep = Sweep(store, SessionMemoryConfig(), _WritingRunner(_act), _FakeVault(target))
+
+    notes = sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="sess-cmd"))
+
+    text = hooks_log_text(hooks_log)
+    assert "1 created, 1 modified, 1 deleted" in text
+    assert f"deleted: {doomed.resolve()}" in notes
+    assert not doomed.exists()
+
+
+def test_run_job_scrubs_but_keeps_a_concurrent_edit(tmp_path: Path) -> None:
+    """Verify an unreported edit to an existing spec is scrubbed in place, not reverted."""
+    store = _job_store(tmp_path)
+    target = _target_at(tmp_path / "vault")
+    spec = target.project_dir / "specs" / "design.md"
+    spec.parent.mkdir()
+    spec.write_text("original", encoding="utf-8")
+    sweep = Sweep(
+        store,
+        SessionMemoryConfig(),
+        _WritingRunner(lambda: spec.write_text("edited key: ghp_" + "c" * 36, encoding="utf-8")),
+        _FakeVault(target),
+    )
+
+    notes = sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="sess-conc"))
+
+    assert spec.exists()
+    assert "«redacted-secret»" in spec.read_text(encoding="utf-8")
+    assert f"secret-redacted: {spec.resolve()}" in notes
+    assert not any(
+        n.startswith(("escaped", "quarantined")) and str(spec.resolve()) in n for n in notes
+    )
+
+
+def test_run_job_leaves_the_target_of_a_new_symlink_alone(tmp_path: Path) -> None:
+    """Verify a symlink created during the run never moves or edits the file it points at."""
+    store = _job_store(tmp_path)
+    target = _target_at(tmp_path / "vault")
+    outside = tmp_path / "outside.md"
+    outside.write_text("token: ghp_" + "d" * 36, encoding="utf-8")
+    link = target.learnings_dir / "x.md"
+    sweep = Sweep(
+        store,
+        SessionMemoryConfig(),
+        _WritingRunner(lambda: link.symlink_to(outside)),
+        _FakeVault(target),
+    )
+
+    notes = sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="sess-link"))
+
+    assert outside.read_text(encoding="utf-8") == "token: ghp_" + "d" * 36
+    assert not any("escaped" in n or "quarantined" in n for n in notes)
+    assert not (store.state_dir / "quarantine").exists()
+
+
 # ---------------------------------------------------------------------------
 # Sweep gate 2: the model decides whether the session is worth recording at all
 # ---------------------------------------------------------------------------
@@ -1454,7 +1984,9 @@ class _TextRunner:
         self.changed_files = changed_files or []
         self.prompt: str | None = None
 
-    def run(self, prompt: str, *, cwd: str) -> RunResult:
+    def run(
+        self, prompt: str, *, cwd: str, extra_env: Mapping[str, str] | None = None
+    ) -> RunResult:
         self.prompt = prompt
         return RunResult(
             success=True,
@@ -1541,13 +2073,12 @@ def test_run_job_ignores_the_sentinel_when_the_model_actually_wrote(tmp_path: Pa
     store = store_at(tmp_path)
     target = _target_at(tmp_path / "vault")
     written = target.project_dir / "note.md"
-    written.write_text("real content", encoding="utf-8")
     sweep = Sweep(
         store,
         SessionMemoryConfig(),
-        _TextRunner(
-            f"Considered {sweep_mod.NOTHING_TO_RECORD} and wrote anyway.",
-            changed_files=[str(written)],
+        _WritingRunner(
+            lambda: written.write_text("real content", encoding="utf-8"),
+            text=f"Considered {sweep_mod.NOTHING_TO_RECORD} and wrote anyway.",
         ),
         _FakeVault(target),
     )
@@ -1575,7 +2106,9 @@ def test_run_sweep_pins_the_resolved_vault_root_for_the_agent(tmp_path: Path, mo
         def __init__(self, **kwargs: object) -> None:
             captured.update(kwargs)
 
-        def run(self, prompt: str, *, cwd: str) -> RunResult:  # pragma: no cover - never gated in
+        def run(
+            self, prompt: str, *, cwd: str, extra_env: Mapping[str, str] | None = None
+        ) -> RunResult:  # pragma: no cover - never gated in
             raise AssertionError
 
     def _fake_home() -> Path:
@@ -1587,6 +2120,26 @@ def test_run_sweep_pins_the_resolved_vault_root_for_the_agent(tmp_path: Path, mo
     sweep_mod.run_sweep({"cwd": str(tmp_path)}, env={"XDG_STATE_HOME": str(tmp_path / "state")})
     # Then the runner carries the root the CLI can only read from its environment
     assert captured["extra_env"] == {sweep_mod.ROOT_ENV: str(root)}
+
+
+def test_run_sweep_builds_the_runner_with_the_configured_timeout(
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    """Verify the sweep's runner is constructed with the configured timeout."""
+    # Given a located vault and a config with a custom timeout
+    root = tmp_path / "vault-root"
+    (root / "_system").mkdir(parents=True)
+    (root / "_system" / "vault.toml").write_text("", encoding="utf-8")
+    runner_cls = mocker.patch.object(sweep_mod, "ClaudeRunner", autospec=True)
+    # When the sweep is wired up
+    sweep_mod.run_sweep(
+        {"cwd": str(tmp_path), "transcript_path": ""},
+        env={"XDG_STATE_HOME": str(tmp_path / "state"), sweep_mod.ROOT_ENV: str(root)},
+        store=store_at(tmp_path),
+        config=SessionMemoryConfig(sweep_timeout=42),
+    )
+    # Then the runner got that timeout
+    assert runner_cls.call_args.kwargs["timeout"] == 42
 
 
 def test_run_sweep_reuses_a_store_the_caller_already_resolved(
@@ -1676,7 +2229,7 @@ def test_run_job_chooses_the_cli_for_the_located_vault(
     root = tmp_path / "vault"
     chosen: list[Path] = []
 
-    def _for_root(cls: type, found: Path, *, env: object) -> _FakeVault:
+    def _for_root(cls: type, found: Path, *, env: object, version_timeout: int) -> _FakeVault:
         chosen.append(found)
         return _FakeVault(_target_at(root), root=found)
 
@@ -1688,6 +2241,44 @@ def test_run_job_chooses_the_cli_for_the_located_vault(
 
     assert chosen == [root]
     assert runner.prompt
+
+
+def test_run_job_chooses_the_cli_with_the_worker_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify the worker gives its version handshake the worker timeout."""
+    store = _job_store(tmp_path)
+    root = tmp_path / "vault"
+    seen: list[int] = []
+
+    def _for_root(cls: type, found: Path, *, env: object, version_timeout: int) -> _FakeVault:
+        seen.append(version_timeout)
+        return _FakeVault(_target_at(root), root=found)
+
+    monkeypatch.setattr(sweep_mod.VaultCLI, "for_root", classmethod(_for_root))
+    sweep = Sweep(store, SessionMemoryConfig(), _RecordingRunner(), vault_root=root)
+
+    sweep._run_job(SweepJob(window=[_user("hi")], cwd=str(tmp_path), session_id="s"))
+
+    assert seen == [WORKER_CLI_TIMEOUT]
+
+
+def test_run_job_logs_the_skip_reason(tmp_path: Path) -> None:
+    """Verify a lookup failure is logged with its reason rather than a generic skip."""
+
+    class _TimedOutVault(_FakeVault):
+        def project_lookup(self, *, cwd: Path, env: dict, timeout: int) -> Lookup:
+            return Lookup(None, "project timed out after 120s")
+
+    hooks_log = _capture_log(tmp_path)
+    sweep = Sweep(
+        store_at(tmp_path),
+        SessionMemoryConfig(),
+        _FakeRunner([]),
+        _TimedOutVault(_target_at(tmp_path / "vault")),
+    )
+    sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="sess-timeout"))
+    assert "sweep skipped: project timed out after 120s" in hooks_log_text(hooks_log)
 
 
 def test_run_sweep_skips_before_gating_when_there_is_no_vault(
@@ -1736,39 +2327,55 @@ def utc_clock(monkeypatch: pytest.MonkeyPatch):
     time.tzset()
 
 
+def _title_handed_to_model(tmp_path: Path, job: SweepJob) -> str:
+    """Run `job` and return the log title the model's environment received."""
+    runner = _RecordingRunner()
+    sweep = Sweep(
+        _job_store(tmp_path), SessionMemoryConfig(), runner, _FakeVault(_target_at(tmp_path / "v"))
+    )
+    sweep._run_job(job)
+    assert runner.extra_env is not None
+    return runner.extra_env[LOG_TITLE_ENV]
+
+
 @pytest.mark.usefixtures("utc_clock")
-def test_the_log_title_names_the_session_start(sweep_factory, tmp_path):
-    """Verify the title carries the session's start date and clock time in local time."""
-    sweep = sweep_factory()
+def test_run_job_hands_the_title_to_the_model_env(tmp_path):
+    """Verify the title reaches the model through its environment, as the session's start."""
     job = SweepJob(window=[], cwd=str(tmp_path), session_id="abc", started="2026-09-03T17:53:10Z")
 
-    command = sweep._log_command(job)
-
-    assert "--title '2026-09-03 17:53'" in command
+    assert _title_handed_to_model(tmp_path, job) == "2026-09-03 17:53"
 
 
 @pytest.mark.usefixtures("utc_clock")
-def test_the_log_title_renders_the_start_in_local_time(sweep_factory, tmp_path):
+def test_the_log_title_renders_the_start_in_local_time(tmp_path):
     """Verify a start recorded with an offset is shown on the local clock, not the recorded one."""
-    sweep = sweep_factory()
     job = SweepJob(
         window=[], cwd=str(tmp_path), session_id="abc", started="2026-09-03T23:30:00-04:00"
     )
 
-    command = sweep._log_command(job)
-
-    assert "--title '2026-09-04 03:30'" in command
+    assert _title_handed_to_model(tmp_path, job) == "2026-09-04 03:30"
 
 
 @pytest.mark.parametrize("started", ["", "not a time"])
-def test_the_log_title_falls_back_to_now_without_a_usable_start(sweep_factory, tmp_path, started):
+def test_the_log_title_falls_back_to_now_without_a_usable_start(tmp_path, started):
     """Verify a session with no readable start is still titled with a date and a time."""
-    sweep = sweep_factory()
     job = SweepJob(window=[], cwd=str(tmp_path), session_id="abc", started=started)
 
-    command = sweep._log_command(job)
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}", _title_handed_to_model(tmp_path, job))
 
-    assert re.search(r"--title '\d{4}-\d{2}-\d{2} \d{2}:\d{2}'", command)
+
+def test_run_job_log_command_carries_no_title(tmp_path):
+    """Verify the prompt's log command omits --title, which the environment supplies."""
+    runner = _RecordingRunner()
+    sweep = Sweep(
+        _job_store(tmp_path), SessionMemoryConfig(), runner, _FakeVault(_target_at(tmp_path / "v"))
+    )
+
+    sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="abc"))
+
+    assert runner.prompt is not None
+    assert "--title" not in runner.prompt.split("--session-id abc")[1].splitlines()[0]
+    assert "--title '" not in runner.prompt
 
 
 def test_changes_are_empty_without_a_base_commit(sweep_factory, tmp_path):
@@ -1882,13 +2489,13 @@ def _mock_exit(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(os, "_exit", _exit)
 
 
-def test_spawn_detached_releases_the_lock_when_the_first_fork_fails(
+def test_spawn_detached_skips_when_the_first_fork_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Verify a fork failure is treated like any other unavailable resource: skip, don't block."""
-    # Given a held lock and os.fork forced to always fail
+    # Given os.fork forced to always fail
+    hooks_log = _capture_log(tmp_path)
     store = store_at(tmp_path)
-    Lock(store.lock_path).acquire(now=1.0)
     sweep = Sweep(store, SessionMemoryConfig(), _FakeRunner([]))
 
     def _raise() -> None:
@@ -1900,8 +2507,8 @@ def test_spawn_detached_releases_the_lock_when_the_first_fork_fails(
     # When spawning the detached worker
     sweep._spawn_detached(_job(cwd=str(tmp_path)))
 
-    # Then the lock is released rather than left held
-    assert not store.lock_path.exists()
+    # Then the sweep is skipped and says so
+    assert "sweep skipped: fork failed" in hooks_log_text(hooks_log)
 
 
 def test_spawn_detached_parent_reaps_the_intermediate_child(
@@ -1922,14 +2529,13 @@ def test_spawn_detached_parent_reaps_the_intermediate_child(
     assert waited == [(4242, 0)]
 
 
-def test_spawn_detached_intermediate_child_releases_the_lock_when_the_second_fork_fails(
+def test_spawn_detached_intermediate_child_exits_when_the_second_fork_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Verify a daemon that never reaches _run_job still releases the lock it inherited."""
-    # Given a held lock, the first fork landing in the intermediate child, and
-    # the second fork forced to fail
+    """Verify an intermediate child that cannot fork the daemon exits cleanly."""
+    # Given the first fork landing in the intermediate child, and the second
+    # fork forced to fail
     store = store_at(tmp_path)
-    Lock(store.lock_path).acquire(now=1.0)
     sweep = Sweep(store, SessionMemoryConfig(), _FakeRunner([]))
     calls = {"n": 0}
 
@@ -1948,9 +2554,8 @@ def test_spawn_detached_intermediate_child_releases_the_lock_when_the_second_for
     with pytest.raises(_ExitCalled) as excinfo:
         sweep._spawn_detached(_job(cwd=str(tmp_path)))
 
-    # Then the intermediate child exits cleanly and the lock is released
+    # Then the intermediate child exits cleanly
     assert excinfo.value.code == 0
-    assert not store.lock_path.exists()
 
 
 def test_spawn_detached_intermediate_child_exits_after_a_successful_second_fork(
@@ -2008,7 +2613,9 @@ class _CwdCheckingRunner:
     def __init__(self) -> None:
         self.cwd_existed: bool | None = None
 
-    def run(self, prompt: str, *, cwd: str) -> RunResult:
+    def run(
+        self, prompt: str, *, cwd: str, extra_env: Mapping[str, str] | None = None
+    ) -> RunResult:
         self.cwd_existed = Path(cwd).is_dir()
         return RunResult(success=True, exit_code=0, changed_files=[], text="done", stderr="")
 
@@ -2034,3 +2641,138 @@ def test_run_job_creates_the_project_folder_before_running(tmp_path: Path) -> No
     # Then the folder existed by the time the model was run inside it
     assert runner.cwd_existed is True
     assert project.is_dir()
+
+
+_GOOD_LEARNING = '---\ntitle: "T"\nuuid: u\nsummary: "S"\ncreated: "2026-10-04"\nupdated: "2026-10-04"\n---\n\nBody\n'
+
+
+def test_run_job_quarantines_a_malformed_new_learning(tmp_path: Path) -> None:
+    """Verify a new learning without the page shape is set aside and noted."""
+    store = _job_store(tmp_path)
+    target = _target_at(tmp_path / "vault")
+    bad = target.learnings_dir / "bad-page.md"
+    sweep = Sweep(
+        store,
+        SessionMemoryConfig(),
+        _WritingRunner(lambda: bad.write_text("---\nname: x\n---\nBody\n", encoding="utf-8")),
+        _FakeVault(target),
+    )
+
+    notes = sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="sess-bad"))
+
+    assert not bad.exists()
+    assert f"malformed-quarantined: {bad.resolve()} (unexpected keys: name)" in notes
+    assert len(list((store.state_dir / "quarantine").glob("*-bad-page.md"))) == 1
+
+
+def test_run_job_keeps_a_conformant_new_learning(tmp_path: Path) -> None:
+    """Verify a page with the right shape is left in place."""
+    store = _job_store(tmp_path)
+    target = _target_at(tmp_path / "vault")
+    good = target.learnings_dir / "good-page.md"
+    sweep = Sweep(
+        store,
+        SessionMemoryConfig(),
+        _WritingRunner(lambda: good.write_text(_GOOD_LEARNING, encoding="utf-8")),
+        _FakeVault(target),
+    )
+
+    notes = sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="sess-good"))
+
+    assert good.exists()
+    assert not any(n.startswith("malformed") for n in notes)
+
+
+def test_run_job_restores_a_learning_rewritten_into_auto_memory_shape(tmp_path: Path) -> None:
+    """Verify a committed learning rewritten with the wrong frontmatter returns to HEAD."""
+    vault_root = tmp_path / "vault"
+    store = _job_store(tmp_path)
+    target = _target_at(vault_root)
+    page = target.learnings_dir / "good-page.md"
+    page.write_text(_GOOD_LEARNING, encoding="utf-8")
+    git_env = clean_environ()
+    for args in (
+        ["init", "-q"],
+        ["config", "user.email", "t@e.com"],
+        ["config", "user.name", "T"],
+        ["add", "-A"],
+        ["commit", "-qm", "seed"],
+    ):
+        subprocess.run(["git", *args], cwd=vault_root, check=True, capture_output=True, env=git_env)
+    sweep = Sweep(
+        store,
+        SessionMemoryConfig(),
+        _WritingRunner(
+            lambda: page.write_text("---\nname: x\nmetadata:\n  a: b\n---\nNew\n", encoding="utf-8")
+        ),
+        _FakeVault(target, root=vault_root),
+    )
+
+    notes = sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="sess-auto"))
+
+    assert page.read_text(encoding="utf-8") == _GOOD_LEARNING
+    assert f"malformed-restored: {page.resolve()} (unexpected keys: name, metadata)" in notes
+
+
+def test_run_job_quarantines_a_stray_top_level_file(tmp_path: Path) -> None:
+    """Verify a file written directly in the project folder is set aside."""
+    store = _job_store(tmp_path)
+    target = _target_at(tmp_path / "vault")
+    stray = target.project_dir / "MEMORY.md"
+    sweep = Sweep(
+        store,
+        SessionMemoryConfig(),
+        _WritingRunner(lambda: stray.write_text("index", encoding="utf-8")),
+        _FakeVault(target),
+    )
+
+    notes = sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="sess-stray"))
+
+    assert not stray.exists()
+    assert f"malformed-quarantined: {stray.resolve()} (stray top-level file)" in notes
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "learnings/.DS_Store",
+        "logs/2026-10-13-09-41.md~",
+        "Thumbs.db",
+        "learnings/page.sync-conflict-20260101-120000-ABCDEFG.md",
+    ],
+)
+def test_run_job_leaves_debris_alone(tmp_path: Path, relative: str) -> None:
+    """Verify sync, editor, and OS debris is never quarantined as a malformed page."""
+    store = _job_store(tmp_path)
+    target = _target_at(tmp_path / "vault")
+    debris = target.project_dir / relative
+    sweep = Sweep(
+        store,
+        SessionMemoryConfig(),
+        _WritingRunner(lambda: debris.write_text("x", encoding="utf-8")),
+        _FakeVault(target),
+    )
+
+    notes = sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="sess-debris"))
+
+    assert debris.exists()
+    assert not any(n.startswith("malformed") for n in notes)
+
+
+@pytest.mark.parametrize("field_name", ["learnings", "logs"])
+def test_run_job_quarantines_a_page_nested_in_a_field(tmp_path: Path, field_name: str) -> None:
+    """Verify a new file in a field's sub-directory is set aside, since no reader sees it."""
+    store = _job_store(tmp_path)
+    target = _target_at(tmp_path / "vault")
+    nested = target.project_dir / field_name / "sub" / "page.md"
+
+    def _write() -> None:
+        nested.parent.mkdir()
+        nested.write_text(_GOOD_LEARNING, encoding="utf-8")
+
+    sweep = Sweep(store, SessionMemoryConfig(), _WritingRunner(_write), _FakeVault(target))
+
+    notes = sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="sess-nest"))
+
+    assert not nested.exists()
+    assert f"malformed-quarantined: {nested.resolve()} (nested in a field)" in notes

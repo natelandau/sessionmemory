@@ -21,8 +21,8 @@ leave it out: clutter is expensive to remove.
    transcript.** The transcript shows a fact being discovered, and anything
    discovered looks new. Before writing, open the file the fact is about, or the
    diff of the commits this session made, and look for the fact there. A config
-   value, a code comment, a docstring, a test name, a CLAUDE.md line, or a
-   commit message that states it is proof the gate fails. The session's own
+   value, a code comment, a docstring, a test name, or a CLAUDE.md line
+   that states it is proof the gate fails. The session's own
    commits are where a candidate most often already lives, since the session
    that learned a fact usually wrote it down in the code as it went.
 3. **Placement.** Would a comment beside the code, or a line in the project's

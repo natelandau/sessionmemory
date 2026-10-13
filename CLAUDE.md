@@ -254,6 +254,14 @@ second busy timeout, and two sessions ending in different projects touch differe
 entirely. Two hooks committing at once race on git's own `index.lock`, the loser skips,
 and the next session's hook commits what it left behind. Do not reintroduce
 `lib/locking.py`: the shared index and the taxonomy file it guarded are both gone.
+The one lock in the repository belongs to the plugin, not the CLI: the sweep worker holds
+a per-project `fcntl.flock` on the store's `sweep.lock` while it runs, so a second sweep
+for the same project queues behind the first rather than being dropped. The kernel
+releases it when the worker exits, however it exits, so nothing ages it out, and the
+file is never deleted, since a waiter would otherwise lock a new file at the same path.
+Only `BlockingIOError` from `flock` means another worker holds it. Any other failure sets
+`Lock.error`, which ends a worker's wait at once and reads as no sweep when a hook decides
+whether to commit, so a lock file that cannot be opened never blocks either.
 
 **A hit is relative to its field, not a fixed distance.** `fieldindex.search` keeps a
 page within `DEFAULT_MAX_DISTANCE` (0.45) only when it also sits `DEFAULT_MIN_MARGIN`
@@ -393,18 +401,25 @@ The sweep may write anywhere inside its own project's folder, which is what a la
 strengthening a memory means. Two backstops run after the model finishes, and neither is
 complete. `Sweep._validate_writes` walks the tool-use stream's reported paths and reverts
 anything outside the project folder, restoring it from the vault's `HEAD` or quarantining
-it when git cannot. It then scrubs for secrets by mtime: every file under the project
-folder modified since the run started, which is what catches a write made through Bash,
-since a Bash write never appears in the tool-use stream. A Bash write **outside** the
-project folder, a sibling project's folder foremost, is caught by nothing here and is
-committed by the next hook. Git history is the recovery. The prompt forbids deleting a
-page, and a page the model deletes through Bash is committed as a deletion.
+it when git cannot. It then scrubs for secrets by content hash: `snapshot.take` hashes the
+project folder before and after the run, skipping symlinks, and every file whose hash
+changed is scrubbed, which is what catches a write made through Bash, since a Bash write
+never appears in the tool-use stream. A file that cannot be read is recorded as
+`snapshot.UNREADABLE` rather than left out, so it reads as modified and never as created
+or deleted. A deletion is noted, not undone. `Sweep._enforce_shapes` then checks what
+`hooks/sessionhooks/shape.py` knows of a page's shape: a new learning, log, or top-level
+file that fails is quarantined, as is a new file nested below `learnings/` or `logs/`, and
+a modified learning that fails is restored from `HEAD` (`_restore_or_quarantine`). Debris
+that `shape.is_debris` names, mirroring `field.is_debris`, is left alone. A Bash write
+**outside** the project folder, a sibling project's folder foremost, is caught by nothing
+here and is committed by the next hook. Git history is the recovery. The prompt forbids
+deleting a page, and a page the model deletes through Bash is committed as a deletion.
 
 `hooks.json` budgets each hook's own worst case. `SessionStart` runs `Store.for_cwd` (one
 git call, `_GIT_TIMEOUT` 5s), `head_commit` (5s), two `VaultCLI.discover` handshakes
-(`VERSION_TIMEOUT` 5s each), the vault commit (`COMMIT_GIT_TIMEOUT` 5s across up to seven
-git calls, so 35s), `VaultCLI.resolve` and `VaultCLI.register` (`RESOLVE_TIMEOUT` 5s
-each), and `VaultCLI.inject` (`TIMEOUT` 25s): a worst case of 90s under a timeout of
+(`VERSION_TIMEOUT` 5s each), the vault commit (`COMMIT_GIT_TIMEOUT` 5s across up to eight
+git calls, so 40s), `VaultCLI.resolve` and `VaultCLI.register` (`RESOLVE_TIMEOUT` 5s
+each), and `VaultCLI.inject` (`TIMEOUT` 25s): a worst case of 95s under a timeout of
 100. `PreCompact` only gates and spawns, and its timeout is 10. Raising any of those
 constants means raising the timeout that covers them.
 
@@ -417,9 +432,12 @@ and starts no subprocess, commits with git alone, and hands the sweep worker a r
 rather than a `VaultCLI`, so the version handshake runs in the worker after it detaches.
 A commit cut short costs nothing, since the next `SessionStart` commits what it left.
 
-Both start and end hooks skip their commit while a sweep worker holds a fresh lock, since
-the worker commits its own writes when it finishes. `sessionend.py` commits whether or not
-the sweep is enabled, so a session that wrote a page by hand still lands it.
+Both start and end hooks skip their commit while any project's sweep is running, since
+the commit stages the whole vault and would capture a worker's writes before it scrubs and
+shape-checks them. `sweep.any_in_progress` probes every project's lock under the state
+root. A worker skips its own commit the same way while another project's sweep runs, and
+the last worker to finish commits everything. `sessionend.py` commits whether or not the
+sweep is enabled, so a session that wrote a page by hand still lands it.
 
 ### Committing
 
@@ -435,6 +453,14 @@ whatever repository set those variables rather than at the vault. The rule is a 
 rather than a fixed set because the `GIT_CONFIG_KEY_<n>` family is indexed and cannot be
 enumerated, and a config override such as `core.worktree` relocates a repository exactly
 as `GIT_DIR` does.
+
+The message is built from `git diff --cached --name-status` by `commit.message`: the subject
+groups paths by the segment after `projects/` (or `vault` for `_system/`). One project's
+subject counts its paths by kind, and `_system` paths ride along with it; several projects
+get `<names>: update <n> files`, counting every staged path. `vault` is not a project, so
+it names the subject only when it is alone. The body lists every path and opens with the
+sweep log's summary when there is one. The message goes to `git commit -F -` on stdin, so
+a large first commit cannot exceed the argument limit.
 
 Staging is `git add -A -- :/ ':(exclude,glob)**/*.sqlite3*'`. `:/` keeps the whole
 repository in scope for a vault nested inside a larger one, and the exclusion keeps the

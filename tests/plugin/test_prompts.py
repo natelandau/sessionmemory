@@ -49,3 +49,30 @@ def test_the_prompt_adds_a_backlog_item_through_the_cli():
 
     assert "{{vault_cli}} new backlog --kind" in text
     assert "create it with a `# Backlog` heading" not in text
+
+
+def _rendered_prompt() -> str:
+    """Return sweep.md with the capture criteria interpolated."""
+    text = (PROMPTS / "sweep.md").read_text(encoding="utf-8")
+    criteria = (PROMPTS / "_capture-criteria.md").read_text(encoding="utf-8")
+    return text.replace("{{capture_criteria}}", criteria)
+
+
+def test_the_prompt_searches_the_repo_docs_before_a_learning():
+    """Verify the prompt names the repo docs and tells the sweep to search them before creating a learning."""
+    text = _rendered_prompt()
+    command = text.index("new learning")
+
+    for doc in ("CLAUDE.md", "AGENTS.md", "README.md", "docs/"):
+        assert doc in text
+    assert text.index("grep -rnis") < command
+    assert text.rindex("AGENTS.md", 0, command) > 0
+
+
+def test_the_prompt_does_not_count_a_commit_message_as_a_record():
+    """Verify a commit message is not listed among the things that already state a fact."""
+    text = " ".join(_rendered_prompt().split())
+
+    assert "or a commit message already states" not in text
+    assert "or a commit message that states it" not in text
+    assert "only in a commit message is still unrecorded" in text

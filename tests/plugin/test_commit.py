@@ -11,6 +11,7 @@ from sessionhooks.commit import (  # ty: ignore[unresolved-import]
     commit_vault,
     is_repository,
     is_safe_to_commit,
+    message,
 )
 
 from tests._env import clean_environ
@@ -45,7 +46,7 @@ def test_commit_vault_commits_a_dirty_tree(tmp_path):
     log = subprocess.run(
         ["git", "log", "--oneline"], cwd=root, capture_output=True, text=True, check=True
     )
-    assert "checkpoint" in log.stdout.splitlines()[0]
+    assert "checkpoint" not in log.stdout.splitlines()[0]
 
 
 def test_commit_vault_clean_tree_is_skipped(tmp_path):
@@ -170,10 +171,10 @@ def test_commit_vault_reports_a_failed_add(tmp_path, monkeypatch):
     (root / "page.md").write_text("x", encoding="utf-8")
     real_git = commit_module._git
 
-    def _fake_git(root_, *args, env, timeout=10) -> subprocess.CompletedProcess | None:
+    def _fake_git(root_, *args, env, timeout=10, **kwargs) -> subprocess.CompletedProcess | None:
         if args and args[0] == "add":
             return subprocess.CompletedProcess(args, returncode=1, stdout="", stderr="boom")
-        return real_git(root_, *args, env=env, timeout=timeout)
+        return real_git(root_, *args, env=env, timeout=timeout, **kwargs)
 
     monkeypatch.setattr(commit_module, "_git", _fake_git)
 
@@ -195,10 +196,10 @@ def test_commit_vault_reports_a_failed_commit(tmp_path, monkeypatch):
     (root / "page.md").write_text("x", encoding="utf-8")
     real_git = commit_module._git
 
-    def _fake_git(root_, *args, env, timeout=10) -> subprocess.CompletedProcess | None:
+    def _fake_git(root_, *args, env, timeout=10, **kwargs) -> subprocess.CompletedProcess | None:
         if args and args[0] == "commit":
             return subprocess.CompletedProcess(args, returncode=1, stdout="", stderr="boom")
-        return real_git(root_, *args, env=env, timeout=timeout)
+        return real_git(root_, *args, env=env, timeout=timeout, **kwargs)
 
     monkeypatch.setattr(commit_module, "_git", _fake_git)
 
@@ -220,10 +221,10 @@ def test_commit_vault_reports_git_unavailable_when_status_fails(tmp_path, monkey
     (root / "page.md").write_text("x", encoding="utf-8")
     real_git = commit_module._git
 
-    def _fake_git(root_, *args, env, timeout=10) -> subprocess.CompletedProcess | None:
+    def _fake_git(root_, *args, env, timeout=10, **kwargs) -> subprocess.CompletedProcess | None:
         if args and args[0] == "status":
             return subprocess.CompletedProcess(args, returncode=1, stdout="", stderr="boom")
-        return real_git(root_, *args, env=env, timeout=timeout)
+        return real_git(root_, *args, env=env, timeout=timeout, **kwargs)
 
     monkeypatch.setattr(commit_module, "_git", _fake_git)
 
@@ -241,10 +242,10 @@ def test_commit_vault_reports_the_sha_as_unavailable_when_rev_parse_fails(tmp_pa
     (root / "page.md").write_text("x", encoding="utf-8")
     real_git = commit_module._git
 
-    def _fake_git(root_, *args, env, timeout=10) -> subprocess.CompletedProcess | None:
+    def _fake_git(root_, *args, env, timeout=10, **kwargs) -> subprocess.CompletedProcess | None:
         if args[:2] == ("rev-parse", "--short"):
             return subprocess.CompletedProcess(args, returncode=1, stdout="", stderr="boom")
-        return real_git(root_, *args, env=env, timeout=timeout)
+        return real_git(root_, *args, env=env, timeout=timeout, **kwargs)
 
     monkeypatch.setattr(commit_module, "_git", _fake_git)
 
@@ -257,7 +258,7 @@ def test_commit_vault_reports_the_sha_as_unavailable_when_rev_parse_fails(tmp_pa
     log = subprocess.run(
         ["git", "log", "--oneline"], cwd=root, capture_output=True, text=True, check=True
     )
-    assert "checkpoint" in log.stdout.splitlines()[0]
+    assert "checkpoint" not in log.stdout.splitlines()[0]
 
 
 def test_commit_vault_names_a_lost_index_lock_race(tmp_path, monkeypatch):
@@ -266,7 +267,7 @@ def test_commit_vault_names_a_lost_index_lock_race(tmp_path, monkeypatch):
     (root / "page.md").write_text("x", encoding="utf-8")
     real_git = commit_module._git
 
-    def _locked(root_, *args, env, timeout) -> subprocess.CompletedProcess:
+    def _locked(root_, *args, env, timeout, **kwargs) -> subprocess.CompletedProcess:
         if args[0] == "commit":
             return subprocess.CompletedProcess(
                 args=["git", *args],
@@ -274,7 +275,180 @@ def test_commit_vault_names_a_lost_index_lock_race(tmp_path, monkeypatch):
                 stdout="",
                 stderr="fatal: Unable to create '.git/index.lock': File exists.",
             )
-        return real_git(root_, *args, env=env, timeout=timeout)
+        return real_git(root_, *args, env=env, timeout=timeout, **kwargs)
 
     monkeypatch.setattr(commit_module, "_git", _locked)
     assert commit_vault(root, env=clean_environ()) == CommitOutcome(reason="index lock")
+
+
+def test_message_names_the_project_and_what_changed():
+    """Verify the subject names the project and counts each kind of change."""
+    changes = [
+        ("A", "projects/crosstune/logs/a.md"),
+        ("A", "projects/crosstune/learnings/b.md"),
+        ("A", "projects/crosstune/learnings/c.md"),
+        ("M", "projects/crosstune/backlog.md"),
+        ("M", "projects/crosstune/specs/d.md"),
+    ]
+
+    subject, _ = message(changes)
+
+    assert subject == "crosstune: add 1 log, 2 learnings; edit backlog, 1 spec"
+
+
+def test_message_for_the_registry_alone():
+    """Verify a change under _system is grouped as the vault."""
+    subject, _ = message([("M", "_system/registry.toml")])
+
+    assert subject == "vault: edit 1 file"
+
+
+def test_message_for_two_projects():
+    """Verify several projects are named and the changes only counted."""
+    changes = [
+        ("A", "projects/crosstune/logs/a.md"),
+        ("M", "projects/sessionmemory/backlog.md"),
+        ("D", "projects/sessionmemory/learnings/x.md"),
+    ]
+
+    subject, _ = message(changes)
+
+    assert subject == "crosstune, sessionmemory: update 3 files"
+
+
+def test_message_subject_stays_within_70_characters():
+    """Verify a long subject is cut at a separator and ends with an ellipsis."""
+    base = "projects/crosstune"
+    changes = [
+        ("A", f"{base}/logs/a.md"),
+        ("A", f"{base}/learnings/a.md"),
+        ("A", f"{base}/specs/a.md"),
+        ("A", f"{base}/plans/a.md"),
+        ("A", f"{base}/runbooks/a.md"),
+        ("A", f"{base}/reference/a.md"),
+        ("M", f"{base}/logs/b.md"),
+        ("M", f"{base}/learnings/b.md"),
+        ("M", f"{base}/specs/b.md"),
+        ("D", f"{base}/plans/b.md"),
+        ("D", f"{base}/runbooks/b.md"),
+        ("D", f"{base}/reference/b.md"),
+    ]
+
+    subject, _ = message(changes)
+
+    assert len(subject) <= 70
+    assert subject.endswith("...")
+    assert subject.startswith("crosstune: add 1 log")
+
+
+def test_message_body_lists_every_path_and_opens_with_the_note():
+    """Verify the body opens with the note and lists one line per path."""
+    changes = [
+        ("A", "projects/crosstune/logs/a.md"),
+        ("R", "projects/crosstune/specs/d.md"),
+        ("D", "projects/crosstune/learnings/b.md"),
+    ]
+
+    _, body = message(changes, note="Made the handler idempotent")
+
+    assert body.splitlines() == [
+        "Made the handler idempotent",
+        "",
+        "add: projects/crosstune/logs/a.md",
+        "edit: projects/crosstune/specs/d.md",
+        "delete: projects/crosstune/learnings/b.md",
+    ]
+
+
+def test_commit_vault_writes_the_built_message(tmp_path):
+    """Verify the commit subject names the project and the body lists the paths."""
+    root = _repo(tmp_path)
+    page = root / "projects" / "crosstune" / "learnings" / "a.md"
+    page.parent.mkdir(parents=True)
+    page.write_text("x", encoding="utf-8")
+
+    commit_vault(root, env=clean_environ(), note="Did a thing")
+
+    log = subprocess.run(
+        ["git", "log", "-1", "--format=%s%n%b"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert log.stdout.splitlines()[0] == "crosstune: add 1 learning"
+    assert "checkpoint" not in log.stdout
+    assert "Did a thing" in log.stdout
+    assert "add: projects/crosstune/learnings/a.md" in log.stdout
+
+
+def test_commit_vault_works_in_a_nested_vault(tmp_path):
+    """Verify a vault inside a larger repository still groups by project."""
+    repo = _repo(tmp_path)
+    vault = repo / "notes" / "vault"
+    page = vault / "projects" / "crosstune" / "logs" / "a.md"
+    page.parent.mkdir(parents=True)
+    page.write_text("x", encoding="utf-8")
+
+    outcome = commit_vault(vault, env=clean_environ())
+
+    assert outcome.sha
+    log = subprocess.run(
+        ["git", "log", "-1", "--format=%s%n%b"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert log.stdout.splitlines()[0] == "crosstune: add 1 log"
+    assert "add: notes/vault/projects/crosstune/logs/a.md" in log.stdout
+
+
+def test_message_orders_nouns_whatever_order_git_lists_paths():
+    """Verify git's path-sorted input still reads log, learning, backlog, spec."""
+    changes = [
+        ("M", "projects/crosstune/backlog.md"),
+        ("A", "projects/crosstune/learnings/b.md"),
+        ("A", "projects/crosstune/learnings/c.md"),
+        ("A", "projects/crosstune/logs/a.md"),
+        ("M", "projects/crosstune/specs/d.md"),
+    ]
+
+    subject, _ = message(changes)
+
+    assert subject == "crosstune: add 1 log, 2 learnings; edit backlog, 1 spec"
+
+
+def test_message_for_a_project_beside_the_vault():
+    """Verify _system paths stay out of the subject but appear in the body."""
+    changes = [
+        ("A", "projects/crosstune/logs/a.md"),
+        ("M", "_system/registry.toml"),
+    ]
+
+    subject, body = message(changes)
+
+    assert subject == "crosstune: add 1 log"
+    assert "edit: _system/registry.toml" in body
+
+
+def test_message_for_two_projects_beside_the_vault_does_not_list_it():
+    """Verify the vault is not named among several projects but is counted."""
+    changes = [
+        ("A", "projects/a/logs/x.md"),
+        ("A", "projects/b/logs/x.md"),
+        ("M", "_system/registry.toml"),
+    ]
+
+    subject, body = message(changes)
+
+    assert subject == "a, b: update 3 files"
+    assert len(body.splitlines()) == 3
+
+
+def test_commit_vault_skips_when_only_the_derived_index_changed(tmp_path):
+    """Verify an untracked .sqlite3 alone is reported as clean rather than raising."""
+    root = _repo(tmp_path)
+    (root / "index.sqlite3").write_text("x", encoding="utf-8")
+
+    assert commit_vault(root, env=clean_environ()) == CommitOutcome(reason="clean")

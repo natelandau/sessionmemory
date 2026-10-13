@@ -115,6 +115,20 @@ def test_runner_carries_its_extra_env_into_the_subprocess_environment() -> None:
     assert result["PROJECT_MEMORY_ROOT"] == "/v"
 
 
+def test_run_passes_per_run_env_to_the_child(mocker) -> None:
+    """Verify a per-run variable reaches the subprocess environment."""
+    run = mocker.patch.object(
+        runner_mod.subprocess,
+        "run",
+        autospec=True,
+        return_value=subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+    )
+
+    ClaudeRunner().run("p", cwd="/r", extra_env={"X": "1"})
+
+    assert run.call_args.kwargs["env"]["X"] == "1"
+
+
 def test_build_env_does_not_mutate_base() -> None:
     """Verify build_env never modifies the caller's base mapping."""
     # Given a base dict with both vars present

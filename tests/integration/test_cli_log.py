@@ -77,3 +77,35 @@ def test_log_records_transcript_and_url(workspace):
     text = page.read_text(encoding="utf-8")
     assert "transcript: /home/me/.claude/projects/x/s2.jsonl" in text
     assert "session_url: https://claude.ai/code/session_01ABC" in text
+
+
+def test_log_title_comes_from_the_environment_over_the_flag(workspace, monkeypatch):
+    """Verify the environment's title wins over the --title flag."""
+    vault, _ = workspace
+    monkeypatch.setenv("SESSIONMEMORY_LOG_TITLE", "2026-10-05 22:42")
+
+    result = runner.invoke(app, ["log", "--session-id", "s3", "--title", "2026-10-06 00:42"])
+
+    assert result.exit_code == 0, result.output
+    page = next((vault / "projects" / "demo" / "logs").glob("*.md"))
+    assert page.name.startswith("2026-10-05-")
+    assert "title: 2026-10-05 22:42" in page.read_text(encoding="utf-8")
+
+
+def test_log_without_a_title_uses_the_environment(workspace, monkeypatch):
+    """Verify --title may be omitted when the environment supplies one."""
+    monkeypatch.setenv("SESSIONMEMORY_LOG_TITLE", "2026-10-05 22:42")
+
+    result = runner.invoke(app, ["log", "--session-id", "s4"])
+
+    assert result.exit_code == 0, result.output
+
+
+def test_log_without_a_title_or_environment_is_refused(workspace, monkeypatch):
+    """Verify a log with no title from either source exits 1 and names --title."""
+    monkeypatch.delenv("SESSIONMEMORY_LOG_TITLE", raising=False)
+
+    result = runner.invoke(app, ["log", "--session-id", "s5"])
+
+    assert result.exit_code == 1
+    assert "--title" in result.output

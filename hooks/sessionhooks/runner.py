@@ -16,10 +16,15 @@ import subprocess
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
+from sessionhooks.config import DEFAULT_SWEEP_TIMEOUT
+
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
 HEADLESS_ENV = "SESSIONMEMORY_HEADLESS"
+# The log's title, handed to the model's environment because a model asked to type
+# it rewrites it. `sessionmemory log` reads the same name; hooks import nothing from src.
+LOG_TITLE_ENV = "SESSIONMEMORY_LOG_TITLE"
 # A key reserved for the sweep, so its usage bills separately from the session's own login.
 SWEEP_API_KEY_ENV = "SESSIONMEMORY_ANTHROPIC_API_KEY"
 # Credentials `claude` ranks above ANTHROPIC_API_KEY, which would otherwise
@@ -34,7 +39,6 @@ OUTRANKING_AUTH_ENV = (
 # may revert.
 MUTATING_TOOLS = frozenset({"Write", "Edit", "MultiEdit", "NotebookEdit"})
 DEFAULT_MODEL = "claude-sonnet-4-6"
-DEFAULT_TIMEOUT = 180
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,8 +55,10 @@ class RunResult:
 class Runner(Protocol):
     """The seam `Sweep` depends on: anything that runs a prompt and returns a result."""
 
-    def run(self, prompt: str, *, cwd: str) -> RunResult:
-        """Run `prompt` in `cwd` and return a structured result."""
+    def run(
+        self, prompt: str, *, cwd: str, extra_env: Mapping[str, str] | None = None
+    ) -> RunResult:
+        """Run `prompt` in `cwd`, with `extra_env` added for this run, and return a result."""
         ...  # pragma: no cover - a Protocol stub body, never executed
 
 
@@ -180,7 +186,7 @@ class ClaudeRunner:
         self,
         *,
         model: str = DEFAULT_MODEL,
-        timeout: int = DEFAULT_TIMEOUT,
+        timeout: int = DEFAULT_SWEEP_TIMEOUT,
         save_transcript: bool = True,
         extra_env: Mapping[str, str] | None = None,
     ) -> None:
@@ -193,14 +199,18 @@ class ClaudeRunner:
         """Build the CLI args for this runner's configured model and persistence."""
         return build_args(model=self.model, save_transcript=self.save_transcript)
 
-    def run(self, prompt: str, *, cwd: str) -> RunResult:
+    def run(
+        self, prompt: str, *, cwd: str, extra_env: Mapping[str, str] | None = None
+    ) -> RunResult:
         """Execute `claude -p` and return a RunResult, never raising.
+
+        `extra_env` is merged over the runner's own `extra_env` for this run only.
 
         Failures map to negative exit codes: timeout -2, claude-not-found -3,
         cwd-not-found -4, OSError -5. On any failure `changed_files` is empty and `success` is False.
         """
         args = self._build_args()
-        env = build_env(base=os.environ, extra=self.extra_env)
+        env = build_env(base=os.environ, extra={**self.extra_env, **(extra_env or {})})
         try:
             proc = subprocess.run(  # noqa: S603 - args are build_args, not user input
                 args,

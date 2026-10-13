@@ -62,8 +62,12 @@ TIMEOUT = 25
 # alone should not risk doubling a session-start hook's total wait.
 RESOLVE_TIMEOUT = 5
 
-# commit_vault runs up to seven git calls in sequence; five seconds each keeps its
-# worst case at 35s, inside the SessionStart budget. SessionEnd's budget is Claude
+# The detached sweep worker has no hook budget to protect, and a cold shim build
+# can outlast the interactive timeouts, so its CLI calls get a long one.
+WORKER_CLI_TIMEOUT = 120
+
+# commit_vault runs up to eight git calls in sequence; five seconds each keeps its
+# worst case at 40s, inside the SessionStart budget. SessionEnd's budget is Claude
 # Code's, not ours, so a commit there is best effort.
 COMMIT_GIT_TIMEOUT = 5
 
@@ -111,14 +115,16 @@ def plugin_version() -> tuple[int, int, int] | None:
     return parse_version(raw) if isinstance(raw, str) else None
 
 
-def _installed_version(cli: Path, env: Mapping[str, str]) -> tuple[int, int, int] | None:
+def _installed_version(
+    cli: Path, env: Mapping[str, str], timeout: int = VERSION_TIMEOUT
+) -> tuple[int, int, int] | None:
     """Ask a CLI for its version, or None when it cannot say."""
     try:
         proc = subprocess.run(  # noqa: S603
             [str(cli), "--version"],
             capture_output=True,
             text=True,
-            timeout=VERSION_TIMEOUT,
+            timeout=timeout,
             check=False,
             env=dict(env),
         )
@@ -129,7 +135,7 @@ def _installed_version(cli: Path, env: Mapping[str, str]) -> tuple[int, int, int
     return parse_version(proc.stdout)
 
 
-def _cli_on_path(env: Mapping[str, str]) -> Path | None:
+def _cli_on_path(env: Mapping[str, str], timeout: int = VERSION_TIMEOUT) -> Path | None:
     """The `sessionmemory` on PATH, when it passes the version handshake."""
     found = shutil.which(CLI_NAME, path=env.get("PATH"))
     if found is None:
@@ -139,7 +145,7 @@ def _cli_on_path(env: Mapping[str, str]) -> Path | None:
     if required is None:
         _log.debug("handshake: plugin version unreadable, using the shim")
         return None
-    installed = _installed_version(Path(found), env)
+    installed = _installed_version(Path(found), env, timeout)
     if installed is None:
         _log.debug("handshake: %s on PATH gave no version", CLI_NAME)
         return None
@@ -163,6 +169,23 @@ def _json_object(raw: str | None) -> dict[str, Any] | None:
     except json.JSONDecodeError:
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def _flatten(payload: dict[str, Any]) -> dict[str, str]:
+    """Merge a `project` payload's top-level and nested `paths` strings into one mapping."""
+    flat = {k: v for k, v in payload.items() if isinstance(k, str) and isinstance(v, str)}
+    nested = payload.get("paths")
+    if isinstance(nested, dict):
+        flat.update({k: v for k, v in nested.items() if isinstance(k, str) and isinstance(v, str)})
+    return flat
+
+
+@dataclass(frozen=True, slots=True)
+class Lookup:
+    """The outcome of resolving a project: its paths, or why there are none."""
+
+    paths: dict[str, str] | None
+    reason: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,9 +220,11 @@ class VaultCLI:
         return None if root is None else cls.for_root(root, env=env)
 
     @classmethod
-    def for_root(cls, root: Path, *, env: Mapping[str, str]) -> VaultCLI | None:
+    def for_root(
+        cls, root: Path, *, env: Mapping[str, str], version_timeout: int = VERSION_TIMEOUT
+    ) -> VaultCLI | None:
         """Choose the CLI for an already-located vault, or None when neither copy exists."""
-        found = _cli_on_path(env)
+        found = _cli_on_path(env, version_timeout)
         if found is not None:
             return cls(root=root, cli=found, on_path=True)
         shim = _shim()
@@ -271,15 +296,37 @@ class VaultCLI:
             ["project", "--cwd", str(cwd), "--json"], cwd=cwd, env=env, timeout=timeout
         )
         payload = _json_object(raw)
-        if payload is None:
-            return None
-        flat = {k: v for k, v in payload.items() if isinstance(k, str) and isinstance(v, str)}
-        nested = payload.get("paths")
-        if isinstance(nested, dict):
-            flat.update(
-                {k: v for k, v in nested.items() if isinstance(k, str) and isinstance(v, str)}
+        return None if payload is None else _flatten(payload)
+
+    def project_lookup(self, *, cwd: Path, env: Mapping[str, str], timeout: int) -> Lookup:
+        """Resolve the project owning `cwd` into flattened paths, or say why not.
+
+        Runs the CLI directly rather than through `run` so a timeout can be told
+        from a failure to start, which a caller logging a skip needs to name.
+        """
+        try:
+            proc = subprocess.run(  # noqa: S603
+                [str(self.cli), "project", "--cwd", str(cwd), "--json"],
+                cwd=str(cwd),
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+                env=self._child_env(env),
             )
-        return flat
+        except subprocess.TimeoutExpired:
+            return Lookup(None, f"project timed out after {timeout}s")
+        except (OSError, subprocess.SubprocessError) as exc:
+            return Lookup(None, f"project could not start: {exc}")
+        if proc.returncode not in (EXIT_OK, EXIT_REFUSED):
+            tail = " ".join(proc.stderr.split())[-200:]
+            return Lookup(None, f"project exited {proc.returncode}: {tail}")
+        payload = _json_object(proc.stdout)
+        if payload is None:
+            return Lookup(None, "project printed no JSON")
+        if payload.get("registered") is False:
+            return Lookup(None, "project not registered")
+        return Lookup(_flatten(payload))
 
     def resolve(self, *, cwd: Path, env: Mapping[str, str]) -> dict[str, Any] | None:
         """The `project --json` payload for `cwd`, or None when the CLI could not answer.
@@ -318,9 +365,9 @@ class VaultCLI:
         slug = payload.get("slug")
         return slug if isinstance(slug, str) and slug else None
 
-    def commit(self, *, env: Mapping[str, str]) -> CommitOutcome:
+    def commit(self, *, env: Mapping[str, str], note: str = "") -> CommitOutcome:
         """Commit the vault's outstanding changes and report what happened."""
         # Imported at call time so a test can patch sessionhooks.commit.commit_vault.
         from sessionhooks.commit import commit_vault
 
-        return commit_vault(self.root, env=env, timeout=COMMIT_GIT_TIMEOUT)
+        return commit_vault(self.root, env=env, timeout=COMMIT_GIT_TIMEOUT, note=note)

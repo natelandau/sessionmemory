@@ -11,14 +11,14 @@
 
 """SessionEnd hook: trigger the end-of-session memory sweep and commit the vault.
 
-Gating (lock, threshold, transcript window) runs inline; the heavy `claude -p`
+Gating (threshold, transcript window) runs inline; the heavy `claude -p`
 pass runs in a detached worker that outlives session teardown. The sweep worker
 commits its own writes when it finishes; this hook commits what the vault
 already holds, so a session that ends without triggering a sweep still lands
 any outstanding changes. The commit runs even when the sweep is disabled or
-skipped by its own gate; only the headless guard and a fresh sweep-worker lock
-skip it too, since a hook committing while a worker may still be writing would
-race it. Fail-open: any error exits 0 rather than wedging session end.
+skipped by its own gate; only the headless guard and any project's held sweep
+lock skip it too, since the commit stages the whole vault and would capture a
+worker's writes before it has checked them. Fail-open: any error exits 0 rather than wedging session end.
 
 Claude Code gives every SessionEnd hook one shared budget, 1.5s by default, and a
 plugin's own `timeout` cannot raise it; only the user's
@@ -35,7 +35,6 @@ from __future__ import annotations
 import contextlib
 import os
 import sys
-import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -48,7 +47,7 @@ from sessionhooks.commit import commit_vault  # noqa: E402
 from sessionhooks.headless import is_headless  # noqa: E402
 from sessionhooks.hookmain import begin  # noqa: E402
 from sessionhooks.io import read_payload  # noqa: E402
-from sessionhooks.sweep import in_progress, run_sweep  # noqa: E402
+from sessionhooks.sweep import any_in_progress, run_sweep  # noqa: E402
 from sessionhooks.vaultcli import COMMIT_GIT_TIMEOUT, VaultCLI  # noqa: E402
 
 if TYPE_CHECKING:
@@ -64,7 +63,7 @@ def _run(payload: dict, cfg: SessionMemoryConfig, *, store: Store, log: logging.
         run_sweep(payload, env=os.environ, store=store, config=cfg)
     else:
         log.info("sweep skipped: disabled")
-    if in_progress(store, now=time.time()):
+    if any_in_progress(os.environ):
         log.info("commit skipped: sweep in progress")
         return  # the worker commits its own writes when it finishes
     root = VaultCLI.locate(env=os.environ, configured=cfg.vault_root)

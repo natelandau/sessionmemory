@@ -13,7 +13,6 @@ import os
 import re
 import subprocess
 import threading
-import time
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
@@ -23,6 +22,7 @@ import sessionend  # ty: ignore[unresolved-import]
 import sessionstart  # ty: ignore[unresolved-import]
 from sessionhooks.config import SessionMemoryConfig  # ty: ignore[unresolved-import]
 from sessionhooks.store import Store  # ty: ignore[unresolved-import]
+from sessionhooks.sweep import Lock  # ty: ignore[unresolved-import]
 from sessionhooks.vaultcli import ROOT_ENV  # ty: ignore[unresolved-import]
 
 from sessionmemory.lib import field, registry
@@ -372,11 +372,56 @@ def test_sessionstart_commits_the_vault(tmp_path: Path) -> None:
     env = _isolated_env(tmp_path, proj, vault=vault)
     # When SessionStart runs
     _run("sessionstart", {"cwd": str(proj), "source": "startup"}, env)
-    # Then the outstanding page landed in a checkpoint commit
+    # Then the outstanding page landed in a commit
     log = subprocess.run(
         ["git", "log", "--oneline"], cwd=vault, capture_output=True, text=True, check=True
     )
-    assert "checkpoint" in log.stdout
+    assert "proj: add 1 learning" in log.stdout
+
+
+def _git_vault(tmp_path: Path, proj: Path) -> Path:
+    """A registered vault under git with one commit and one uncommitted learning."""
+    vault = _fake_vault(tmp_path, proj)
+    subprocess.run(["git", "init", "-q", "."], cwd=vault, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "t@example.org"], cwd=vault, check=True, capture_output=True
+    )
+    subprocess.run(["git", "config", "user.name", "t"], cwd=vault, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-q", "--allow-empty", "-m", "init"],
+        cwd=vault,
+        check=True,
+        capture_output=True,
+    )
+    return vault
+
+
+@pytest.mark.parametrize("stage", ["sessionstart", "sessionend"])
+def test_a_hook_skips_the_commit_while_another_projects_sweep_runs(
+    stage: str, tmp_path: Path
+) -> None:
+    """Verify a vault commit waits for any project's sweep, since it stages the whole vault."""
+    # Given a dirty vault and a sweep lock held by a different project on this machine
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    other = tmp_path / "other"
+    other.mkdir()
+    vault = _git_vault(tmp_path, proj)
+    held = Lock(_store(tmp_path, other).lock_path)
+    assert held.acquire()
+    env = _isolated_env(tmp_path, proj, vault=vault)
+    try:
+        # When this project's hook runs
+        proc = _run(stage, {"cwd": str(proj), "source": "startup", "transcript_path": ""}, env)
+    finally:
+        held.release()
+    # Then it skips the commit rather than staging the other sweep's unchecked writes
+    assert proc.returncode == 0, proc.stderr
+    assert "commit skipped: sweep in progress" in _hooks_log(tmp_path)
+    log = subprocess.run(
+        ["git", "log", "--oneline"], cwd=vault, capture_output=True, text=True, check=True
+    )
+    assert len(log.stdout.strip().splitlines()) == 1
 
 
 def test_sessionstart_disabled_inject_exits_silently(tmp_path: Path) -> None:
@@ -918,7 +963,7 @@ def test_sessionend_commits_the_vault(tmp_path: Path) -> None:
     env = _isolated_env(tmp_path, proj, vault=vault)
     # When SessionEnd runs with a below-threshold transcript, so no sweep spawns
     proc = _run("sessionend", {"cwd": str(proj), "transcript_path": ""}, env)
-    # Then the outstanding page still landed in a checkpoint commit
+    # Then the outstanding page still landed in a commit
     assert proc.returncode == 0, proc.stderr
     assert "sweep skipped: no transcript" in _hooks_log(tmp_path)
     assert re.search(
@@ -927,7 +972,7 @@ def test_sessionend_commits_the_vault(tmp_path: Path) -> None:
     log = subprocess.run(
         ["git", "log", "--oneline"], cwd=vault, capture_output=True, text=True, check=True
     )
-    assert "checkpoint" in log.stdout
+    assert "proj: add 1 learning" in log.stdout
 
 
 def test_sessionend_commits_when_the_sweep_is_disabled(tmp_path: Path) -> None:
@@ -955,13 +1000,13 @@ def test_sessionend_commits_when_the_sweep_is_disabled(tmp_path: Path) -> None:
     env = _isolated_env(tmp_path, proj, vault=vault)
     # When SessionEnd runs with the sweep disabled
     proc = _run("sessionend", {"cwd": str(proj), "transcript_path": ""}, env)
-    # Then no sweep ran, but the outstanding page still landed in a checkpoint commit
+    # Then no sweep ran, but the outstanding page still landed in a commit
     assert proc.returncode == 0, proc.stderr
     assert "sweep skipped: disabled" in _hooks_log(tmp_path)
     log = subprocess.run(
         ["git", "log", "--oneline"], cwd=vault, capture_output=True, text=True, check=True
     )
-    assert "checkpoint" in log.stdout
+    assert "proj: add 1 learning" in log.stdout
 
 
 def test_sessionend_never_starts_the_vault_cli(tmp_path: Path) -> None:
@@ -992,12 +1037,12 @@ def test_sessionend_never_starts_the_vault_cli(tmp_path: Path) -> None:
     assert not sentinel.exists()
 
 
-def test_sessionend_skips_the_commit_while_a_sweep_worker_holds_a_fresh_lock(
+def test_sessionend_skips_the_commit_while_a_sweep_worker_holds_the_lock(
     tmp_path: Path,
 ) -> None:
     """Verify SessionEnd defers to a sweep worker still writing rather than racing it."""
     # Given a registered vault holding one uncommitted page, under git, and a
-    # fresh sweep-worker lock for this project
+    # sweep-worker lock held for this project
     proj = tmp_path / "proj"
     proj.mkdir()
     vault = _fake_vault(tmp_path, proj)
@@ -1013,11 +1058,14 @@ def test_sessionend_skips_the_commit_while_a_sweep_worker_holds_a_fresh_lock(
         capture_output=True,
     )
     store = _store(tmp_path, proj)
-    store.state_dir.mkdir(parents=True, exist_ok=True)
-    store.lock_path.write_text(str(time.time()), encoding="utf-8")
+    held = Lock(store.lock_path)
+    assert held.acquire()
     env = _isolated_env(tmp_path, proj, vault=vault)
-    # When SessionEnd runs with a below-threshold transcript, so no sweep spawns
-    proc = _run("sessionend", {"cwd": str(proj), "transcript_path": ""}, env)
+    try:
+        # When SessionEnd runs with a below-threshold transcript, so no sweep spawns
+        proc = _run("sessionend", {"cwd": str(proj), "transcript_path": ""}, env)
+    finally:
+        held.release()
     # Then the commit is skipped, leaving only the vault's initial commit
     assert proc.returncode == 0, proc.stderr
     assert "commit skipped: sweep in progress" in _hooks_log(tmp_path)
@@ -1025,7 +1073,6 @@ def test_sessionend_skips_the_commit_while_a_sweep_worker_holds_a_fresh_lock(
         ["git", "log", "--oneline"], cwd=vault, capture_output=True, text=True, check=True
     )
     assert len(log.stdout.strip().splitlines()) == 1
-    assert "checkpoint" not in log.stdout
 
 
 def test_a_hook_with_a_bad_transcript_path_still_exits_zero_and_logs(tmp_path: Path) -> None:

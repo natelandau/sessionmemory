@@ -107,8 +107,8 @@ No vault is reachable, so this session has no memory and nothing it does will be
 
 The hook's timeout is 100 seconds, and it budgets its own worst case: resolving the
 project root 5s, reading the head commit 5s, two version handshakes 10s, the vault commit
-35s, one registration check 5s, one registration 5s, and `sessionmemory inject` 25s,
-which is 90 seconds in all. Injection reads no index and loads no model, so a first
+40s, one registration check 5s, one registration 5s, and `sessionmemory inject` 25s,
+which is 95 seconds in all. Injection reads no index and loads no model, so a first
 session never waits on the embedding model download.
 
 ### SessionEnd
@@ -137,15 +137,47 @@ Nothing is committed here, and the timeout is 10 seconds.
 ### Committing the vault
 
 A commit stages everything under the vault except the derived index files, and writes one
-message of the form `chore(vault): checkpoint 2026-09-02 09:44`.
+message that says what changed. The subject names the project and counts the changes by
+kind. The body lists every path, and opens with the summary of the session's log when a
+sweep wrote the commit:
+
+```text
+invoice-api: add 1 log, 2 learnings; edit backlog, 1 spec
+
+Made the charge handler idempotent so a retried webhook never double-bills a customer
+
+edit: projects/invoice-api/backlog.md
+add: projects/invoice-api/learnings/retries-need-idempotency-keys.md
+add: projects/invoice-api/learnings/webhooks-arrive-out-of-order.md
+add: projects/invoice-api/logs/2026-10-13-09-41.md
+edit: projects/invoice-api/specs/2026-10-13-retries.md
+```
+
+A commit that touches several projects names them and counts every changed file, not
+the kind of change, the vault's own files included:
+
+```text
+billing, invoice-api: update 4 files
+
+edit: _system/registry.toml
+add: projects/billing/learnings/invoices-round-half-up.md
+add: projects/invoice-api/learnings/idempotency-keys-expire-after-a-day.md
+add: projects/invoice-api/logs/2026-10-13-14-05.md
+```
+
+A change to the vault's own files alone reads `vault: edit 1 file`. A subject over 70
+characters is cut at a separator and ends with `...`.
 
 Four situations are skipped rather than committed. A merge, rebase, cherry-pick, or
 revert in progress is skipped, because a commit landing in the middle of one bakes
 half-resolved state into history. A detached `HEAD` is skipped, because such a commit is
-reachable from nothing once a branch is checked out again. A sweep worker that still
-holds a fresh lock is skipped, because the worker commits its own writes when it
-finishes. Two hooks reaching git at the same moment race on git's own `index.lock`, and
-the loser skips. In every case the next hook commits what was left behind.
+reachable from nothing once a branch is checked out again. A commit is skipped while any
+project's sweep is running, because a commit stages the whole vault and would record that
+sweep's writes before the sweep checks them. A worker that finishes while another
+project's sweep still runs logs `commit skipped: another sweep in progress`, and the last
+worker to finish commits everything. Two hooks reaching git at the same moment race on
+git's own `index.lock`, and the loser skips. In every case the next hook commits what was
+left behind.
 
 ## The sweep's three jobs
 
@@ -160,8 +192,11 @@ is recorded as nothing at all. Then it does three jobs, in order:
 
 1. **Learnings.** One page per durable fact that a future session in this repository
    would otherwise get wrong. Before writing one, the pass reads the repository and the
-   session's own commits, and drops any fact the code, a comment, a config value, a
-   test, or `CLAUDE.md` already states. A decision the session made, and the
+   session's own commits, and searches the repository's `CLAUDE.md`, `AGENTS.md`,
+   `README.md`, and `docs/` for the fact. It drops any fact the code, a comment, a config
+   value, a test, or one of those documents already states. A fact found only in a
+   commit message still counts as unrecorded, since sessions rarely read old commit
+   messages. A decision the session made, and the
    alternatives it rejected, stay in the commit that made them. A fact every session
    needs belongs in the project's `CLAUDE.md`, and the pass records it as a `docs`
    backlog line rather than a page. A fact already recorded is refined in place, never
@@ -179,6 +214,16 @@ floors keep trivial sessions out of the vault, and below any one of them the who
 is skipped. Two of the three are measured on your messages alone, so a long agent reply
 to one short instruction never clears them.
 
+Only one sweep runs at a time for each project. When a second session in the same
+project ends while a sweep is still running, its worker waits for the first to finish and
+then runs, rather than being dropped. It checks every 5 seconds and waits up to one hour.
+The hooks log records each step: `sweep queued: another sweep holds the lock` when the
+worker starts to wait, `sweep dequeued after about Ns` when it gets its turn, and the
+warning `sweep skipped: lock still held after 3600s` when it gives up. The lock is
+released when the worker exits for any reason, so a crashed sweep never blocks the next
+one. A lock file that cannot be opened at all ends the wait at once, with the warning
+`sweep skipped: lock unavailable: <error>`.
+
 ### What the sweep may write
 
 The pass may create and edit any file inside its own project's folder, which is what a
@@ -188,8 +233,19 @@ retiring one is a decision a person makes in review.
 Two backstops run after the model finishes. A write the model reported outside the
 project folder is restored from the vault's git history, and a file git cannot restore is
 moved into a quarantine directory rather than deleted. Every file under the project
-folder modified since the run started is then scanned for secret-shaped content and
+folder whose content changed during the run is then scanned for secret-shaped content and
 redacted in place, which catches a write made through Bash that no tool call reported.
+
+A third check enforces the shape of what the pass wrote. A new file in `learnings/` must
+have a conformant name and frontmatter holding only `title`, `uuid`, `summary`, `created`,
+and `updated`, with a non-blank `title` and `summary`. A new file in `logs/` must have a
+conformant name. A new file in a sub-directory of either folder is nested, since nothing
+reads a page there. A new file directly in the project folder, other than `backlog.md`, is
+stray. Any of these is moved into the quarantine directory. An existing learning the pass
+rewrote into another shape, such as another tool's frontmatter, is restored from the
+vault's git history instead, or quarantined when git has no copy of it. Files a sync
+tool, an editor, or the operating system leaves behind, such as `.DS_Store`, a Syncthing
+conflict copy, or a name ending in `~`, are left alone.
 
 A Bash write elsewhere in the vault, a sibling project's folder foremost, is caught by
 neither backstop, and the next commit records it. This is a real control against a
@@ -227,6 +283,7 @@ session.
 | `sweep.min_exchanges`     | `10`                | Skip the pass below this many real messages, yours and the agent's  |
 | `sweep.min_user_messages` | `3`                 | Skip the pass below this many messages from you                     |
 | `sweep.min_user_chars`    | `400`               | Skip the pass below this many characters from you, in total         |
+| `sweep.timeout`           | `600`               | Seconds the pass may run before it is killed                        |
 | `sweep.save_transcript`   | `true`              | Save the pass's own session, so its API usage is auditable          |
 | `log.path`                | `~/.local/state/sessionmemory/hooks.log` | Where every hook on this machine logs; `hooks/vault-path.py --log` prints it |
 | `log.level`               | `info`              | `debug`, `info`, `warning`, `error`, or `off`                       |
@@ -300,8 +357,22 @@ near-duplicates, and nothing else in the system consolidates them.
 prints and which defaults to `~/.local/state/sessionmemory/hooks.log`. Every hook writes
 one line per decision, so a short session shows as `sweep skipped: below threshold` with
 each measure against its floor, and a session the worker swept shows as `sweep finished`
-with the files it changed and the commit it made. A `sweep failed` line carries the exit
-code and the tail of stderr, which is what tells a missing `claude` binary from a timeout.
+with the files it changed and the commit it made. A worker that cannot start the pass
+logs one of these reasons, exactly as the log prints it:
+
+- `sweep skipped: no CLI: neither PATH nor the plugin shim`
+- `sweep skipped: project timed out after <n>s`, where the project lookup has 120 seconds
+- `sweep skipped: project could not start: <error>`
+- `sweep skipped: project exited <code>: <stderr>`
+- `sweep skipped: project not registered`
+- `sweep skipped: project printed no JSON`
+- `sweep skipped: project payload lacked <key>`
+- `sweep skipped: lock unavailable: <error>`
+- `sweep skipped: lock still held after <n>s`
+
+A `sweep failed` line carries the exit code, the start of the result text, and the tail
+of stderr, which is what tells a missing `claude` binary from a timeout or a rejected key.
+It then names the files the run changed and the commit, as a `sweep finished` line does.
 The log rotates at 1 MB with two backups kept, so it holds weeks of ordinary use. Set
 `log.level` to `debug` to see the version handshake and each git call.
 

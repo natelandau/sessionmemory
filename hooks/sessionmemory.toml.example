@@ -21,6 +21,7 @@ min_exchanges = 10            # skip the sweep below this many real messages (us
 # skipped: no learning, no backlog item, no log.
 min_user_messages = 3         # skip the sweep below this many messages from you
 min_user_chars = 400          # skip the sweep below this many characters from you, in total
+timeout = 600                 # seconds the headless sweep may run before it is killed
 save_transcript = true        # save the sweep's own claude session (for API-usage auditing); false discards it
 
 [log]

@@ -13,8 +13,8 @@
 
 Commits whatever the last session's sweep and any hand edits left behind, so the
 vault's history is never more than one session behind its files, in every case
-`SessionEnd` does; skipped only while a sweep worker holds a fresh lock, since it
-commits its own writes when it finishes. Then asks the vault CLI to render this
+`SessionEnd` does; skipped only while any project's sweep is running, since the
+commit stages the whole vault and the worker commits when it finishes. Then asks the vault CLI to render this
 project's memory block and returns it as non-blocking `additionalContext`. It
 also records two things the end-of-session sweep cannot recover later: the
 transcript path, so the sweep finds it after a `/clear`, and the commit this
@@ -44,9 +44,9 @@ injects a hint saying so, since every hook fails open and the session would othe
 learn nothing. Fail-open: any error exits 0 rather than wedging session start.
 
 The hook's timeout budgets its worst case: `Store.for_cwd` 5s, `head_commit` 5s,
-two `VaultCLI.discover` handshakes 10s, the vault commit 35s, `VaultCLI.resolve` 5s,
-`VaultCLI.register` 5s, `VaultCLI.inject` 25s, 90s in all; the timeout is 100 to
-stay ahead of that sum. Raising any of those numbers means raising it.
+two `VaultCLI.discover` handshakes 10s, the vault commit 40s (eight git calls at 5s),
+`VaultCLI.resolve` 5s, `VaultCLI.register` 5s, `VaultCLI.inject` 25s, 95s in all; the
+timeout is 100 to stay ahead of that sum. Raising any of those numbers means raising it.
 
 Every decision the hook makes is one line in the shared hooks log, and a crash is
 logged before the fail-open exit.
@@ -58,7 +58,6 @@ import contextlib
 import json
 import os
 import sys
-import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -71,7 +70,7 @@ from sessionhooks.headless import is_headless  # noqa: E402
 from sessionhooks.hookmain import begin  # noqa: E402
 from sessionhooks.io import read_payload  # noqa: E402
 from sessionhooks.store import head_commit  # noqa: E402
-from sessionhooks.sweep import in_progress  # noqa: E402
+from sessionhooks.sweep import any_in_progress  # noqa: E402
 from sessionhooks.vaultcli import VaultCLI  # noqa: E402
 
 if TYPE_CHECKING:
@@ -190,14 +189,14 @@ def _run(  # pragma: no cover - runs only as a subprocess, where coverage cannot
 
     # Commit whatever the last session's sweep and any hand edits left behind, so
     # the vault's history is never more than one session behind its files, in
-    # every case SessionEnd does. Skipped while a sweep worker holds a fresh
-    # lock: it commits its own writes when it finishes.
+    # every case SessionEnd does. Skipped while any project's sweep runs: the
+    # commit stages the whole vault, and the worker commits when it finishes.
     vault = VaultCLI.discover(env=os.environ, configured=cfg.vault_root)
     if vault is None:
         clauses.extend(["no vault", "commit skipped: no vault"])
     else:
         clauses.append("cli on PATH" if vault.on_path else "cli shim")
-        if in_progress(store, now=time.time()):
+        if any_in_progress(os.environ):
             clauses.append("commit skipped: sweep in progress")
         else:
             clauses.append(vault.commit(env=os.environ).describe())

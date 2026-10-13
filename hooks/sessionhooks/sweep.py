@@ -1,22 +1,24 @@
 """The end-of-session memory sweep: gate, detach, run, validate, commit.
 
-The gate runs inline in the SessionEnd/PreCompact hook: it acquires a per-project
-single-writer lock, resolves the transcript, windows it since the last compaction,
-drops system/hook noise, and yields a SweepJob only when the session clears every
-floor in `_shortfall`. The heavy `claude -p` pass runs in a double-forked daemon
-that outlives session teardown.
+The gate runs inline in the SessionEnd/PreCompact hook: it resolves the transcript,
+windows it since the last compaction, drops system/hook noise, and yields a SweepJob
+only when the session clears every floor in `_shortfall`. The heavy `claude -p` pass
+runs in a double-forked daemon that outlives session teardown. The daemon takes a
+per-project `flock` before it runs, so a second sweep for the same project queues
+behind the first rather than being dropped, and gives up after `QUEUE_WAIT`.
 
 The agent may write anywhere inside this project's vault folder and nowhere else. A
 tool-reported write outside it is reverted or quarantined. The agent keeps Bash for
 the whole run, and a write made through it never appears in the tool-use stream, so
-after the run every file under the project folder modified since the run started is
-scrubbed for secrets as well. A Bash write outside the project folder is caught by
-nothing here. Every boundary fails open so a sweep never wedges the session.
+the project folder is hashed before and after the run and every file whose hash
+changed is scrubbed for secrets as well. A Bash write outside the project folder is
+caught by nothing here. Every boundary fails open so a sweep never wedges the session.
 """
 
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import json
 import os
 import re
@@ -28,28 +30,34 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
-from sessionhooks import log, transcript
+from sessionhooks import log, shape, snapshot, transcript
 from sessionhooks.config import SessionMemoryConfig
 from sessionhooks.paths import is_within_root
-from sessionhooks.runner import ClaudeRunner
+from sessionhooks.runner import LOG_TITLE_ENV, ClaudeRunner
 from sessionhooks.safety import scrub
-from sessionhooks.store import Store, git_safe_env
-from sessionhooks.vaultcli import ROOT_ENV, VaultCLI
+from sessionhooks.store import LOCK_NAME, Store, git_safe_env, state_root
+from sessionhooks.vaultcli import ROOT_ENV, WORKER_CLI_TIMEOUT, VaultCLI
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
 
     from sessionhooks.runner import Runner, RunResult
+    from sessionhooks.snapshot import Changes
 
 _log = log.logger("sweep")
 
-STALE_AFTER = 300.0
+# A sweep queued behind another polls this often and gives up after QUEUE_WAIT, so
+# a worker wedged past its own timeout cannot hold a queue of sweeps forever.
+QUEUE_POLL = 5.0
+QUEUE_WAIT = 3600.0
 _GIT_TIMEOUT = 10
 # How much of a failed run's stderr the log keeps; enough to name the error, short
 # enough that a runaway traceback never dominates the file.
 STDERR_TAIL_CHARS = 500
+# The head of the result text names the error claude reports; the stderr tail names a crash.
+RESULT_TEXT_CHARS = 300
 # The model emits this when it judges the session worth no memory at all. It is
 # a diagnostic only: nothing reads it back, and a model that forgets it simply
 # leaves a sweep that recorded nothing looking like any other quiet sweep.
@@ -79,11 +87,12 @@ class Target:
     backlog_path: Path
     logs_dir: Path
 
+    REQUIRED: ClassVar[tuple[str, ...]] = ("project_dir", "learnings", "backlog", "logs")
+
     @classmethod
     def from_paths(cls, payload: dict[str, str]) -> Target | None:
         """Build a target from a flattened `sessionmemory project` payload, or None when incomplete."""
-        needed = ("project_dir", "learnings", "backlog", "logs")
-        if not all(payload.get(k) for k in needed):
+        if not all(payload.get(k) for k in cls.REQUIRED):
             return None
         return cls(
             project_dir=Path(payload["project_dir"]),
@@ -99,67 +108,89 @@ class Target:
 
 
 class Lock:
-    """Atomic single-writer lock with stale recovery; every operation fails open."""
+    """A per-project single-worker lock held as a kernel `flock`; every operation fails open.
 
-    def __init__(self, path: Path, *, stale_after: float = STALE_AFTER) -> None:
+    Two invariants make it safe without any stale-lock recovery. The kernel drops
+    the lock when the holding process exits, however it exits, so a crashed worker
+    never wedges the next one. The file is never deleted: a worker that unlinked it
+    while another waited would let a third lock a fresh file at the same path, and
+    two workers would then each hold "the" lock.
+
+    `acquire` returns False both when another process holds the lock and when the
+    lock cannot be taken at all. `error` tells the two apart: it is empty after
+    contention and names the failure otherwise, since waiting on a lock file that
+    cannot be opened would never end.
+    """
+
+    def __init__(self, path: Path) -> None:
         self.path = path
-        self.stale_after = stale_after
+        self.error = ""
+        self._fd: int | None = None
 
-    def _try_create(self) -> int | None:
-        """Open the lock with O_CREAT|O_EXCL; return the fd or None if it exists/fails."""
-        try:
-            return os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        except OSError:
-            return None
-
-    def acquire(self, *, now: float) -> bool:
-        """Atomically claim the lock, stealing one older than `stale_after`.
-
-        Returns True on success. A malformed or empty stored timestamp reads as
-        stale (0.0) and is stolen. An `os.write` failure leaves an empty lock file
-        that reads as stale next attempt and returns False. Never raises.
-        """
+    def acquire(self) -> bool:
+        """Take the lock without blocking; False when held elsewhere or unavailable."""
+        self.error = ""
+        if self._fd is not None:
+            return True
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-        except OSError:
+            fd = os.open(self.path, os.O_CREAT | os.O_RDWR, 0o600)
+        except OSError as exc:
+            self.error = str(exc)
             return False
-        fd = self._try_create()
-        if fd is None:
-            try:
-                stored = float(self.path.read_text(encoding="utf-8").strip())
-            except (OSError, ValueError):
-                stored = 0.0
-            if now - stored <= self.stale_after:
-                return False  # held and fresh
-            try:
-                self.path.unlink()
-            except OSError:
-                return False
-            fd = self._try_create()
-            if fd is None:
-                return False
         try:
-            try:
-                os.write(fd, str(now).encode("utf-8"))
-            finally:
-                os.close(fd)
-        except OSError:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            os.close(fd)
             return False
+        except OSError as exc:
+            os.close(fd)
+            self.error = str(exc)
+            return False
+        self._fd = fd
         return True
 
     def release(self) -> None:
-        """Best-effort remove the lock; never raises."""
-        with contextlib.suppress(OSError):
-            self.path.unlink(missing_ok=True)
+        """Drop the lock if this object holds it; never raises and never unlinks the file."""
+        fd, self._fd = self._fd, None
+        if fd is not None:
+            with contextlib.suppress(OSError):
+                os.close(fd)
 
 
-def in_progress(store: Store, *, now: float, stale_after: float = STALE_AFTER) -> bool:
-    """Report whether a sweep worker holds a fresh lock for this project's store."""
-    try:
-        stored = float(store.lock_path.read_text(encoding="utf-8").strip())
-    except (OSError, ValueError):
+def _held(path: Path) -> bool:
+    """Report whether some process holds the lock at `path` right now.
+
+    A lock that cannot be probed reads as free: the caller is deciding whether to
+    commit, and a lock file nobody can open would otherwise block every commit.
+    """
+    if not path.exists():
         return False
-    return now - stored <= stale_after
+    probe = Lock(path)
+    if probe.acquire():
+        probe.release()
+        return False
+    return not probe.error
+
+
+def in_progress(store: Store) -> bool:
+    """Report whether a sweep worker holds this project's lock right now."""
+    return _held(store.lock_path)
+
+
+def any_in_progress(env: Mapping[str, str], *, except_path: Path | None = None) -> bool:
+    """Report whether any project's sweep worker on this machine holds its lock.
+
+    A vault commit stages the whole vault, so committing while any sweep runs would
+    capture that sweep's writes before it scrubs and shape-checks them. `except_path`
+    lets a worker ask about every sweep but its own.
+    """
+    try:
+        locks = sorted(state_root(env).glob(f"*/{LOCK_NAME}"))
+    except OSError:
+        return False
+    excluded = except_path.resolve() if except_path is not None else None
+    return any(_held(path) for path in locks if path.resolve() != excluded)
 
 
 def _transcript_text(window: list[dict[str, Any]]) -> str:
@@ -225,6 +256,60 @@ def _strip_frontmatter(text: str) -> str:
     return _FRONTMATTER_RE.sub("", text, count=1).lstrip("\n")
 
 
+_DOUBLE_QUOTED_ESCAPES = {'"': '"', "\\": "\\", " ": " ", "/": "/", "t": "\t", "n": "\n"}
+_ESCAPE_RE = re.compile(r"\\(.)")
+
+
+def _fold_scalar(parts: list[str]) -> str:
+    """Join a YAML scalar's physical lines into its value, unquoting a quoted one.
+
+    Only the three styles `yaml.safe_dump` emits for a one-line string are handled: plain
+    and single-quoted lines fold with a space, and a double-quoted line ending in an escaped
+    line break joins with nothing, its next line's leading escaped space carrying the break.
+    """
+    first = parts[0]
+    if first.startswith('"'):
+        joined = ""
+        for part in parts:
+            stripped = part.removesuffix("\\")
+            # An odd run of trailing backslashes is an escaped line break.
+            escaped = (len(part) - len(part.rstrip("\\"))) % 2 == 1
+            joined += stripped if escaped else f"{part} "
+        value = joined.rstrip().removeprefix('"').removesuffix('"')
+        value = _ESCAPE_RE.sub(lambda m: _DOUBLE_QUOTED_ESCAPES.get(m[1], m[0]), value)
+    else:
+        value = " ".join(parts)
+        if first.startswith("'"):
+            value = value.removeprefix("'").removesuffix("'").replace("''", "'")
+    return " ".join(value.split())
+
+
+def _log_summary(path: Path) -> str:
+    """The `summary:` of a log's frontmatter, folded onto one line and unquoted, or ''.
+
+    The CLI wraps a long summary onto indented continuation lines, so every line after
+    `summary:` up to the next column-0 key belongs to it.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return ""
+    block = _FRONTMATTER_RE.match(text)
+    if not block:
+        return ""
+    lines = block.group(0).splitlines()[1:]
+    for index, line in enumerate(lines):
+        if not line.startswith("summary:"):
+            continue
+        parts = [line.removeprefix("summary:").strip()]
+        for continuation in lines[index + 1 :]:
+            if not continuation[:1].isspace():
+                break
+            parts.append(continuation.strip())
+        return _fold_scalar(parts) if parts[0] else ""
+    return ""
+
+
 class Sweep:
     """The boundary-capture pipeline: gate -> detach -> run -> validate."""
 
@@ -237,6 +322,7 @@ class Sweep:
         *,
         env: Mapping[str, str] | None = None,
         vault_root: Path | None = None,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self.store = store
         self.config = config
@@ -249,11 +335,12 @@ class Sweep:
         # os.environ: a vault found via `[vault] root` in the config is invisible
         # to the environment a second, independent read would see.
         self.env = env if env is not None else os.environ
+        self.sleep = sleep
 
     def trigger(self, event: dict[str, Any]) -> None:
         """Gate the sweep and, if worthwhile, spawn the detached worker. Never raises."""
         with contextlib.suppress(Exception):
-            job = self._gate(event, now=time.time())
+            job = self._gate(event)
             if job is not None:
                 self._spawn_detached(job)
 
@@ -280,31 +367,24 @@ class Sweep:
         )
         return f"below threshold ({counts})" if short else None
 
-    def _gate(self, event: dict[str, Any], *, now: float) -> SweepJob | None:
-        """Acquire the lock and return a SweepJob, or None when not worth sweeping.
+    def _gate(self, event: dict[str, Any]) -> SweepJob | None:
+        """Return a SweepJob, or None when the session is not worth sweeping.
 
-        Never raises and never leaks the lock: on any post-acquire failure or a
-        below-threshold window it releases the lock and returns None. On success
-        the lock stays held for `_run_job` to release. Every None is logged with
-        its reason, since a gate that declines silently is indistinguishable from
-        a hook that never ran.
+        Takes no lock: a sweep already running for this project only delays this
+        one, and the detached worker waits for it in `_await_lock`. Never raises.
+        Every None is logged with its reason, since a gate that declines silently
+        is indistinguishable from a hook that never ran.
         """
-        lock = Lock(self.store.lock_path)
-        if not lock.acquire(now=now):
-            _log.info("sweep skipped: lock held")
-            return None
         try:
             transcript_path = event.get("transcript_path") or self.store.read_transcript_pointer()
             if not transcript_path:
                 _log.info("sweep skipped: no transcript")
-                lock.release()
                 return None
             entries = transcript.read_entries(transcript_path)
             window = transcript.window_since_compact(entries)
             shortfall = self._shortfall(window)
             if shortfall is not None:
                 _log.info("sweep skipped: %s", shortfall)
-                lock.release()
                 return None
             session_id = str(event.get("session_id") or "") or Path(transcript_path).stem
             return SweepJob(
@@ -317,13 +397,40 @@ class Sweep:
                 session_url=transcript.session_url(entries),
                 started=transcript.session_start(entries),
             )
-        except Exception:  # noqa: BLE001 - gate must never raise or leak the lock
+        except Exception:  # noqa: BLE001 - gate must never raise
             _log.exception("sweep gate failed")
-            lock.release()
             return None
 
-    def _prepare(self, job: SweepJob) -> tuple[Target, str] | None:
-        """Resolve where to write and compose this session's log command, or None to skip.
+    def _await_lock(self, lock: Lock) -> bool:
+        """Wait for the project's lock, returning False once QUEUE_WAIT has passed.
+
+        A lock that fails for any reason but contention ends the wait at once, since
+        polling cannot fix a lock file that cannot be opened.
+
+        Counts polls rather than reading a clock, so the wait is the sum of the
+        sleeps asked for and a test can drive it without real time passing.
+        """
+        if lock.acquire():
+            return True
+        if lock.error:
+            _log.warning("sweep skipped: lock unavailable: %s", lock.error)
+            return False
+        _log.info("sweep queued: another sweep holds the lock")
+        polls = 0
+        while polls * QUEUE_POLL < QUEUE_WAIT:
+            self.sleep(QUEUE_POLL)
+            polls += 1
+            if lock.acquire():
+                _log.info("sweep dequeued after about %.0fs", polls * QUEUE_POLL)
+                return True
+            if lock.error:
+                _log.warning("sweep skipped: lock unavailable: %s", lock.error)
+                return False
+        _log.warning("sweep skipped: lock still held after %.0fs", polls * QUEUE_POLL)
+        return False
+
+    def _prepare(self, job: SweepJob) -> tuple[Target, str] | str:
+        """Resolve where to write and compose this session's log command, or the skip reason.
 
         The command is built here rather than run here: a session the model
         judges empty must leave no log behind, and a file scaffolded before the
@@ -332,15 +439,16 @@ class Sweep:
         the CLI still owns the filename, the frontmatter, and `## Changes`.
         """
         if self.vault is None:
-            return None
-        repo = Path(job.cwd)
-        env = dict(self.env)
-        paths = self.vault.project_paths(cwd=repo, env=env)
-        if paths is None:
-            return None  # unregistered, or the CLI could not answer
-        target = Target.from_paths(paths)
+            return "no CLI: neither PATH nor the plugin shim"
+        lookup = self.vault.project_lookup(
+            cwd=Path(job.cwd), env=dict(self.env), timeout=WORKER_CLI_TIMEOUT
+        )
+        if lookup.paths is None:
+            return lookup.reason
+        target = Target.from_paths(lookup.paths)
         if target is None:
-            return None
+            missing = next(k for k in Target.REQUIRED if not lookup.paths.get(k))
+            return f"project payload lacked {missing}"
         return target, self._log_command(job)
 
     def _log_command(self, job: SweepJob) -> str:
@@ -349,15 +457,15 @@ class Sweep:
         The body is the one thing the model composes rather than runs, because the
         summary does not exist until it writes one, and it arrives on stdin through
         `--body-file -` so its quoting cannot be mangled. Everything that decides
-        placement, filename, and frontmatter stays resolved here.
+        placement, filename, and frontmatter stays resolved here. The title is not on
+        the line: the hook resolves it and hands it over in the environment, because a
+        model asked to type it rewrites it.
         """
         args = [
             self.vault.command if self.vault else "",
             "log",
             "--session-id",
             job.session_id,
-            "--title",
-            _log_moment(job.started),
             "--cwd",
             job.cwd,
         ]
@@ -386,24 +494,19 @@ class Sweep:
             return ""
         return proc.stdout.strip() if proc.returncode == 0 else ""
 
-    def _existing_log(self, target: Target, session_id: str) -> str:
-        """This session's log body, with no frontmatter, or '' when it has none yet.
+    def _find_log(self, target: Target, session_id: str) -> tuple[Path, str] | None:
+        """This session's log path and full text, or None when it has none yet.
 
-        `sessionmemory log` replaces the body on every call, so a second sweep of one
-        session has to resend everything the first sweep wrote. The matching
-        `session_id:` line is matched literally rather than parsed as YAML: the
-        hooks carry no dependencies, and the CLI is the only writer of this
-        field. The frontmatter block itself is stripped before returning, since
-        this text is interpolated straight into a template the model is told to
-        carry forward into the new body, and frontmatter carried into a note's body
-        corrupts it on the next `sessionmemory log`.
+        The matching `session_id:` line is matched literally rather than parsed as
+        YAML: the hooks carry no dependencies, and the CLI is the only writer of
+        this field.
         """
         if not session_id:
-            return ""
+            return None
         try:
             candidates = sorted(target.logs_dir.glob("*.md"))
         except OSError:
-            return ""
+            return None
         needle = f"session_id: {session_id}"
         for path in candidates:
             try:
@@ -411,23 +514,41 @@ class Sweep:
             except (OSError, UnicodeDecodeError):
                 continue
             if needle in text:
-                return _strip_frontmatter(text)
-        return ""
+                return path, text
+        return None
+
+    def _existing_log(self, target: Target, session_id: str) -> str:
+        """This session's log body, with no frontmatter, or '' when it has none yet.
+
+        `sessionmemory log` replaces the body on every call, so a second sweep of one
+        session has to resend everything the first sweep wrote. The frontmatter block
+        is stripped before returning, since this text is interpolated straight into a
+        template the model is told to carry forward into the new body, and frontmatter
+        carried into a note's body corrupts it on the next `sessionmemory log`.
+        """
+        found = self._find_log(target, session_id)
+        return _strip_frontmatter(found[1]) if found else ""
 
     def _run_job(self, job: SweepJob) -> list[str]:
-        """Build the prompt, run the agent, validate its writes, log, free the lock.
+        """Take the lock, build the prompt, run the agent, validate its writes, log.
 
-        ALWAYS releases the lock and never raises (it runs in a detached worker
-        with no one to catch it). Returns the remediation notes.
+        Waits behind any sweep already running for this project, and returns no
+        notes when that wait runs out. Releases the lock it took and never raises
+        (it runs in a detached worker with no one to catch it). Returns the
+        remediation notes.
         """
         lock = Lock(self.store.lock_path)
         log.bind(step="sweep", session=job.session_id)
+        if not self._await_lock(lock):
+            return []
         try:
             if self.vault is None and self.vault_root is not None:
-                self.vault = VaultCLI.for_root(self.vault_root, env=self.env)
+                self.vault = VaultCLI.for_root(
+                    self.vault_root, env=self.env, version_timeout=WORKER_CLI_TIMEOUT
+                )
             prepared = self._prepare(job)
-            if prepared is None:
-                _log.info("sweep skipped: no vault or unregistered project")
+            if isinstance(prepared, str):
+                _log.info("sweep skipped: %s", prepared)
                 return []
             target, log_command = prepared
             # A project registered on another machine has no folder until its first
@@ -447,18 +568,24 @@ class Sweep:
                 changes=self._changes(job),
                 existing_log=self._existing_log(target, job.session_id),
             )
-            result = self.runner.run(prompt, cwd=str(target.project_dir))
+            before = snapshot.take(target.project_dir)
+            result = self.runner.run(
+                prompt,
+                cwd=str(target.project_dir),
+                extra_env={LOG_TITLE_ENV: _log_moment(job.started)},
+            )
+            changes = snapshot.diff(before, snapshot.take(target.project_dir))
             _log.debug("claude ran %.1fs", time.time() - started_at)
-            notes = self._validate_writes(result.changed_files, target, started_at=started_at)
+            notes = self._validate_writes(result.changed_files, target, changes)
+            notes.extend(self._enforce_shapes(changes, target))
             # The sentinel also appears in the transcript the agent summarizes, so
             # an actual write outranks it: a run that wrote something did record.
-            if NOTHING_TO_RECORD in result.text and not result.changed_files:
+            if NOTHING_TO_RECORD in result.text and not changes.touched() and not changes.deleted:
                 notes.append("nothing to record")
-            outcome = self.vault.commit(env=self.env) if self.vault else None
-            commit_clause = outcome.describe() if outcome else "commit skipped: no vault"
-            self._log_result(
-                result, changed=len(result.changed_files), commit=commit_clause, notes=notes
-            )
+            found = self._find_log(target, job.session_id)
+            note = _log_summary(found[0]) if found else ""
+            commit_clause = self._commit(note, own_lock=lock.path)
+            self._log_result(result, changes=changes, commit=commit_clause, notes=notes)
         except Exception:  # noqa: BLE001 - the detached worker must never raise
             _log.exception("sweep worker failed")
             return []
@@ -467,16 +594,38 @@ class Sweep:
         finally:
             lock.release()
 
+    def _commit(self, note: str, *, own_lock: Path) -> str:
+        """Commit the vault unless another sweep is still writing; the outcome for the log.
+
+        The worker still running commits everything when it finishes, so skipping here
+        loses nothing.
+        """
+        if self.vault is None:
+            return "commit skipped: no vault"
+        if any_in_progress(self.env, except_path=own_lock):
+            return "commit skipped: another sweep in progress"
+        return self.vault.commit(env=self.env, note=note).describe()
+
     def _log_result(
-        self, result: RunResult, *, changed: int, commit: str, notes: list[str]
+        self, result: RunResult, *, changes: Changes, commit: str, notes: list[str]
     ) -> None:
         """One line for the run: what it wrote and how the commit went, or why it failed."""
+        # Validation, shape checks, and the commit run whether or not claude succeeded.
+        outcome = f"{changes.describe()}, {commit}"
+        suffix = f" (notes: {'; '.join(notes)})" if notes else ""
         if result.success:
-            suffix = f" (notes: {'; '.join(notes)})" if notes else ""
-            _log.info("sweep finished: ok, %d file(s) changed, %s%s", changed, commit, suffix)
+            _log.info("sweep finished: ok, %s%s", outcome, suffix)
             return
-        tail = (result.stderr or "").strip()[-STDERR_TAIL_CHARS:]
-        _log.error("sweep failed: claude exited %s (%s)", result.exit_code, tail or "no stderr")
+        cause = " ".join((result.text or "").split())[:RESULT_TEXT_CHARS]
+        tail = " ".join((result.stderr or "").split())[-STDERR_TAIL_CHARS:]
+        parts = [part for part in (cause, f"stderr: {tail}" if tail else "") if part]
+        _log.error(
+            "sweep failed: claude exited %s (%s), %s%s",
+            result.exit_code,
+            "; ".join(parts) or "no output",
+            outcome,
+            suffix,
+        )
 
     def _quarantine(self, path: Path) -> None:
         """Move `path` into this project's quarantine directory rather than deleting it.
@@ -504,21 +653,75 @@ class Sweep:
         quarantined. A path that never existed in the first place has nothing to
         lose, so that case alone reports `escaped` with no file left behind.
         """
-        if self.vault is not None:
-            restore = subprocess.run(  # noqa: S603
-                ["git", "-C", str(self.vault.root), "checkout", "HEAD", "--", str(path)],  # noqa: S607
-                capture_output=True,
-                text=True,
-                timeout=_GIT_TIMEOUT,
-                check=False,
-                env=git_safe_env(os.environ),
-            )
-            if restore.returncode == 0:
-                return "escaped-reverted"
+        if self._git_restore(path):
+            return "escaped-reverted"
         if not path.exists():
             return "escaped"
         self._quarantine(path)
         return "escaped-quarantined"
+
+    def _git_restore(self, path: Path) -> bool:
+        """Check `path` out of the vault's HEAD; True when git restored it."""
+        if self.vault is None:
+            return False
+        restore = subprocess.run(  # noqa: S603
+            ["git", "-C", str(self.vault.root), "checkout", "HEAD", "--", str(path)],  # noqa: S607
+            capture_output=True,
+            text=True,
+            timeout=_GIT_TIMEOUT,
+            check=False,
+            env=git_safe_env(os.environ),
+        )
+        return restore.returncode == 0
+
+    def _restore_or_quarantine(self, path: Path) -> str:
+        """Return `path` to its committed content, or move it aside when git has none."""
+        if self._git_restore(path):
+            return "restored"
+        self._quarantine(path)
+        return "quarantined"
+
+    def _enforce_shapes(self, changes: Changes, target: Target) -> list[str]:
+        """Set aside each written page that lacks the shape its folder requires.
+
+        A new file that fails is quarantined. A modified learning that fails is
+        restored from HEAD, so a good page the model rewrote into another format is
+        not lost; only learnings are checked on edit, since a log or backlog edit
+        keeps its name and has no frontmatter to break. Debris a sync tool, editor, or
+        OS drops is left alone, as the CLI ignores it too.
+        """
+        notes: list[str] = []
+        learnings = target.learnings_dir.resolve()
+        logs = target.logs_dir.resolve()
+        judged = [(path, True) for path in changes.created]
+        judged += [(path, False) for path in changes.modified]
+        for path, is_new in judged:
+            if not path.exists() or shape.is_debris(path.name):
+                continue
+            parent = path.parent
+            if parent == learnings:
+                problem = shape.learning_problem(path)
+            elif parent == logs and is_new:
+                problem = shape.log_problem(path)
+            elif is_new:
+                problem = shape.nested_problem(path, (learnings, logs)) or shape.stray_problem(
+                    path, target.project_dir
+                )
+            else:
+                problem = None
+            if problem is None:
+                continue
+            try:
+                if is_new:
+                    self._quarantine(path)
+                    outcome = "quarantined"
+                else:
+                    outcome = self._restore_or_quarantine(path)
+            except (OSError, subprocess.SubprocessError) as exc:
+                notes.append(f"malformed-unremovable: {path} ({problem}; {exc})")
+                continue
+            notes.append(f"malformed-{outcome}: {path} ({problem})")
+        return notes
 
     def _revert_and_note(self, path: Path, raw: str) -> str:
         """Revert one out-of-root write and phrase the outcome as a note; never raises."""
@@ -563,23 +766,14 @@ class Sweep:
         if note is not None:
             notes.append(note)
 
-    def _touched_since(self, directory: Path, started_at: float) -> list[Path]:
-        """Every file under `directory` modified at or after `started_at`; never raises."""
-        try:
-            return sorted(
-                p for p in directory.rglob("*") if p.is_file() and p.stat().st_mtime >= started_at
-            )
-        except OSError:
-            return []
-
     def _validate_writes(
-        self, changed_files: list[str], target: Target, *, started_at: float
+        self, changed_files: list[str], target: Target, changes: Changes
     ) -> list[str]:
-        """Enforce containment on tool-reported writes and scrub every file the run touched.
+        """Enforce containment on tool-reported writes and scrub every file the run changed.
 
-        Bash never reports a path, so the second pass scrubs by mtime: anything under the
-        project folder written since the run began. A relative tool-reported path is
-        anchored to the directory the agent ran in.
+        Bash never reports a path, so the second pass scrubs every file under the project
+        folder whose content hash changed during the run, and names each deletion. A
+        relative tool-reported path is anchored to the directory the agent ran in.
         """
         notes: list[str] = []
         seen: set[Path] = set()
@@ -588,8 +782,9 @@ class Sweep:
             if not path.is_absolute():
                 path = target.project_dir / path
             self._judge_write(path, raw, target, seen=seen, notes=notes)
-        for path in self._touched_since(target.project_dir, started_at):
+        for path in changes.touched():
             self._judge_write(path, str(path), target, seen=seen, notes=notes)
+        notes.extend(f"deleted: {path}" for path in changes.deleted)
         return notes
 
     def _existing_memory(self, target: Target, *, max_chars: int = 50_000) -> str:
@@ -628,16 +823,10 @@ class Sweep:
         stdio away from the hook's stdout before running the job, since a
         detached process still sharing the hook's stdout would corrupt whatever
         the hook itself writes there.
-
-        The gate holds the lock on behalf of the worker, and only `_run_job`
-        releases it. A daemon that never reaches `_run_job` must therefore
-        release it here, or the next session's sweep is refused until the lock
-        goes stale.
         """
         try:
             pid = os.fork()
         except OSError:
-            Lock(self.store.lock_path).release()
             _log.info("sweep skipped: fork failed")
             return  # cannot fork; skip the sweep rather than block the hook
         if pid > 0:
@@ -650,7 +839,6 @@ class Sweep:
             os.setsid()
             pid2 = os.fork()
         except OSError:
-            Lock(self.store.lock_path).release()
             _log.info("sweep skipped: fork failed")
             os._exit(0)
         if pid2 > 0:
@@ -696,6 +884,7 @@ def run_sweep(
     runner = ClaudeRunner(
         model=config.sweep_model,
         save_transcript=config.sweep_save_transcript,
+        timeout=config.sweep_timeout,
         extra_env={ROOT_ENV: str(root)},
     )
     Sweep(store, config, runner, env=env, vault_root=root).trigger(event)
