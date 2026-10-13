@@ -13,7 +13,7 @@
 
 Commits whatever the last session's sweep and any hand edits left behind, so the
 vault's history is never more than one session behind its files, in every case
-`SessionEnd` does; skipped only while a sweep worker holds a fresh lock, since it
+`SessionEnd` does; skipped only while a sweep worker holds the lock, since it
 commits its own writes when it finishes. Then asks the vault CLI to render this
 project's memory block and returns it as non-blocking `additionalContext`. It
 also records two things the end-of-session sweep cannot recover later: the
@@ -58,7 +58,6 @@ import contextlib
 import json
 import os
 import sys
-import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -190,14 +189,14 @@ def _run(  # pragma: no cover - runs only as a subprocess, where coverage cannot
 
     # Commit whatever the last session's sweep and any hand edits left behind, so
     # the vault's history is never more than one session behind its files, in
-    # every case SessionEnd does. Skipped while a sweep worker holds a fresh
+    # every case SessionEnd does. Skipped while a sweep worker holds the
     # lock: it commits its own writes when it finishes.
     vault = VaultCLI.discover(env=os.environ, configured=cfg.vault_root)
     if vault is None:
         clauses.extend(["no vault", "commit skipped: no vault"])
     else:
         clauses.append("cli on PATH" if vault.on_path else "cli shim")
-        if in_progress(store, now=time.time()):
+        if in_progress(store):
             clauses.append("commit skipped: sweep in progress")
         else:
             clauses.append(vault.commit(env=os.environ).describe())

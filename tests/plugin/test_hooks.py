@@ -13,7 +13,6 @@ import os
 import re
 import subprocess
 import threading
-import time
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
@@ -23,6 +22,7 @@ import sessionend  # ty: ignore[unresolved-import]
 import sessionstart  # ty: ignore[unresolved-import]
 from sessionhooks.config import SessionMemoryConfig  # ty: ignore[unresolved-import]
 from sessionhooks.store import Store  # ty: ignore[unresolved-import]
+from sessionhooks.sweep import Lock  # ty: ignore[unresolved-import]
 from sessionhooks.vaultcli import ROOT_ENV  # ty: ignore[unresolved-import]
 
 from sessionmemory.lib import field, registry
@@ -992,12 +992,12 @@ def test_sessionend_never_starts_the_vault_cli(tmp_path: Path) -> None:
     assert not sentinel.exists()
 
 
-def test_sessionend_skips_the_commit_while_a_sweep_worker_holds_a_fresh_lock(
+def test_sessionend_skips_the_commit_while_a_sweep_worker_holds_the_lock(
     tmp_path: Path,
 ) -> None:
     """Verify SessionEnd defers to a sweep worker still writing rather than racing it."""
     # Given a registered vault holding one uncommitted page, under git, and a
-    # fresh sweep-worker lock for this project
+    # sweep-worker lock held for this project
     proj = tmp_path / "proj"
     proj.mkdir()
     vault = _fake_vault(tmp_path, proj)
@@ -1013,11 +1013,14 @@ def test_sessionend_skips_the_commit_while_a_sweep_worker_holds_a_fresh_lock(
         capture_output=True,
     )
     store = _store(tmp_path, proj)
-    store.state_dir.mkdir(parents=True, exist_ok=True)
-    store.lock_path.write_text(str(time.time()), encoding="utf-8")
+    held = Lock(store.lock_path)
+    assert held.acquire()
     env = _isolated_env(tmp_path, proj, vault=vault)
-    # When SessionEnd runs with a below-threshold transcript, so no sweep spawns
-    proc = _run("sessionend", {"cwd": str(proj), "transcript_path": ""}, env)
+    try:
+        # When SessionEnd runs with a below-threshold transcript, so no sweep spawns
+        proc = _run("sessionend", {"cwd": str(proj), "transcript_path": ""}, env)
+    finally:
+        held.release()
     # Then the commit is skipped, leaving only the vault's initial commit
     assert proc.returncode == 0, proc.stderr
     assert "commit skipped: sweep in progress" in _hooks_log(tmp_path)

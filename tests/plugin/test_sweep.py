@@ -1,4 +1,4 @@
-"""Verify the sweep: lock lifecycle, gate threshold, write validation, and run_job."""
+"""Verify the sweep: lock, queue, gate threshold, write validation, and run_job."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -92,133 +93,93 @@ def test_target_needs_every_key():
 # ---------------------------------------------------------------------------
 
 
-def test_lock_acquire_succeeds_first(tmp_path: Path) -> None:
-    """Verify acquire returns True and writes the timestamp when the lock is free."""
+def test_lock_acquire_succeeds_when_free(tmp_path: Path) -> None:
+    """Verify acquire returns True and creates the lock file when nobody holds it."""
     # Given a lock path under a not-yet-created dir
     lock = Lock(tmp_path / "state" / "sweep.lock")
-    # When acquiring for the first time
-    assert lock.acquire(now=1000.0) is True
-    # Then the file exists and stores the timestamp
-    assert float(lock.path.read_text(encoding="utf-8").strip()) == 1000.0
+    # When acquiring / Then it succeeds and the file exists
+    assert lock.acquire() is True
+    assert lock.path.exists()
+    lock.release()
 
 
-def test_lock_held_second_acquire_fails(tmp_path: Path) -> None:
-    """Verify a second acquire within the stale window returns False."""
-    # Given an already-held fresh lock
-    lock = Lock(tmp_path / "state" / "sweep.lock")
-    assert lock.acquire(now=1000.0) is True
-    # When acquiring again well within the stale window
-    second = Lock(tmp_path / "state" / "sweep.lock")
-    # Then it fails (the lock is still fresh)
-    assert second.acquire(now=1100.0) is False
-
-
-def test_lock_steals_stale(tmp_path: Path) -> None:
-    """Verify a lock older than stale_after is stolen and re-stamped."""
-    # Given a lock acquired at t=1000 with a 300s window
-    Lock(tmp_path / "state" / "sweep.lock").acquire(now=1000.0)
-    # When acquiring 400s later (past the threshold)
-    stealer = Lock(tmp_path / "state" / "sweep.lock", stale_after=300.0)
-    # Then the stale lock is stolen and the new timestamp written
-    assert stealer.acquire(now=1400.0) is True
-    assert float(stealer.path.read_text(encoding="utf-8").strip()) == 1400.0
-
-
-def test_lock_steals_malformed(tmp_path: Path) -> None:
-    """Verify a lock with a non-numeric timestamp is treated as stale and stolen."""
-    # Given an existing lock file with corrupt content
-    lock = Lock(tmp_path / "state" / "sweep.lock")
-    lock.path.parent.mkdir(parents=True)
-    lock.path.write_text("not-a-float", encoding="utf-8")
-    # When acquiring (corrupt parses to stored=0.0, always stale)
-    assert lock.acquire(now=400.0) is True
-
-
-def test_lock_release_removes_file(tmp_path: Path) -> None:
-    """Verify release unlinks the lock file and never raises when already gone."""
+def test_lock_second_holder_is_refused(tmp_path: Path) -> None:
+    """Verify a second Lock on the same path is refused while the first holds it."""
     # Given a held lock
+    first = Lock(tmp_path / "state" / "sweep.lock")
+    assert first.acquire() is True
+    # When a second holder tries / Then it is refused
+    try:
+        assert Lock(tmp_path / "state" / "sweep.lock").acquire() is False
+    finally:
+        first.release()
+
+
+def test_lock_is_free_again_after_release(tmp_path: Path) -> None:
+    """Verify releasing frees the lock for a new holder and a second release never raises."""
+    # Given a lock acquired then released twice
     lock = Lock(tmp_path / "state" / "sweep.lock")
-    lock.acquire(now=1.0)
-    # When released twice
+    assert lock.acquire() is True
     lock.release()
     lock.release()
-    # Then the file is gone and no error was raised
-    assert not lock.path.exists()
+    # When a new holder tries / Then it succeeds
+    again = Lock(tmp_path / "state" / "sweep.lock")
+    assert again.acquire() is True
+    again.release()
+
+
+def test_lock_release_by_a_non_holder_leaves_the_holder_alone(tmp_path: Path) -> None:
+    """Verify releasing a Lock that never acquired does not free another holder's lock."""
+    # Given a held lock
+    path = tmp_path / "state" / "sweep.lock"
+    holder = Lock(path)
+    assert holder.acquire() is True
+    try:
+        # When a never-acquired Lock on the same path releases
+        Lock(path).release()
+        # Then the holder still holds it
+        assert Lock(path).acquire() is False
+    finally:
+        holder.release()
+
+
+def test_lock_left_on_disk_by_a_dead_holder_is_free(tmp_path: Path) -> None:
+    """Verify a lock file nobody holds a lock on is free, whatever it contains."""
+    # Given a lock file left behind with old content
+    path = tmp_path / "state" / "sweep.lock"
+    path.parent.mkdir(parents=True)
+    path.write_text("12345.0", encoding="utf-8")
+    lock = Lock(path)
+    # When acquiring / Then it succeeds
+    assert lock.acquire() is True
+    lock.release()
+
+
+def test_lock_is_released_when_its_holder_process_exits(tmp_path: Path) -> None:
+    """Verify the kernel frees the lock when a holder exits without releasing it."""
+    # Given a process that takes the lock and exits without unlocking
+    path = tmp_path / "state" / "sweep.lock"
+    path.parent.mkdir(parents=True)
+    code = (
+        "import fcntl, os, sys\n"
+        "fd = os.open(sys.argv[1], os.O_CREAT | os.O_RDWR, 0o600)\n"
+        "fcntl.flock(fd, fcntl.LOCK_EX)\n"
+    )
+    subprocess.run([sys.executable, "-c", code, str(path)], check=True)
+    lock = Lock(path)
+    # When acquiring / Then it succeeds
+    assert lock.acquire() is True
+    lock.release()
 
 
 def test_lock_acquire_fails_when_the_parent_directory_cannot_be_created(tmp_path: Path) -> None:
-    """Verify acquire fails open rather than raising when mkdir cannot succeed."""
+    """Verify acquire fails open when the lock's parent directory cannot be made."""
     # Given a plain file occupying the path the lock's parent directory needs
     blocker = tmp_path / "blocker"
     blocker.write_text("x", encoding="utf-8")
     lock = Lock(blocker / "sweep.lock")
-    # Then acquiring never raises, and reports failure
-    assert lock.acquire(now=1.0) is False
-
-
-def test_lock_acquire_fails_when_the_stale_lock_cannot_be_unlinked(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Verify a steal that cannot remove the stale file fails open rather than raising."""
-    # Given a stale lock the steal attempt cannot unlink
-    lock_path = tmp_path / "state" / "sweep.lock"
-    Lock(lock_path).acquire(now=1.0)
-    stealer = Lock(lock_path, stale_after=0.0)
-
-    def _raise(self, *_args, **_kwargs) -> None:
-        message = "cannot unlink"
-        raise OSError(message)
-
-    monkeypatch.setattr(Path, "unlink", _raise)
-
-    # Then the steal fails rather than raising
-    assert stealer.acquire(now=1000.0) is False
-
-
-def test_lock_acquire_fails_when_recreation_after_a_steal_loses_a_race(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Verify acquire fails open when re-creating the lock after a steal cannot succeed.
-
-    os.open is forced to always fail, so the first _try_create (before the
-    steal) fails for the same reason a real race would, and so does the
-    second _try_create right after the stale lock is unlinked.
-    """
-    # Given a stale lock to steal, and os.open forced to always fail
-    lock_path = tmp_path / "state" / "sweep.lock"
-    Lock(lock_path).acquire(now=1.0)  # a stale lock to steal
-
-    def _raise(*_args, **_kwargs) -> None:
-        message = "cannot open"
-        raise OSError(message)
-
-    monkeypatch.setattr(os, "open", _raise)
-    stealer = Lock(lock_path, stale_after=0.0)
-
-    # When acquiring, well past the stale window
-    result = stealer.acquire(now=1000.0)
-
-    # Then acquire fails open, and the stale lock was still removed even
-    # though recreation lost the race
-    assert result is False
-    assert not lock_path.exists()
-
-
-def test_lock_acquire_fails_when_the_write_fails(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Verify a write failure after creating the lock file fails open, not raises."""
-    # Given a fresh lock and os.write forced to always fail
-    lock = Lock(tmp_path / "state" / "sweep.lock")
-
-    def _raise(*_args, **_kwargs) -> None:
-        message = "cannot write"
-        raise OSError(message)
-
-    monkeypatch.setattr(os, "write", _raise)
-
-    # When acquiring / Then it fails open rather than raising
-    assert lock.acquire(now=1.0) is False
+    # When acquiring / Then it fails rather than raising
+    assert lock.acquire() is False
 
 
 # ---------------------------------------------------------------------------
@@ -226,22 +187,32 @@ def test_lock_acquire_fails_when_the_write_fails(
 # ---------------------------------------------------------------------------
 
 
-def test_in_progress_true_for_a_fresh_lock(tmp_path: Path) -> None:
-    """Verify a lock stamped just now reads as a worker still holding it."""
-    # Given a store whose lock a worker acquired a moment ago
+def test_in_progress_true_while_a_worker_holds_the_lock(tmp_path: Path) -> None:
+    """Verify a held lock reads as a worker in progress."""
+    # Given a store whose lock a worker holds
     store = store_at(tmp_path)
-    Lock(store.lock_path).acquire(now=1000.0)
-    # When checking shortly after / Then a worker is reported in progress
-    assert in_progress(store, now=1001.0) is True
+    worker = Lock(store.lock_path)
+    assert worker.acquire() is True
+    try:
+        # When checking / Then a worker is reported
+        assert in_progress(store) is True
+    finally:
+        worker.release()
 
 
-def test_in_progress_false_for_a_stale_lock(tmp_path: Path) -> None:
-    """Verify a lock older than stale_after reads as no worker holding it."""
-    # Given a store whose lock was stamped well in the past
+def test_in_progress_false_after_the_worker_releases(tmp_path: Path) -> None:
+    """Verify a released lock reads as no worker, and the probe leaves it free."""
+    # Given a store whose worker released its lock
     store = store_at(tmp_path)
-    Lock(store.lock_path).acquire(now=1000.0)
-    # When checking past the stale window / Then no worker is reported
-    assert in_progress(store, now=2000.0, stale_after=300.0) is False
+    worker = Lock(store.lock_path)
+    assert worker.acquire() is True
+    worker.release()
+    # When checking / Then no worker is reported
+    assert in_progress(store) is False
+    # And the probe released what it took
+    after = Lock(store.lock_path)
+    assert after.acquire() is True
+    after.release()
 
 
 def test_in_progress_false_when_no_lock_exists(tmp_path: Path) -> None:
@@ -249,17 +220,8 @@ def test_in_progress_false_when_no_lock_exists(tmp_path: Path) -> None:
     # Given a store with no lock file at all
     store = store_at(tmp_path)
     # When checking / Then no worker is reported
-    assert in_progress(store, now=1000.0) is False
-
-
-def test_in_progress_false_for_a_malformed_lock(tmp_path: Path) -> None:
-    """Verify a lock file with non-numeric content reads as no worker holding it."""
-    # Given a lock file with corrupt content
-    store = store_at(tmp_path)
-    store.state_dir.mkdir(parents=True)
-    store.lock_path.write_text("not-a-float", encoding="utf-8")
-    # When checking / Then no worker is reported
-    assert in_progress(store, now=1000.0) is False
+    assert in_progress(store) is False
+    assert not store.lock_path.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -287,8 +249,8 @@ def _write_transcript(path: Path, entries: list[dict]) -> None:
     path.write_text("\n".join(json.dumps(e) for e in entries) + "\n", encoding="utf-8")
 
 
-def test_gate_below_threshold_returns_none_and_releases(tmp_path: Path) -> None:
-    """Verify gate returns None and releases the lock below min_exchanges."""
+def test_gate_below_threshold_returns_none(tmp_path: Path) -> None:
+    """Verify gate returns None below min_exchanges."""
     # Given a sparse transcript (2 meaningful) and a threshold of 5
     store = store_at(tmp_path)
     t_file = tmp_path / "sparse.jsonl"
@@ -296,10 +258,9 @@ def test_gate_below_threshold_returns_none_and_releases(tmp_path: Path) -> None:
     sweep = Sweep(store, SessionMemoryConfig(min_exchanges=5), _FakeRunner([]))
     event = {"cwd": str(tmp_path), "transcript_path": str(t_file)}
     # When gating
-    result = sweep._gate(event, now=1000.0)
-    # Then None is returned and the lock is cleaned up
+    result = sweep._gate(event)
+    # Then None is returned
     assert result is None
-    assert not store.lock_path.exists()
 
 
 def test_gate_logs_a_below_threshold_skip_with_every_count(tmp_path: Path) -> None:
@@ -309,7 +270,7 @@ def test_gate_logs_a_below_threshold_skip_with_every_count(tmp_path: Path) -> No
     t_file = tmp_path / "sparse.jsonl"
     _write_transcript(t_file, [_user("hi"), _assistant("yo")])
     sweep = Sweep(store, SessionMemoryConfig(min_exchanges=5), _FakeRunner([]))
-    sweep._gate({"cwd": str(tmp_path), "transcript_path": str(t_file)}, now=1000.0)
+    sweep._gate({"cwd": str(tmp_path), "transcript_path": str(t_file)})
     text = hooks_log_text(hooks_log)
     assert (
         "sweep skipped: below threshold (exchanges 2/5, user messages 1/3, user chars 2/400)"
@@ -317,21 +278,11 @@ def test_gate_logs_a_below_threshold_skip_with_every_count(tmp_path: Path) -> No
     )
 
 
-def test_gate_logs_a_held_lock(tmp_path: Path) -> None:
-    """Verify a sweep refused because another holds the lock says so."""
-    hooks_log = _capture_log(tmp_path)
-    store = store_at(tmp_path)
-    assert Lock(store.lock_path).acquire(now=1000.0)
-    sweep = Sweep(store, SessionMemoryConfig(), _FakeRunner([]))
-    sweep._gate({"cwd": str(tmp_path), "transcript_path": ""}, now=1000.5)
-    assert "sweep skipped: lock held" in hooks_log_text(hooks_log)
-
-
 def test_gate_logs_a_missing_transcript(tmp_path: Path) -> None:
     """Verify a session with no transcript path and no saved pointer is named as such."""
     hooks_log = _capture_log(tmp_path)
     sweep = Sweep(store_at(tmp_path), SessionMemoryConfig(), _FakeRunner([]))
-    sweep._gate({"cwd": str(tmp_path), "transcript_path": ""}, now=1000.0)
+    sweep._gate({"cwd": str(tmp_path), "transcript_path": ""})
     assert "sweep skipped: no transcript" in hooks_log_text(hooks_log)
 
 
@@ -343,14 +294,13 @@ def test_gate_prefers_the_payload_session_id(tmp_path: Path) -> None:
     sweep = Sweep(store, SessionMemoryConfig(min_exchanges=5), _FakeRunner([]))
     job = sweep._gate(
         {"cwd": str(tmp_path), "transcript_path": str(t_file), "session_id": "from-payload"},
-        now=1000.0,
     )
     assert job is not None
     assert job.session_id == "from-payload"
 
 
-def test_gate_above_threshold_returns_job_and_holds_lock(tmp_path: Path) -> None:
-    """Verify gate returns a SweepJob with the window and keeps the lock held."""
+def test_gate_above_threshold_returns_job(tmp_path: Path) -> None:
+    """Verify gate returns a SweepJob carrying the window."""
     # Given a rich transcript (6 meaningful, threshold 5)
     store = store_at(tmp_path)
     entries = _meaningful(6)
@@ -359,12 +309,11 @@ def test_gate_above_threshold_returns_job_and_holds_lock(tmp_path: Path) -> None
     sweep = Sweep(store, SessionMemoryConfig(min_exchanges=5), _FakeRunner([]))
     event = {"cwd": str(tmp_path / "proj"), "transcript_path": str(t_file)}
     # When gating
-    result = sweep._gate(event, now=1000.0)
-    # Then a job covering all entries is returned and the lock stays held for run_job
+    result = sweep._gate(event)
+    # Then a job covering all entries is returned
     assert result is not None
     assert result.cwd == str(tmp_path / "proj")
     assert len(result.window) == len(entries)
-    assert store.lock_path.exists()
 
 
 def test_gate_carries_the_transcript_path_and_online_link(tmp_path: Path) -> None:
@@ -376,7 +325,7 @@ def test_gate_carries_the_transcript_path_and_online_link(tmp_path: Path) -> Non
     _write_transcript(t_file, entries)
     sweep = Sweep(store, SessionMemoryConfig(min_exchanges=5), _FakeRunner([]))
     # When gating
-    result = sweep._gate({"cwd": str(tmp_path), "transcript_path": str(t_file)}, now=1000.0)
+    result = sweep._gate({"cwd": str(tmp_path), "transcript_path": str(t_file)})
     # Then both are carried on the job
     assert result is not None
     assert result.transcript_path == str(t_file)
@@ -392,7 +341,7 @@ def test_gate_carries_the_session_start(tmp_path: Path) -> None:
     _write_transcript(t_file, entries)
     sweep = Sweep(store, SessionMemoryConfig(min_exchanges=5), _FakeRunner([]))
     # When gating
-    result = sweep._gate({"cwd": str(tmp_path), "transcript_path": str(t_file)}, now=1000.0)
+    result = sweep._gate({"cwd": str(tmp_path), "transcript_path": str(t_file)})
     # Then the start is carried on the job
     assert result is not None
     assert result.started == "2026-09-03T17:53:10.187Z"
@@ -408,7 +357,7 @@ def test_gate_falls_back_to_transcript_pointer(tmp_path: Path) -> None:
     store.save_transcript_pointer(str(t_file))
     sweep = Sweep(store, SessionMemoryConfig(min_exchanges=5), _FakeRunner([]))
     # When gating with an empty event transcript path
-    result = sweep._gate({"cwd": str(tmp_path), "transcript_path": ""}, now=1000.0)
+    result = sweep._gate({"cwd": str(tmp_path), "transcript_path": ""})
     # Then the job is built from the pointer's transcript
     assert result is not None
     assert len(result.window) == len(entries)
@@ -423,10 +372,9 @@ def test_gate_rejects_a_session_the_human_barely_spoke_in(tmp_path: Path) -> Non
     _write_transcript(t_file, entries)
     sweep = Sweep(store, SessionMemoryConfig(min_exchanges=5), _FakeRunner([]))
     # When gating
-    result = sweep._gate({"cwd": str(tmp_path), "transcript_path": str(t_file)}, now=1000.0)
+    result = sweep._gate({"cwd": str(tmp_path), "transcript_path": str(t_file)})
     # Then the human's single message fails the substance floor
     assert result is None
-    assert not store.lock_path.exists()
 
 
 def test_gate_rejects_a_session_of_terse_commands(tmp_path: Path) -> None:
@@ -438,10 +386,9 @@ def test_gate_rejects_a_session_of_terse_commands(tmp_path: Path) -> None:
     _write_transcript(t_file, entries)
     sweep = Sweep(store, SessionMemoryConfig(min_exchanges=5), _FakeRunner([]))
     # When gating
-    result = sweep._gate({"cwd": str(tmp_path), "transcript_path": str(t_file)}, now=1000.0)
+    result = sweep._gate({"cwd": str(tmp_path), "transcript_path": str(t_file)})
     # Then the character floor rejects it
     assert result is None
-    assert not store.lock_path.exists()
 
 
 def test_gate_accepts_an_exploratory_session_with_no_commits(tmp_path: Path) -> None:
@@ -458,29 +405,34 @@ def test_gate_accepts_an_exploratory_session_with_no_commits(tmp_path: Path) -> 
     _write_transcript(t_file, entries)
     sweep = Sweep(store, SessionMemoryConfig(min_exchanges=4, min_user_messages=2), _FakeRunner([]))
     # When gating
-    result = sweep._gate({"cwd": str(tmp_path), "transcript_path": str(t_file)}, now=1000.0)
+    result = sweep._gate({"cwd": str(tmp_path), "transcript_path": str(t_file)})
     # Then it is swept despite no commits
     assert result is not None
-    assert store.lock_path.exists()
 
 
-def test_gate_returns_none_when_the_lock_is_already_held(tmp_path: Path) -> None:
-    """Verify a session cannot gate while another sweep already holds the lock."""
-    # Given a lock another process holds, fresh
+def test_gate_yields_a_job_while_another_sweep_holds_the_lock(tmp_path: Path) -> None:
+    """Verify a running sweep never stops a later session from gating through."""
+    # Given a rich transcript and another sweep holding the project's lock
     store = store_at(tmp_path)
-    Lock(store.lock_path).acquire(now=1000.0)
-    sweep = Sweep(store, SessionMemoryConfig(min_exchanges=1), _FakeRunner([]))
-    # When gating shortly after
-    result = sweep._gate({"cwd": str(tmp_path), "transcript_path": ""}, now=1000.5)
-    # Then nothing is returned, and the other holder's lock is left alone
-    assert result is None
-    assert store.lock_path.exists()
+    t_file = tmp_path / "rich.jsonl"
+    _write_transcript(t_file, _meaningful(6))
+    held = Lock(store.lock_path)
+    assert held.acquire() is True
+    sweep = Sweep(store, SessionMemoryConfig(min_exchanges=5), _FakeRunner([]))
+    try:
+        # When gating
+        result = sweep._gate({"cwd": str(tmp_path), "transcript_path": str(t_file)})
+        # Then a job is still returned, and the other holder keeps its lock
+        assert result is not None
+        assert in_progress(store) is True
+    finally:
+        held.release()
 
 
-def test_gate_releases_the_lock_and_returns_none_on_an_unexpected_error(
+def test_gate_returns_none_on_an_unexpected_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Verify the gate never raises or leaks the lock when something inside it breaks."""
+    """Verify the gate never raises when something inside it breaks."""
     # Given a rich transcript that would otherwise gate through
     store = store_at(tmp_path)
     entries = _meaningful(6)
@@ -495,11 +447,10 @@ def test_gate_releases_the_lock_and_returns_none_on_an_unexpected_error(
     monkeypatch.setattr(sweep_mod.transcript, "window_since_compact", _raise)
 
     # When gating
-    result = sweep._gate({"cwd": str(tmp_path), "transcript_path": str(t_file)}, now=1000.0)
+    result = sweep._gate({"cwd": str(tmp_path), "transcript_path": str(t_file)})
 
-    # Then the error is swallowed and the lock is released
+    # Then the error is swallowed
     assert result is None
-    assert not store.lock_path.exists()
 
 
 def test_trigger_spawns_the_detached_worker_when_the_gate_yields_a_job(tmp_path: Path) -> None:
@@ -527,8 +478,7 @@ def test_trigger_never_raises_when_the_gate_itself_blows_up(
     """Verify a hook calling trigger is never at risk from an internal sweep failure.
 
     The failure is forced inside the real `_gate`, not by replacing `_gate`
-    itself, so `_gate`'s own lock-release-on-error path actually runs; a
-    faked `_gate` would never have acquired the lock it was meant to protect.
+    itself, so `_gate`'s own error path actually runs.
     """
     # Given a rich transcript that would otherwise gate through, an internal
     # failure inside _gate, and _spawn_detached spied on so nothing forks
@@ -549,9 +499,8 @@ def test_trigger_never_raises_when_the_gate_itself_blows_up(
     # When triggering
     sweep.trigger({"cwd": str(tmp_path), "transcript_path": str(t_file)})  # must not raise
 
-    # Then no worker is spawned and the lock the gate acquired is released
+    # Then no worker is spawned
     spawn.assert_not_called()
-    assert not store.lock_path.exists()
     assert "sweep gate failed" in hooks_log_text(hooks_log)
     assert "Traceback" in hooks_log_text(hooks_log)
 
@@ -1060,7 +1009,6 @@ def test_a_binary_file_does_not_abort_the_mtime_scrub(tmp_path, sweep_factory):
 def _job_store(tmp_path: Path) -> Store:
     store = store_at(tmp_path)
     store.state_dir.mkdir(parents=True)
-    store.lock_path.write_text("12345.0", encoding="utf-8")  # pre-held lock
     return store
 
 
@@ -1210,7 +1158,7 @@ def test_run_job_prompt_carries_only_user_and_agent_text(tmp_path: Path) -> None
 
 def test_run_job_clean_write_logs_and_releases_lock(tmp_path: Path) -> None:
     """Verify run_job validates writes, commits, logs, and releases the lock on a clean run."""
-    # Given a store with a clean target file and a pre-held lock
+    # Given a store with a clean target file
     hooks_log = _capture_log(tmp_path)
     store = _job_store(tmp_path)
     vault_target = _target_at(tmp_path / "vault")
@@ -1226,7 +1174,7 @@ def test_run_job_clean_write_logs_and_releases_lock(tmp_path: Path) -> None:
     # the log is written, and the lock is freed
     assert notes == ["committed abc1234"]
     assert "sweep finished" in hooks_log_text(hooks_log)
-    assert not store.lock_path.exists()
+    assert not in_progress(store)
 
 
 def test_run_job_notes_a_skipped_commit(tmp_path: Path) -> None:
@@ -1271,7 +1219,7 @@ def test_run_job_escaped_write_quarantined_and_lock_released(tmp_path: Path) -> 
     # released
     assert not outside.exists()
     assert notes == [f"escaped-quarantined: {outside}", "committed abc1234"]
-    assert not store.lock_path.exists()
+    assert not in_progress(store)
     quarantined = list((store.state_dir / "quarantine").glob("*-outside.md"))
     assert len(quarantined) == 1
     assert quarantined[0].read_text(encoding="utf-8") == "nope"
@@ -1293,7 +1241,7 @@ def test_run_job_releases_lock_on_runner_failure(tmp_path: Path) -> None:
     notes = sweep._run_job(job)
     # Then it returns no notes and the lock is still released
     assert notes == []
-    assert not store.lock_path.exists()
+    assert not in_progress(store)
 
 
 def test_run_job_returns_empty_and_releases_lock_when_the_agent_run_itself_raises(
@@ -1322,7 +1270,86 @@ def test_run_job_returns_empty_and_releases_lock_when_the_agent_run_itself_raise
 
     # Then the failure is swallowed and the lock is still released
     assert notes == []
-    assert not store.lock_path.exists()
+    assert not in_progress(store)
+
+
+def test_run_job_waits_for_a_held_lock_then_runs(tmp_path: Path) -> None:
+    """Verify a sweep queued behind another waits for its lock, then runs."""
+    # Given another sweep holding the lock, released during the first wait
+    hooks_log = _capture_log(tmp_path)
+    store = _job_store(tmp_path)
+    held = Lock(store.lock_path)
+    assert held.acquire() is True
+    waits: list[float] = []
+
+    def _sleep(seconds: float) -> None:
+        waits.append(seconds)
+        held.release()
+
+    runner = _RecordingRunner()
+    sweep = Sweep(
+        store,
+        SessionMemoryConfig(),
+        runner,
+        _FakeVault(_target_at(tmp_path / "vault")),
+        sleep=_sleep,
+    )
+    job = SweepJob(window=[], cwd=str(tmp_path), session_id="")
+
+    # When running the job
+    sweep._run_job(job)
+
+    # Then it waited once, ran, and logged the queue and dequeue
+    assert waits == [sweep_mod.QUEUE_POLL]
+    assert runner.prompt is not None
+    text = hooks_log_text(hooks_log)
+    assert "sweep queued" in text
+    assert "sweep dequeued after about 5s" in text
+
+
+def test_run_job_gives_up_after_the_queue_wait(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify a sweep whose lock never frees gives up after the queue wait and never runs."""
+    # Given a lock held for the whole run and a short queue wait
+    monkeypatch.setattr(sweep_mod, "QUEUE_WAIT", 10.0)
+    hooks_log = _capture_log(tmp_path)
+    store = _job_store(tmp_path)
+    held = Lock(store.lock_path)
+    assert held.acquire() is True
+    runner = _RecordingRunner()
+    sweep = Sweep(
+        store,
+        SessionMemoryConfig(),
+        runner,
+        _FakeVault(_target_at(tmp_path / "vault")),
+        sleep=lambda _: None,
+    )
+    job = SweepJob(window=[], cwd=str(tmp_path), session_id="")
+
+    try:
+        # When running the job
+        notes = sweep._run_job(job)
+        # Then it gives up without running, and the holder keeps its lock
+        assert notes == []
+        assert runner.prompt is None
+        assert in_progress(store) is True
+    finally:
+        held.release()
+    assert re.search(r"WARNING.*lock still held after 10s", hooks_log_text(hooks_log))
+
+
+def test_run_job_releases_the_lock_it_took(tmp_path: Path) -> None:
+    """Verify a finished sweep leaves the lock free for the next one."""
+    # Given a free lock
+    store = _job_store(tmp_path)
+    sweep = Sweep(
+        store, SessionMemoryConfig(), _RecordingRunner(), _FakeVault(_target_at(tmp_path / "vault"))
+    )
+    # When running the job
+    sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id=""))
+    # Then no sweep is in progress
+    assert not in_progress(store)
 
 
 def test_render_inlines_capture_criteria() -> None:
@@ -1902,13 +1929,13 @@ def _mock_exit(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(os, "_exit", _exit)
 
 
-def test_spawn_detached_releases_the_lock_when_the_first_fork_fails(
+def test_spawn_detached_skips_when_the_first_fork_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Verify a fork failure is treated like any other unavailable resource: skip, don't block."""
-    # Given a held lock and os.fork forced to always fail
+    # Given os.fork forced to always fail
+    hooks_log = _capture_log(tmp_path)
     store = store_at(tmp_path)
-    Lock(store.lock_path).acquire(now=1.0)
     sweep = Sweep(store, SessionMemoryConfig(), _FakeRunner([]))
 
     def _raise() -> None:
@@ -1920,8 +1947,8 @@ def test_spawn_detached_releases_the_lock_when_the_first_fork_fails(
     # When spawning the detached worker
     sweep._spawn_detached(_job(cwd=str(tmp_path)))
 
-    # Then the lock is released rather than left held
-    assert not store.lock_path.exists()
+    # Then the sweep is skipped and says so
+    assert "sweep skipped: fork failed" in hooks_log_text(hooks_log)
 
 
 def test_spawn_detached_parent_reaps_the_intermediate_child(
@@ -1942,14 +1969,13 @@ def test_spawn_detached_parent_reaps_the_intermediate_child(
     assert waited == [(4242, 0)]
 
 
-def test_spawn_detached_intermediate_child_releases_the_lock_when_the_second_fork_fails(
+def test_spawn_detached_intermediate_child_exits_when_the_second_fork_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Verify a daemon that never reaches _run_job still releases the lock it inherited."""
-    # Given a held lock, the first fork landing in the intermediate child, and
-    # the second fork forced to fail
+    """Verify an intermediate child that cannot fork the daemon exits cleanly."""
+    # Given the first fork landing in the intermediate child, and the second
+    # fork forced to fail
     store = store_at(tmp_path)
-    Lock(store.lock_path).acquire(now=1.0)
     sweep = Sweep(store, SessionMemoryConfig(), _FakeRunner([]))
     calls = {"n": 0}
 
@@ -1968,9 +1994,8 @@ def test_spawn_detached_intermediate_child_releases_the_lock_when_the_second_for
     with pytest.raises(_ExitCalled) as excinfo:
         sweep._spawn_detached(_job(cwd=str(tmp_path)))
 
-    # Then the intermediate child exits cleanly and the lock is released
+    # Then the intermediate child exits cleanly
     assert excinfo.value.code == 0
-    assert not store.lock_path.exists()
 
 
 def test_spawn_detached_intermediate_child_exits_after_a_successful_second_fork(

@@ -254,6 +254,11 @@ second busy timeout, and two sessions ending in different projects touch differe
 entirely. Two hooks committing at once race on git's own `index.lock`, the loser skips,
 and the next session's hook commits what it left behind. Do not reintroduce
 `lib/locking.py`: the shared index and the taxonomy file it guarded are both gone.
+The one lock in the repository belongs to the plugin, not the CLI: the sweep worker holds
+a per-project `fcntl.flock` on the store's `sweep.lock` while it runs, so a second sweep
+for the same project queues behind the first rather than being dropped. The kernel
+releases it when the worker exits, however it exits, so nothing ages it out, and the
+file is never deleted, since a waiter would otherwise lock a new file at the same path.
 
 **A hit is relative to its field, not a fixed distance.** `fieldindex.search` keeps a
 page within `DEFAULT_MAX_DISTANCE` (0.45) only when it also sits `DEFAULT_MIN_MARGIN`
@@ -417,7 +422,7 @@ and starts no subprocess, commits with git alone, and hands the sweep worker a r
 rather than a `VaultCLI`, so the version handshake runs in the worker after it detaches.
 A commit cut short costs nothing, since the next `SessionStart` commits what it left.
 
-Both start and end hooks skip their commit while a sweep worker holds a fresh lock, since
+Both start and end hooks skip their commit while a sweep worker holds the lock, since
 the worker commits its own writes when it finishes. `sessionend.py` commits whether or not
 the sweep is enabled, so a session that wrote a page by hand still lands it.
 

@@ -143,7 +143,7 @@ Four situations are skipped rather than committed. A merge, rebase, cherry-pick,
 revert in progress is skipped, because a commit landing in the middle of one bakes
 half-resolved state into history. A detached `HEAD` is skipped, because such a commit is
 reachable from nothing once a branch is checked out again. A sweep worker that still
-holds a fresh lock is skipped, because the worker commits its own writes when it
+holds the lock is skipped, because the worker commits its own writes when it
 finishes. Two hooks reaching git at the same moment race on git's own `index.lock`, and
 the loser skips. In every case the next hook commits what was left behind.
 
@@ -178,6 +178,15 @@ Most sessions produce nothing for jobs 1 and 2, and that is the correct outcome.
 floors keep trivial sessions out of the vault, and below any one of them the whole pass
 is skipped. Two of the three are measured on your messages alone, so a long agent reply
 to one short instruction never clears them.
+
+Only one sweep runs at a time for each project. When a second session in the same
+project ends while a sweep is still running, its worker waits for the first to finish and
+then runs, rather than being dropped. It checks every 5 seconds and waits up to one hour.
+The hooks log records each step: `sweep queued: another sweep holds the lock` when the
+worker starts to wait, `sweep dequeued after about Ns` when it gets its turn, and the
+warning `sweep skipped: lock still held after 3600s` when it gives up. The lock is
+released when the worker exits for any reason, so a crashed sweep never blocks the next
+one.
 
 ### What the sweep may write
 

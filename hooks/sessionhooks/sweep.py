@@ -1,10 +1,11 @@
 """The end-of-session memory sweep: gate, detach, run, validate, commit.
 
-The gate runs inline in the SessionEnd/PreCompact hook: it acquires a per-project
-single-writer lock, resolves the transcript, windows it since the last compaction,
-drops system/hook noise, and yields a SweepJob only when the session clears every
-floor in `_shortfall`. The heavy `claude -p` pass runs in a double-forked daemon
-that outlives session teardown.
+The gate runs inline in the SessionEnd/PreCompact hook: it resolves the transcript,
+windows it since the last compaction, drops system/hook noise, and yields a SweepJob
+only when the session clears every floor in `_shortfall`. The heavy `claude -p` pass
+runs in a double-forked daemon that outlives session teardown. The daemon takes a
+per-project `flock` before it runs, so a second sweep for the same project queues
+behind the first rather than being dropped, and gives up after `QUEUE_WAIT`.
 
 The agent may write anywhere inside this project's vault folder and nowhere else. A
 tool-reported write outside it is reverted or quarantined. The agent keeps Bash for
@@ -17,6 +18,7 @@ nothing here. Every boundary fails open so a sweep never wedges the session.
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import json
 import os
 import re
@@ -39,13 +41,16 @@ from sessionhooks.store import Store, git_safe_env
 from sessionhooks.vaultcli import ROOT_ENV, VaultCLI
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
 
     from sessionhooks.runner import Runner, RunResult
 
 _log = log.logger("sweep")
 
-STALE_AFTER = 300.0
+# A sweep queued behind another polls this often and gives up after QUEUE_WAIT, so
+# a worker wedged past its own timeout cannot hold a queue of sweeps forever.
+QUEUE_POLL = 5.0
+QUEUE_WAIT = 3600.0
 _GIT_TIMEOUT = 10
 # How much of a failed run's stderr the log keeps; enough to name the error, short
 # enough that a runaway traceback never dominates the file.
@@ -99,67 +104,53 @@ class Target:
 
 
 class Lock:
-    """Atomic single-writer lock with stale recovery; every operation fails open."""
+    """A per-project single-worker lock held as a kernel `flock`; every operation fails open.
 
-    def __init__(self, path: Path, *, stale_after: float = STALE_AFTER) -> None:
+    Two invariants make it safe without any stale-lock recovery. The kernel drops
+    the lock when the holding process exits, however it exits, so a crashed worker
+    never wedges the next one. The file is never deleted: a worker that unlinked it
+    while another waited would let a third lock a fresh file at the same path, and
+    two workers would then each hold "the" lock.
+    """
+
+    def __init__(self, path: Path) -> None:
         self.path = path
-        self.stale_after = stale_after
+        self._fd: int | None = None
 
-    def _try_create(self) -> int | None:
-        """Open the lock with O_CREAT|O_EXCL; return the fd or None if it exists/fails."""
-        try:
-            return os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        except OSError:
-            return None
-
-    def acquire(self, *, now: float) -> bool:
-        """Atomically claim the lock, stealing one older than `stale_after`.
-
-        Returns True on success. A malformed or empty stored timestamp reads as
-        stale (0.0) and is stolen. An `os.write` failure leaves an empty lock file
-        that reads as stale next attempt and returns False. Never raises.
-        """
+    def acquire(self) -> bool:
+        """Take the lock without blocking, returning False when another holder has it."""
+        if self._fd is not None:
+            return True
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(self.path, os.O_CREAT | os.O_RDWR, 0o600)
         except OSError:
             return False
-        fd = self._try_create()
-        if fd is None:
-            try:
-                stored = float(self.path.read_text(encoding="utf-8").strip())
-            except (OSError, ValueError):
-                stored = 0.0
-            if now - stored <= self.stale_after:
-                return False  # held and fresh
-            try:
-                self.path.unlink()
-            except OSError:
-                return False
-            fd = self._try_create()
-            if fd is None:
-                return False
         try:
-            try:
-                os.write(fd, str(now).encode("utf-8"))
-            finally:
-                os.close(fd)
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
+            os.close(fd)
             return False
+        self._fd = fd
         return True
 
     def release(self) -> None:
-        """Best-effort remove the lock; never raises."""
-        with contextlib.suppress(OSError):
-            self.path.unlink(missing_ok=True)
+        """Drop the lock if this object holds it; never raises and never unlinks the file."""
+        fd, self._fd = self._fd, None
+        if fd is not None:
+            with contextlib.suppress(OSError):
+                os.close(fd)
 
 
-def in_progress(store: Store, *, now: float, stale_after: float = STALE_AFTER) -> bool:
-    """Report whether a sweep worker holds a fresh lock for this project's store."""
-    try:
-        stored = float(store.lock_path.read_text(encoding="utf-8").strip())
-    except (OSError, ValueError):
+def in_progress(store: Store) -> bool:
+    """Report whether a sweep worker holds this project's lock right now."""
+    if not store.lock_path.exists():
         return False
-    return now - stored <= stale_after
+    probe = Lock(store.lock_path)
+    if probe.acquire():
+        probe.release()
+        return False
+    return True
 
 
 def _transcript_text(window: list[dict[str, Any]]) -> str:
@@ -237,6 +228,7 @@ class Sweep:
         *,
         env: Mapping[str, str] | None = None,
         vault_root: Path | None = None,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self.store = store
         self.config = config
@@ -249,11 +241,12 @@ class Sweep:
         # os.environ: a vault found via `[vault] root` in the config is invisible
         # to the environment a second, independent read would see.
         self.env = env if env is not None else os.environ
+        self.sleep = sleep
 
     def trigger(self, event: dict[str, Any]) -> None:
         """Gate the sweep and, if worthwhile, spawn the detached worker. Never raises."""
         with contextlib.suppress(Exception):
-            job = self._gate(event, now=time.time())
+            job = self._gate(event)
             if job is not None:
                 self._spawn_detached(job)
 
@@ -280,31 +273,24 @@ class Sweep:
         )
         return f"below threshold ({counts})" if short else None
 
-    def _gate(self, event: dict[str, Any], *, now: float) -> SweepJob | None:
-        """Acquire the lock and return a SweepJob, or None when not worth sweeping.
+    def _gate(self, event: dict[str, Any]) -> SweepJob | None:
+        """Return a SweepJob, or None when the session is not worth sweeping.
 
-        Never raises and never leaks the lock: on any post-acquire failure or a
-        below-threshold window it releases the lock and returns None. On success
-        the lock stays held for `_run_job` to release. Every None is logged with
-        its reason, since a gate that declines silently is indistinguishable from
-        a hook that never ran.
+        Takes no lock: a sweep already running for this project only delays this
+        one, and the detached worker waits for it in `_await_lock`. Never raises.
+        Every None is logged with its reason, since a gate that declines silently
+        is indistinguishable from a hook that never ran.
         """
-        lock = Lock(self.store.lock_path)
-        if not lock.acquire(now=now):
-            _log.info("sweep skipped: lock held")
-            return None
         try:
             transcript_path = event.get("transcript_path") or self.store.read_transcript_pointer()
             if not transcript_path:
                 _log.info("sweep skipped: no transcript")
-                lock.release()
                 return None
             entries = transcript.read_entries(transcript_path)
             window = transcript.window_since_compact(entries)
             shortfall = self._shortfall(window)
             if shortfall is not None:
                 _log.info("sweep skipped: %s", shortfall)
-                lock.release()
                 return None
             session_id = str(event.get("session_id") or "") or Path(transcript_path).stem
             return SweepJob(
@@ -317,10 +303,28 @@ class Sweep:
                 session_url=transcript.session_url(entries),
                 started=transcript.session_start(entries),
             )
-        except Exception:  # noqa: BLE001 - gate must never raise or leak the lock
+        except Exception:  # noqa: BLE001 - gate must never raise
             _log.exception("sweep gate failed")
-            lock.release()
             return None
+
+    def _await_lock(self, lock: Lock) -> bool:
+        """Wait for the project's lock, returning False once QUEUE_WAIT has passed.
+
+        Counts polls rather than reading a clock, so the wait is the sum of the
+        sleeps asked for and a test can drive it without real time passing.
+        """
+        if lock.acquire():
+            return True
+        _log.info("sweep queued: another sweep holds the lock")
+        polls = 0
+        while polls * QUEUE_POLL < QUEUE_WAIT:
+            self.sleep(QUEUE_POLL)
+            polls += 1
+            if lock.acquire():
+                _log.info("sweep dequeued after about %.0fs", polls * QUEUE_POLL)
+                return True
+        _log.warning("sweep skipped: lock still held after %.0fs", polls * QUEUE_POLL)
+        return False
 
     def _prepare(self, job: SweepJob) -> tuple[Target, str] | None:
         """Resolve where to write and compose this session's log command, or None to skip.
@@ -415,13 +419,17 @@ class Sweep:
         return ""
 
     def _run_job(self, job: SweepJob) -> list[str]:
-        """Build the prompt, run the agent, validate its writes, log, free the lock.
+        """Take the lock, build the prompt, run the agent, validate its writes, log.
 
-        ALWAYS releases the lock and never raises (it runs in a detached worker
-        with no one to catch it). Returns the remediation notes.
+        Waits behind any sweep already running for this project, and returns no
+        notes when that wait runs out. Releases the lock it took and never raises
+        (it runs in a detached worker with no one to catch it). Returns the
+        remediation notes.
         """
         lock = Lock(self.store.lock_path)
         log.bind(step="sweep", session=job.session_id)
+        if not self._await_lock(lock):
+            return []
         try:
             if self.vault is None and self.vault_root is not None:
                 self.vault = VaultCLI.for_root(self.vault_root, env=self.env)
@@ -628,16 +636,10 @@ class Sweep:
         stdio away from the hook's stdout before running the job, since a
         detached process still sharing the hook's stdout would corrupt whatever
         the hook itself writes there.
-
-        The gate holds the lock on behalf of the worker, and only `_run_job`
-        releases it. A daemon that never reaches `_run_job` must therefore
-        release it here, or the next session's sweep is refused until the lock
-        goes stale.
         """
         try:
             pid = os.fork()
         except OSError:
-            Lock(self.store.lock_path).release()
             _log.info("sweep skipped: fork failed")
             return  # cannot fork; skip the sweep rather than block the hook
         if pid > 0:
@@ -650,7 +652,6 @@ class Sweep:
             os.setsid()
             pid2 = os.fork()
         except OSError:
-            Lock(self.store.lock_path).release()
             _log.info("sweep skipped: fork failed")
             os._exit(0)
         if pid2 > 0:
