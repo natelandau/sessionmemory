@@ -1,3 +1,16 @@
+## v0.10.0 (2026-10-13)
+
+### Feat
+
+- **specs**: search specs by meaning and track their status (#12)
+- **cli**: add path lookup, decide items, and vault hygiene checks (#11)
+- **sweep**: queue concurrent sweeps and validate their writes (#10)
+- **runbooks**: name runbooks for their title alone
+
+### Fix
+
+- **sweep**: harden the sweep, key redaction, and registry writes (#13)
+
 ## v0.9.0 (2026-10-09)
 
 ### Feat
