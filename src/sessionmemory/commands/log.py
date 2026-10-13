@@ -6,10 +6,10 @@ import os
 from pathlib import Path  # noqa: TC003
 
 import typer
-from nclutils import pp
 
 from sessionmemory.commands._common import (
     emit_json,
+    emit_value,
     fail,
     require_project,
     require_vault,
@@ -30,7 +30,11 @@ BODY_FILE = typer.Option(None, "--body-file", help="Read the body from a file, o
 TRANSCRIPT = typer.Option("", "--transcript", help="Path to this session's transcript on disk.")
 URL = typer.Option("", "--url", help="Where this session can be opened online.")
 CWD = typer.Option(None, "--cwd", help="Directory to resolve the project from.")
-JSON = typer.Option(False, "--json", help="Emit JSON instead of prose.")  # noqa: FBT003
+JSON = typer.Option(
+    False,  # noqa: FBT003
+    "--json",
+    help="Emit JSON naming the path and whether the page was created or updated.",
+)
 
 
 def log_command(  # noqa: PLR0913, PLR0917
@@ -46,6 +50,8 @@ def log_command(  # noqa: PLR0913, PLR0917
     as_json: bool = JSON,
 ) -> None:
     """Record this session's work in the one page that belongs to it.
+
+    Prints only the page's path, as every `new` command does, so a caller can capture it.
 
     Raises:
         Exit: When the directory is not a registered project or the page cannot be written.
@@ -75,4 +81,4 @@ def log_command(  # noqa: PLR0913, PLR0917
     if as_json:
         emit_json({"path": str(result.path), "action": action})
         return
-    pp.success(f"{action} {result.path.name}", details=[str(result.path)])
+    emit_value(str(result.path))

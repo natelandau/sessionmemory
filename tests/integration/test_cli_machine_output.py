@@ -127,6 +127,18 @@ def test_new_prose_output_is_unstyled_in_a_colored_shell(colored, arguments):
     assert Path(lines[-1]).is_file()
 
 
+def test_log_prose_output_is_unstyled_in_a_colored_shell(colored):
+    """Verify log prints the bare path of the page it wrote where color is forced."""
+    env, project = colored
+    result = _run(env, "log", "--session-id", "s", "--title", "prose log", "--cwd", str(project))
+
+    assert result.returncode == 0
+    assert ESCAPE not in result.stdout
+    lines = result.stdout.decode().splitlines()
+    assert len(lines) == 1
+    assert Path(lines[0]).is_file()
+
+
 @pytest.mark.parametrize(
     ("kind", "tail"),
     [("project", ""), ("learnings", "/learnings"), ("backlog", "/backlog.md")],
