@@ -1,4 +1,4 @@
-"""The seven things that can be wrong with a vault, stated without severity.
+"""The things that can be wrong with a vault, stated without severity.
 
 Every check is a suggestion. The article's argument holds: an irrelevant or imperfect
 page is never surfaced by semantic search, so nothing here fails a build. There is no
@@ -8,12 +8,13 @@ repair, because repair is what grew to three hundred lines last time.
 from __future__ import annotations
 
 import hashlib
+import re
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from sessionmemory.lib import backlog, field, fieldindex, paths, registry
+from sessionmemory.lib import field, fieldindex, paths, registry
 from sessionmemory.lib.frontmatter import (
     FrontmatterError,
     MissingFrontmatterError,
@@ -130,16 +131,14 @@ def dead_projects(vault: Path, _embedder: Embedder) -> list[Finding]:
     ]
 
 
-_TICKED = "- [x]"
-_SHAPE = "- [S|M|L] <description> - <YYYY-MM-DD> [#topic]"
+_TICKED = ("- [x]", "- [X]")
 
 
-def uncounted_backlog_lines(vault: Path, _embedder: Embedder) -> list[Finding]:
-    """Report a top-level bullet in a backlog that the session start does not count.
+def ticked_backlog_lines(vault: Path, _embedder: Embedder) -> list[Finding]:
+    """Report a ticked top-level bullet in a backlog.
 
-    A ticked line is finished work that should have been deleted; anything else is a
-    line that does not match the item shape. An indented bullet is a note under an
-    item and is left alone.
+    A ticked line is finished work that should have been deleted. Every other top-level
+    bullet counts as open, and an indented bullet is a note under an item.
     """
     findings = []
     for slug in paths.iter_project_slugs(vault):
@@ -147,13 +146,62 @@ def uncounted_backlog_lines(vault: Path, _embedder: Embedder) -> list[Finding]:
         if not path.is_file():
             continue
         for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-            if not line.startswith("- ") or backlog.is_item(line):
-                continue
             if line.startswith(_TICKED):
                 message = f"line {number}: ticked; finished work is deleted, not ticked"
-            else:
-                message = f"line {number}: not counted as open; the shape is `{_SHAPE}`"
-            findings.append(Finding("backlog", str(path), message))
+                findings.append(Finding("backlog", str(path), message))
+    return findings
+
+
+_REFERENCE_SOURCES = (
+    paths.SPECS_DIR,
+    paths.RUNBOOKS_DIR,
+    paths.REFERENCE_DIR,
+    paths.LEARNINGS_DIR,
+)
+_REFERENCE_TARGETS = (*_REFERENCE_SOURCES, paths.LOGS_DIR)
+
+
+def _reference_pattern(vault: Path) -> re.Pattern[str]:
+    """Build the pattern for a mention of a vault page, anchored to a word boundary.
+
+    The lookbehind admits a mention only at a line start or after whitespace or an opening
+    quote or bracket, so `docs/specs/x.md` and a placeholder like `specs/<slug>.md` are
+    not mentions. `plans/` is not a target: a plan is scratch and may be gone by design.
+    """
+    folders = "|".join(_REFERENCE_TARGETS)
+    return re.compile(
+        rf"(?<![^\s`'\"(\[<])(?:{re.escape(str(vault))}/)?"
+        rf"(?:projects/(?P<slug>[A-Za-z0-9._-]+)/)?"
+        rf"(?P<folder>{folders})/(?P<name>[A-Za-z0-9._-]+\.md)(?![A-Za-z0-9_])"
+    )
+
+
+def dangling_references(vault: Path, _embedder: Embedder) -> list[Finding]:
+    """Report a mention of a vault page that does not exist.
+
+    Specs, runbooks, reference docs, and learnings are scanned line by line, fenced code
+    included. A mention naming a project resolves there; any other resolves in the
+    project that holds the mentioning file.
+    """
+    pattern = _reference_pattern(vault)
+    findings = []
+    for slug in paths.iter_project_slugs(vault):
+        for folder in _REFERENCE_SOURCES:
+            directory = paths.project_dir(vault, slug) / folder
+            if not directory.is_dir():
+                continue
+            for path in sorted(directory.glob("*.md")):
+                if not path.is_file() or field.is_debris(path.name):
+                    continue
+                text = path.read_text(encoding="utf-8", errors="replace")
+                for number, line in enumerate(text.splitlines(), start=1):
+                    for match in pattern.finditer(line):
+                        owner = match["slug"] or slug
+                        target = paths.project_dir(vault, owner) / match["folder"] / match["name"]
+                        if not target.is_file():
+                            mention = match[0].removeprefix(f"{vault}/")
+                            message = f"line {number}: names {mention}, which does not exist"
+                            findings.append(Finding("reference", str(path), message))
     return findings
 
 
@@ -195,7 +243,8 @@ CHECKS: tuple[Callable[[Path, Embedder], list[Finding]], ...] = (
     malformed_frontmatter,
     unquoted_datetimes,
     dead_projects,
-    uncounted_backlog_lines,
+    ticked_backlog_lines,
+    dangling_references,
     stale_indexes,
 )
 
