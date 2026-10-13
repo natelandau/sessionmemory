@@ -21,9 +21,12 @@ pruned, so it holds work that has since been done or abandoned.
 ## What the caller gives you
 
 - The absolute path to this project's `backlog.md`, and one or more item lines
-  from it, verbatim. An item is one line: `- [S|M|L] <description> - <date>
-  [#topic]`, under a `## <kind>` heading naming its conventional-commit type.
-  Read the file yourself for the section each line sits in.
+  from it, verbatim. An item is one top-level bullet, under any heading or none. Its
+  full shape is `- [S|M|L] <description> - <date> [#topic]`, and the CLI files it
+  under a `## <kind>` heading naming its conventional-commit type, or `## decide` for
+  a question to the user. The size, the date, and the topic may be missing. A
+  missing part is unknown, not malformed. Read the file yourself for the section
+  each line sits in.
 - You run in the project's repo, so you can read code and inspect git history.
 
 ## Verdict - return exactly one per item
@@ -34,7 +37,7 @@ pruned, so it holds work that has since been done or abandoned.
   abandoned or superseded, or it no longer makes sense against the current design.
   Cite why. (the caller deletes the line)
 - **AMEND** - still valid, but the line has drifted: it references renamed or
-  moved things, it sits under the wrong `## <kind>` heading, the `[S|M|L]` size is
+  moved things, it sits under the wrong `## <kind>` heading, a size that is present is
   clearly off, or the description is stale. Provide the corrected line.
 - **KEEP** - still valid and accurate as written; the work is genuinely outstanding.
 

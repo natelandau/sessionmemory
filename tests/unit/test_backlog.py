@@ -142,6 +142,8 @@ def test_add_item_strips_the_description(tmp_path):
         pytest.param({"description": "two\nlines"}, id="multiline-description"),
         pytest.param({"topic": "#"}, id="empty-topic"),
         pytest.param({"topic": "two words"}, id="topic-with-whitespace"),
+        pytest.param({"topic": "[b"}, id="topic-with-open-bracket"),
+        pytest.param({"topic": "a]b"}, id="topic-with-close-bracket"),
         pytest.param({"kind": "chore"}, id="unknown-kind"),
         pytest.param({"size": "XL"}, id="unknown-size"),
     ],
@@ -162,28 +164,80 @@ def test_add_item_rejects_a_malformed_item_and_writes_nothing(tmp_path, override
         pytest.param("- [S] cache the model - 2026-09-03 [#index]", id="with-topic"),
         pytest.param("- [M] cache the model - 2026-09-03", id="without-topic"),
         pytest.param("- [L] a - b - c - 2026-09-03 [#x-y_z]", id="hyphens-in-description"),
-        pytest.param("  - [S] indented - 2026-09-03", id="indented"),
     ],
 )
 def test_is_item_accepts_the_line_the_writer_produces(line):
-    """Verify every shape `format_item` can write, and an indented copy of one, counts."""
+    """Verify every shape `format_item` can write counts."""
     assert backlog.is_item(line)
 
 
 @pytest.mark.parametrize(
     "line",
     [
-        pytest.param("- [ ] [S] old open item - 2026-09-03 [#index]", id="ticked-box-open"),
-        pytest.param("- [x] [S] finished item - 2026-09-03 [#index]", id="ticked-box-done"),
-        pytest.param("- [S] undated item [#index]", id="no-date"),
-        pytest.param("- [XL] wrong size - 2026-09-03", id="unknown-size"),
-        pytest.param("- [S] - 2026-09-03", id="empty-description"),
-        pytest.param("- [S] two words topic - 2026-09-03 [#a b]", id="topic-with-whitespace"),
-        pytest.param("- plain bullet", id="plain-bullet"),
+        pytest.param("- [S] cache the model - 2026-09-03 [#index]", id="full-shape"),
+        pytest.param("- [M] add count-in support for practicing mode", id="no-date-no-topic"),
+        pytest.param("- [L] metronome support [#practice]", id="no-date"),
+        pytest.param("- automatic chord recognition for recordings", id="plain-prose"),
+        pytest.param("- [ ] old open item - 2026-09-03", id="unticked-box"),
+        pytest.param("- [S] - 2026-09-03", id="size-and-date-only"),
+    ],
+)
+def test_is_item_counts_any_top_level_bullet_with_text(line):
+    """Verify a column-0 bullet with text counts whatever fields it carries."""
+    assert backlog.is_item(line)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        pytest.param("- [x] finished item - 2026-09-03", id="ticked"),
+        pytest.param("- [X] finished item", id="ticked-capital"),
+        pytest.param("  - [S] indented detail - 2026-09-03", id="indented"),
+        pytest.param("\t- tab-indented detail", id="tab-indented"),
+        pytest.param("- ", id="empty-bullet"),
+        pytest.param("- [ ]", id="empty-box"),
         pytest.param("## feat", id="heading"),
+        pytest.param("plain prose paragraph", id="prose"),
         pytest.param("", id="blank"),
     ],
 )
-def test_is_item_rejects_a_line_outside_the_shape(line):
-    """Verify a checkbox, a missing field, or a bad field keeps a line from counting."""
+def test_is_item_rejects_ticked_indented_and_non_bullet_lines(line):
+    """Verify ticked work, sub-bullets, empty bullets, and non-bullets do not count."""
     assert not backlog.is_item(line)
+
+
+def test_is_item_counts_only_top_level_bullets_in_a_mixed_file():
+    """Verify a backlog mixing headings, prose, and notes counts only its top-level bullets."""
+    text = "# Backlog\n\nSome notes.\n\n## feat\n\n- [M] one\n  - detail\n- two\n- [x] done\n\n## decide\n\n- which?\n"
+    assert sum(backlog.is_item(line) for line in text.splitlines()) == 3
+
+
+def test_add_item_writes_a_decide_item_under_its_heading(tmp_path):
+    """Verify decide is a kind and its items land under ## decide."""
+    path = tmp_path / "backlog.md"
+    backlog.add_item(
+        path, kind="decide", size="S", description="which cache?", topic=None, today="2026-10-13"
+    )
+    assert "## decide\n\n- [S] which cache? - 2026-10-13\n" in path.read_text(encoding="utf-8")
+
+
+def test_topics_lists_each_tag_in_use_once(tmp_path):
+    """Verify topics reads every [#tag] on item lines, sorted and distinct."""
+    path = tmp_path / "backlog.md"
+    path.write_text(
+        "## feat\n\n- [S] a - 2026-01-01 [#web]\n- b [#api]\n- [M] c [#web]\n  - d [#ignored]\n",
+        encoding="utf-8",
+    )
+    assert backlog.topics(path) == ["api", "web"]
+
+
+def test_topics_is_empty_without_a_file(tmp_path):
+    """Verify a missing backlog has no topics."""
+    assert backlog.topics(tmp_path / "backlog.md") == []
+
+
+@pytest.mark.parametrize("topic", ["[b", "x]", "[bold]x"])
+def test_format_item_names_the_bracket_in_a_rejected_topic(topic):
+    """Verify a bracket in a topic is refused with a message naming brackets."""
+    with pytest.raises(backlog.BacklogError, match="bracket"):
+        backlog.format_item(kind="feat", size="S", description="d", topic=topic, today="2026-10-13")

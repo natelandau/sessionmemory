@@ -99,9 +99,12 @@ line, the date, and the heading, and creates the file when it is missing:
 ```
 
 Size is `S`, `M`, or `L`. Kind is one of feat, fix, refactor, perf, docs, test,
-build, ci. Work the transcript shows was finished has its line deleted, and so
-does an item that will never be done; make both edits directly. The line has no
-checkbox, so never tick or annotate it; git history is the record of what was done.
+build, ci, decide. A question only the user can answer ("decide whether ...") is
+not work to do: add it with `--kind decide`, which files it under `## decide`,
+and phrase the title as a question. Work the transcript shows was finished has its
+line deleted, and so does an item that will never be done; make both edits
+directly. The line has no checkbox, so never tick or annotate it; git history is
+the record of what was done.
 
 ### 3. The session log
 
