@@ -197,7 +197,7 @@ retiring one is a decision a person makes in review.
 Two backstops run after the model finishes. A write the model reported outside the
 project folder is restored from the vault's git history, and a file git cannot restore is
 moved into a quarantine directory rather than deleted. Every file under the project
-folder modified since the run started is then scanned for secret-shaped content and
+folder whose content changed during the run is then scanned for secret-shaped content and
 redacted in place, which catches a write made through Bash that no tool call reported.
 
 A Bash write elsewhere in the vault, a sibling project's folder foremost, is caught by

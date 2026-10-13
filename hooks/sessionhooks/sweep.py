@@ -10,8 +10,8 @@ behind the first rather than being dropped, and gives up after `QUEUE_WAIT`.
 The agent may write anywhere inside this project's vault folder and nowhere else. A
 tool-reported write outside it is reverted or quarantined. The agent keeps Bash for
 the whole run, and a write made through it never appears in the tool-use stream, so
-after the run every file under the project folder modified since the run started is
-scrubbed for secrets as well. A Bash write outside the project folder is caught by
+the project folder is hashed before and after the run and every file whose hash
+changed is scrubbed for secrets as well. A Bash write outside the project folder is caught by
 nothing here. Every boundary fails open so a sweep never wedges the session.
 """
 
@@ -32,7 +32,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from sessionhooks import log, transcript
+from sessionhooks import log, snapshot, transcript
 from sessionhooks.config import SessionMemoryConfig
 from sessionhooks.paths import is_within_root
 from sessionhooks.runner import LOG_TITLE_ENV, ClaudeRunner
@@ -44,6 +44,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
     from sessionhooks.runner import Runner, RunResult
+    from sessionhooks.snapshot import Changes
 
 _log = log.logger("sweep")
 
@@ -455,22 +456,22 @@ class Sweep:
                 changes=self._changes(job),
                 existing_log=self._existing_log(target, job.session_id),
             )
+            before = snapshot.take(target.project_dir)
             result = self.runner.run(
                 prompt,
                 cwd=str(target.project_dir),
                 extra_env={LOG_TITLE_ENV: _log_moment(job.started)},
             )
+            changes = snapshot.diff(before, snapshot.take(target.project_dir))
             _log.debug("claude ran %.1fs", time.time() - started_at)
-            notes = self._validate_writes(result.changed_files, target, started_at=started_at)
+            notes = self._validate_writes(result.changed_files, target, changes)
             # The sentinel also appears in the transcript the agent summarizes, so
             # an actual write outranks it: a run that wrote something did record.
-            if NOTHING_TO_RECORD in result.text and not result.changed_files:
+            if NOTHING_TO_RECORD in result.text and not changes.touched() and not changes.deleted:
                 notes.append("nothing to record")
             outcome = self.vault.commit(env=self.env) if self.vault else None
             commit_clause = outcome.describe() if outcome else "commit skipped: no vault"
-            self._log_result(
-                result, changed=len(result.changed_files), commit=commit_clause, notes=notes
-            )
+            self._log_result(result, changes=changes, commit=commit_clause, notes=notes)
         except Exception:  # noqa: BLE001 - the detached worker must never raise
             _log.exception("sweep worker failed")
             return []
@@ -480,12 +481,12 @@ class Sweep:
             lock.release()
 
     def _log_result(
-        self, result: RunResult, *, changed: int, commit: str, notes: list[str]
+        self, result: RunResult, *, changes: Changes, commit: str, notes: list[str]
     ) -> None:
         """One line for the run: what it wrote and how the commit went, or why it failed."""
         if result.success:
             suffix = f" (notes: {'; '.join(notes)})" if notes else ""
-            _log.info("sweep finished: ok, %d file(s) changed, %s%s", changed, commit, suffix)
+            _log.info("sweep finished: ok, %s, %s%s", changes.describe(), commit, suffix)
             return
         tail = (result.stderr or "").strip()[-STDERR_TAIL_CHARS:]
         _log.error("sweep failed: claude exited %s (%s)", result.exit_code, tail or "no stderr")
@@ -575,23 +576,14 @@ class Sweep:
         if note is not None:
             notes.append(note)
 
-    def _touched_since(self, directory: Path, started_at: float) -> list[Path]:
-        """Every file under `directory` modified at or after `started_at`; never raises."""
-        try:
-            return sorted(
-                p for p in directory.rglob("*") if p.is_file() and p.stat().st_mtime >= started_at
-            )
-        except OSError:
-            return []
-
     def _validate_writes(
-        self, changed_files: list[str], target: Target, *, started_at: float
+        self, changed_files: list[str], target: Target, changes: Changes
     ) -> list[str]:
-        """Enforce containment on tool-reported writes and scrub every file the run touched.
+        """Enforce containment on tool-reported writes and scrub every file the run changed.
 
-        Bash never reports a path, so the second pass scrubs by mtime: anything under the
-        project folder written since the run began. A relative tool-reported path is
-        anchored to the directory the agent ran in.
+        Bash never reports a path, so the second pass scrubs every file under the project
+        folder whose content hash changed during the run, and names each deletion. A
+        relative tool-reported path is anchored to the directory the agent ran in.
         """
         notes: list[str] = []
         seen: set[Path] = set()
@@ -600,8 +592,9 @@ class Sweep:
             if not path.is_absolute():
                 path = target.project_dir / path
             self._judge_write(path, raw, target, seen=seen, notes=notes)
-        for path in self._touched_since(target.project_dir, started_at):
+        for path in changes.touched():
             self._judge_write(path, str(path), target, seen=seen, notes=notes)
+        notes.extend(f"deleted: {path}" for path in changes.deleted)
         return notes
 
     def _existing_memory(self, target: Target, *, max_chars: int = 50_000) -> str:
