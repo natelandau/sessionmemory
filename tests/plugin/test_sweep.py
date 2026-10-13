@@ -762,7 +762,17 @@ def test_validate_writes_restores_a_tracked_escape(tmp_path: Path) -> None:
         ("aws", "AKIAIOSFODNN7EXAMPLE", "key: {secret}"),
         ("github", "ghp_" + "a" * 36, "token: {secret}"),
         # Split so a secret scanner does not flag this file as holding a real key.
-        ("pem", "-----BEGIN RSA " + "PRIVATE KEY-----", "{secret}\nMIIEow==\n"),
+        (
+            "pem",
+            (
+                "-----BEGIN RSA "
+                "PRIVATE KEY-----\n"
+                "MIIEowIBAAKCAQEAu1SU1LfVLPHCozMxH2Mo4lgOEePzNm0tRgeLYgJ\n"
+                "-----END RSA "
+                "PRIVATE KEY-----"
+            ),
+            "{secret}\n",
+        ),
         ("apikey", "s3cr3tv4lu3" + "x" * 12, 'api_key = "{secret}"'),
     ],
 )

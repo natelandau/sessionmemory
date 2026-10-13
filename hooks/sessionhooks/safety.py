@@ -19,7 +19,13 @@ SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"gh[pousr]_[A-Za-z0-9]{30,}"), REDACTED),
     # Fine-grained PATs use a github_pat_ prefix the gh[pousr]_ form misses.
     (re.compile(r"github_pat_[A-Za-z0-9_]{20,}"), REDACTED),
-    (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"), REDACTED),
+    # A bare header appears in setup examples; only a complete block carries key material.
+    (
+        re.compile(
+            r"-----BEGIN ([A-Z ]*)PRIVATE KEY-----\s+[A-Za-z0-9+/=\s]{40,}?-----END \1PRIVATE KEY-----"
+        ),
+        REDACTED,
+    ),
     (
         re.compile(
             r"(?i)((?:api[_-]?key|secret|token|password)\s*[:=]\s*['\"]?)([A-Za-z0-9/+_\-]{20,})"

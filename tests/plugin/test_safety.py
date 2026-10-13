@@ -50,3 +50,32 @@ def test_scrub_clean_text_unchanged() -> None:
     # Then nothing changes
     assert out == text
     assert changed is False
+
+
+def test_scrub_redacts_a_whole_pem_block() -> None:
+    """Redact an entire PEM private key block, header and body, so no key material survives."""
+    # Given a complete PEM private key block
+    body = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    # Split so a secret scanner does not flag this file as holding a real key.
+    header = "-----BEGIN RSA " + "PRIVATE KEY-----"
+    footer = "-----END RSA " + "PRIVATE KEY-----"
+    text = header + "\n" + "".join(f"{body}\n" for _ in range(4)) + footer
+    # When scrubbed
+    out, changed = scrub(text)
+    # Then the header and every body line are gone and one redaction marks the block
+    assert header not in out
+    assert body not in out
+    assert out.count(REDACTED) == 1
+    assert changed is True
+
+
+def test_scrub_leaves_a_header_alone_in_an_example() -> None:
+    """Leave a bare PEM header in prose untouched, since a setup example names the header without a key."""
+    # Given a setup example that shows only the header line
+    header = "-----BEGIN " + "PRIVATE KEY-----"
+    text = "Paste it here:\n" + header + "\n...\n"
+    # When scrubbed
+    out, changed = scrub(text)
+    # Then the text is unchanged and no change is reported
+    assert out == text
+    assert changed is False
