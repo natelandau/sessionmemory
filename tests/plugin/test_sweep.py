@@ -1390,7 +1390,7 @@ def test_run_job_logs_a_successful_sweep_under_the_worker_name(tmp_path: Path) -
     hooks_log = _capture_log(tmp_path)
     store = store_at(tmp_path)
     target = _target_at(tmp_path / "vault")
-    written = target.project_dir / "note.md"
+    written = target.logs_dir / "note.md"
     sweep = Sweep(
         store,
         SessionMemoryConfig(),
@@ -1489,7 +1489,7 @@ def test_run_job_scrubs_a_file_written_through_bash(tmp_path: Path) -> None:
     """Verify a secret written without a tool report is redacted after the run."""
     store = _job_store(tmp_path)
     target = _target_at(tmp_path / "vault")
-    leaked = target.learnings_dir / "leak.md"
+    leaked = target.logs_dir / "leak.md"
     sweep = Sweep(
         store,
         SessionMemoryConfig(),
@@ -2205,3 +2205,92 @@ def test_run_job_creates_the_project_folder_before_running(tmp_path: Path) -> No
     # Then the folder existed by the time the model was run inside it
     assert runner.cwd_existed is True
     assert project.is_dir()
+
+
+_GOOD_LEARNING = '---\ntitle: "T"\nuuid: u\nsummary: "S"\ncreated: "2026-10-04"\nupdated: "2026-10-04"\n---\n\nBody\n'
+
+
+def test_run_job_quarantines_a_malformed_new_learning(tmp_path: Path) -> None:
+    """Verify a new learning without the page shape is set aside and noted."""
+    store = _job_store(tmp_path)
+    target = _target_at(tmp_path / "vault")
+    bad = target.learnings_dir / "bad-page.md"
+    sweep = Sweep(
+        store,
+        SessionMemoryConfig(),
+        _WritingRunner(lambda: bad.write_text("---\nname: x\n---\nBody\n", encoding="utf-8")),
+        _FakeVault(target),
+    )
+
+    notes = sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="sess-bad"))
+
+    assert not bad.exists()
+    assert f"malformed-quarantined: {bad.resolve()} (unexpected keys: name)" in notes
+    assert len(list((store.state_dir / "quarantine").glob("*-bad-page.md"))) == 1
+
+
+def test_run_job_keeps_a_conformant_new_learning(tmp_path: Path) -> None:
+    """Verify a page with the right shape is left in place."""
+    store = _job_store(tmp_path)
+    target = _target_at(tmp_path / "vault")
+    good = target.learnings_dir / "good-page.md"
+    sweep = Sweep(
+        store,
+        SessionMemoryConfig(),
+        _WritingRunner(lambda: good.write_text(_GOOD_LEARNING, encoding="utf-8")),
+        _FakeVault(target),
+    )
+
+    notes = sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="sess-good"))
+
+    assert good.exists()
+    assert not any(n.startswith("malformed") for n in notes)
+
+
+def test_run_job_restores_a_learning_rewritten_into_auto_memory_shape(tmp_path: Path) -> None:
+    """Verify a committed learning rewritten with the wrong frontmatter returns to HEAD."""
+    vault_root = tmp_path / "vault"
+    store = _job_store(tmp_path)
+    target = _target_at(vault_root)
+    page = target.learnings_dir / "good-page.md"
+    page.write_text(_GOOD_LEARNING, encoding="utf-8")
+    git_env = clean_environ()
+    for args in (
+        ["init", "-q"],
+        ["config", "user.email", "t@e.com"],
+        ["config", "user.name", "T"],
+        ["add", "-A"],
+        ["commit", "-qm", "seed"],
+    ):
+        subprocess.run(["git", *args], cwd=vault_root, check=True, capture_output=True, env=git_env)
+    sweep = Sweep(
+        store,
+        SessionMemoryConfig(),
+        _WritingRunner(
+            lambda: page.write_text("---\nname: x\nmetadata:\n  a: b\n---\nNew\n", encoding="utf-8")
+        ),
+        _FakeVault(target, root=vault_root),
+    )
+
+    notes = sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="sess-auto"))
+
+    assert page.read_text(encoding="utf-8") == _GOOD_LEARNING
+    assert f"malformed-restored: {page.resolve()} (unexpected keys: name, metadata)" in notes
+
+
+def test_run_job_quarantines_a_stray_top_level_file(tmp_path: Path) -> None:
+    """Verify a file written directly in the project folder is set aside."""
+    store = _job_store(tmp_path)
+    target = _target_at(tmp_path / "vault")
+    stray = target.project_dir / "MEMORY.md"
+    sweep = Sweep(
+        store,
+        SessionMemoryConfig(),
+        _WritingRunner(lambda: stray.write_text("index", encoding="utf-8")),
+        _FakeVault(target),
+    )
+
+    notes = sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="sess-stray"))
+
+    assert not stray.exists()
+    assert f"malformed-quarantined: {stray.resolve()} (stray top-level file)" in notes

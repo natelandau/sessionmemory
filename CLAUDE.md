@@ -401,7 +401,10 @@ anything outside the project folder, restoring it from the vault's `HEAD` or qua
 it when git cannot. It then scrubs for secrets by content hash: `snapshot.take` hashes
 the project folder before and after the run, skipping symlinks, and every file whose hash
 changed is scrubbed, which is what catches a write made through Bash, since a Bash write
-never appears in the tool-use stream. A deletion is noted, not undone. A Bash write
+never appears in the tool-use stream. A deletion is noted, not undone. `Sweep._enforce_shapes` then checks what
+`hooks/sessionhooks/shape.py` knows of a page's shape: a new learning, log, or top-level
+file that fails is quarantined, and a modified learning that fails is restored from `HEAD`
+(`_restore_or_quarantine`). A Bash write
 **outside** the project folder, a sibling project's folder foremost, is caught by
 nothing here and is committed by the next hook. Git history is the recovery. The prompt forbids deleting a
 page, and a page the model deletes through Bash is committed as a deletion.

@@ -200,6 +200,14 @@ moved into a quarantine directory rather than deleted. Every file under the proj
 folder whose content changed during the run is then scanned for secret-shaped content and
 redacted in place, which catches a write made through Bash that no tool call reported.
 
+A third check enforces the shape of what the pass wrote. A new file in `learnings/` must
+have a conformant name and frontmatter holding only `title`, `uuid`, `summary`, `created`,
+and `updated`, with a non-blank `title` and `summary`. A new file in `logs/` must have a
+conformant name. A new file directly in the project folder, other than `backlog.md`, is
+stray. Any of these is moved into the quarantine directory. An existing learning the pass
+rewrote into another shape, such as another tool's frontmatter, is restored from the
+vault's git history instead, or quarantined when git has no copy of it.
+
 A Bash write elsewhere in the vault, a sibling project's folder foremost, is caught by
 neither backstop, and the next commit records it. This is a real control against a
 confused agent and a partial one against a deliberately steered one. Git history is what

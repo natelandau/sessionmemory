@@ -32,7 +32,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from sessionhooks import log, snapshot, transcript
+from sessionhooks import log, shape, snapshot, transcript
 from sessionhooks.config import SessionMemoryConfig
 from sessionhooks.paths import is_within_root
 from sessionhooks.runner import LOG_TITLE_ENV, ClaudeRunner
@@ -465,6 +465,7 @@ class Sweep:
             changes = snapshot.diff(before, snapshot.take(target.project_dir))
             _log.debug("claude ran %.1fs", time.time() - started_at)
             notes = self._validate_writes(result.changed_files, target, changes)
+            notes.extend(self._enforce_shapes(changes, target))
             # The sentinel also appears in the transcript the agent summarizes, so
             # an actual write outranks it: a run that wrote something did record.
             if NOTHING_TO_RECORD in result.text and not changes.touched() and not changes.deleted:
@@ -517,21 +518,70 @@ class Sweep:
         quarantined. A path that never existed in the first place has nothing to
         lose, so that case alone reports `escaped` with no file left behind.
         """
-        if self.vault is not None:
-            restore = subprocess.run(  # noqa: S603
-                ["git", "-C", str(self.vault.root), "checkout", "HEAD", "--", str(path)],  # noqa: S607
-                capture_output=True,
-                text=True,
-                timeout=_GIT_TIMEOUT,
-                check=False,
-                env=git_safe_env(os.environ),
-            )
-            if restore.returncode == 0:
-                return "escaped-reverted"
+        if self._git_restore(path):
+            return "escaped-reverted"
         if not path.exists():
             return "escaped"
         self._quarantine(path)
         return "escaped-quarantined"
+
+    def _git_restore(self, path: Path) -> bool:
+        """Check `path` out of the vault's HEAD; True when git restored it."""
+        if self.vault is None:
+            return False
+        restore = subprocess.run(  # noqa: S603
+            ["git", "-C", str(self.vault.root), "checkout", "HEAD", "--", str(path)],  # noqa: S607
+            capture_output=True,
+            text=True,
+            timeout=_GIT_TIMEOUT,
+            check=False,
+            env=git_safe_env(os.environ),
+        )
+        return restore.returncode == 0
+
+    def _restore_or_quarantine(self, path: Path) -> str:
+        """Return `path` to its committed content, or move it aside when git has none."""
+        if self._git_restore(path):
+            return "restored"
+        self._quarantine(path)
+        return "quarantined"
+
+    def _enforce_shapes(self, changes: Changes, target: Target) -> list[str]:
+        """Set aside each written page that lacks the shape its folder requires.
+
+        A new file that fails is quarantined. A modified learning that fails is
+        restored from HEAD, so a good page the model rewrote into another format is
+        not lost; only learnings are checked on edit, since a log or backlog edit
+        keeps its name and has no frontmatter to break.
+        """
+        notes: list[str] = []
+        judged = [(path, True) for path in changes.created]
+        judged += [(path, False) for path in changes.modified]
+        for path, is_new in judged:
+            if not path.exists():
+                continue
+            parent = path.parent
+            if parent == target.learnings_dir.resolve():
+                problem = shape.learning_problem(path)
+            elif parent == target.logs_dir.resolve() and is_new:
+                problem = shape.log_problem(path)
+            elif is_new:
+                problem = shape.stray_problem(path, target.project_dir)
+            else:
+                problem = None
+            if problem is None:
+                continue
+            try:
+                if is_new:
+                    self._quarantine(path)
+                    outcome = "quarantined"
+                else:
+                    outcome = self._restore_or_quarantine(path)
+            except (OSError, subprocess.SubprocessError) as exc:
+                notes.append(f"malformed-unremovable: {path} ({problem}; {exc})")
+                continue
+            notes.append(f"malformed-{outcome}: {path} ({problem})")
+        return notes
 
     def _revert_and_note(self, path: Path, raw: str) -> str:
         """Revert one out-of-root write and phrase the outcome as a note; never raises."""
