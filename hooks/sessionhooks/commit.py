@@ -2,10 +2,11 @@
 
 Replaces the scheduled checkpoint job. SessionStart and SessionEnd call this, and so
 does the sweep worker once its writes are validated, so a page lands in git within the
-session that produced it. The message is built from the staged changes: the subject names
-the project and counts what changed, and the body lists every path. Two hooks committing at once race on git's own index lock;
-the loser reports `index lock` and the next call commits what it left behind. A merge,
-rebase, cherry-pick, revert, or detached HEAD is skipped as well.
+session that produced it. The message is built from the staged changes: the subject
+names the project and counts what changed, and the body lists every path. Two hooks
+committing at once race on git's own index lock; the loser reports `index lock` and the
+next call commits what it left behind. A merge, rebase, cherry-pick, revert, or detached
+HEAD is skipped as well.
 """
 
 from __future__ import annotations

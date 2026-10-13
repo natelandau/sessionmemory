@@ -13,8 +13,8 @@
 
 Commits whatever the last session's sweep and any hand edits left behind, so the
 vault's history is never more than one session behind its files, in every case
-`SessionEnd` does; skipped only while a sweep worker holds the lock, since it
-commits its own writes when it finishes. Then asks the vault CLI to render this
+`SessionEnd` does; skipped only while any project's sweep is running, since the
+commit stages the whole vault and the worker commits when it finishes. Then asks the vault CLI to render this
 project's memory block and returns it as non-blocking `additionalContext`. It
 also records two things the end-of-session sweep cannot recover later: the
 transcript path, so the sweep finds it after a `/clear`, and the commit this
@@ -44,9 +44,9 @@ injects a hint saying so, since every hook fails open and the session would othe
 learn nothing. Fail-open: any error exits 0 rather than wedging session start.
 
 The hook's timeout budgets its worst case: `Store.for_cwd` 5s, `head_commit` 5s,
-two `VaultCLI.discover` handshakes 10s, the vault commit 35s, `VaultCLI.resolve` 5s,
-`VaultCLI.register` 5s, `VaultCLI.inject` 25s, 90s in all; the timeout is 100 to
-stay ahead of that sum. Raising any of those numbers means raising it.
+two `VaultCLI.discover` handshakes 10s, the vault commit 40s (eight git calls at 5s),
+`VaultCLI.resolve` 5s, `VaultCLI.register` 5s, `VaultCLI.inject` 25s, 95s in all; the
+timeout is 100 to stay ahead of that sum. Raising any of those numbers means raising it.
 
 Every decision the hook makes is one line in the shared hooks log, and a crash is
 logged before the fail-open exit.

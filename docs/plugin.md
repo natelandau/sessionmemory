@@ -144,13 +144,13 @@ sweep wrote the commit:
 ```text
 invoice-api: add 1 log, 2 learnings; edit backlog, 1 spec
 
-Made the charge handler idempotent
+Made the charge handler idempotent so a retried webhook never double-bills a customer
 
 edit: projects/invoice-api/backlog.md
 add: projects/invoice-api/learnings/retries-need-idempotency-keys.md
 add: projects/invoice-api/learnings/webhooks-arrive-out-of-order.md
-add: projects/invoice-api/logs/2026-10-13-retry-handling.md
-edit: projects/invoice-api/specs/retries.md
+add: projects/invoice-api/logs/2026-10-13-09-41.md
+edit: projects/invoice-api/specs/2026-10-13-retries.md
 ```
 
 A commit that touches several projects names them and counts every changed file, not
@@ -160,9 +160,9 @@ the kind of change, the vault's own files included:
 billing, invoice-api: update 4 files
 
 edit: _system/registry.toml
-add: projects/billing/learnings/invoices-round-half-up-2.md
-add: projects/invoice-api/learnings/idempotency-keys-expire-2.md
-add: projects/invoice-api/logs/2026-10-13-key-expiry-2.md
+add: projects/billing/learnings/invoices-round-half-up.md
+add: projects/invoice-api/learnings/idempotency-keys-expire-after-a-day.md
+add: projects/invoice-api/logs/2026-10-13-14-05.md
 ```
 
 A change to the vault's own files alone reads `vault: edit 1 file`. A subject over 70
@@ -173,9 +173,11 @@ revert in progress is skipped, because a commit landing in the middle of one bak
 half-resolved state into history. A detached `HEAD` is skipped, because such a commit is
 reachable from nothing once a branch is checked out again. A commit is skipped while any
 project's sweep is running, because a commit stages the whole vault and would record that
-sweep's writes before the sweep checks them. The worker commits when it finishes. Two
-hooks reaching git at the same moment race on git's own `index.lock`, and the loser
-skips. In every case the next hook commits what was left behind.
+sweep's writes before the sweep checks them. A worker that finishes while another
+project's sweep still runs logs `commit skipped: another sweep in progress`, and the last
+worker to finish commits everything. Two hooks reaching git at the same moment race on
+git's own `index.lock`, and the loser skips. In every case the next hook commits what was
+left behind.
 
 ## The sweep's three jobs
 
@@ -190,8 +192,11 @@ is recorded as nothing at all. Then it does three jobs, in order:
 
 1. **Learnings.** One page per durable fact that a future session in this repository
    would otherwise get wrong. Before writing one, the pass reads the repository and the
-   session's own commits, and drops any fact the code, a comment, a config value, a
-   test, or `CLAUDE.md` already states. A decision the session made, and the
+   session's own commits, and searches the repository's `CLAUDE.md`, `AGENTS.md`,
+   `README.md`, and `docs/` for the fact. It drops any fact the code, a comment, a config
+   value, a test, or one of those documents already states. A fact found only in a
+   commit message still counts as unrecorded, since sessions rarely read old commit
+   messages. A decision the session made, and the
    alternatives it rejected, stay in the commit that made them. A fact every session
    needs belongs in the project's `CLAUDE.md`, and the pass records it as a `docs`
    backlog line rather than a page. A fact already recorded is refined in place, never
@@ -216,7 +221,8 @@ The hooks log records each step: `sweep queued: another sweep holds the lock` wh
 worker starts to wait, `sweep dequeued after about Ns` when it gets its turn, and the
 warning `sweep skipped: lock still held after 3600s` when it gives up. The lock is
 released when the worker exits for any reason, so a crashed sweep never blocks the next
-one.
+one. A lock file that cannot be opened at all ends the wait at once, with the warning
+`sweep skipped: lock unavailable: <error>`.
 
 ### What the sweep may write
 
@@ -233,10 +239,13 @@ redacted in place, which catches a write made through Bash that no tool call rep
 A third check enforces the shape of what the pass wrote. A new file in `learnings/` must
 have a conformant name and frontmatter holding only `title`, `uuid`, `summary`, `created`,
 and `updated`, with a non-blank `title` and `summary`. A new file in `logs/` must have a
-conformant name. A new file directly in the project folder, other than `backlog.md`, is
+conformant name. A new file in a sub-directory of either folder is nested, since nothing
+reads a page there. A new file directly in the project folder, other than `backlog.md`, is
 stray. Any of these is moved into the quarantine directory. An existing learning the pass
 rewrote into another shape, such as another tool's frontmatter, is restored from the
-vault's git history instead, or quarantined when git has no copy of it.
+vault's git history instead, or quarantined when git has no copy of it. Files a sync
+tool, an editor, or the operating system leaves behind, such as `.DS_Store`, a Syncthing
+conflict copy, or a name ending in `~`, are left alone.
 
 A Bash write elsewhere in the vault, a sibling project's folder foremost, is caught by
 neither backstop, and the next commit records it. This is a real control against a
@@ -349,10 +358,21 @@ prints and which defaults to `~/.local/state/sessionmemory/hooks.log`. Every hoo
 one line per decision, so a short session shows as `sweep skipped: below threshold` with
 each measure against its floor, and a session the worker swept shows as `sweep finished`
 with the files it changed and the commit it made. A worker that cannot start the pass
-logs the reason on a `sweep skipped` line: no usable CLI, a project lookup that failed or
-ran past 120 seconds, or a project payload missing a path. A `sweep failed` line carries the exit
-code, the start of the result text, and the tail of stderr, which is what tells a missing
-`claude` binary from a timeout or a rejected key.
+logs one of these reasons, exactly as the log prints it:
+
+- `sweep skipped: no CLI: neither PATH nor the plugin shim`
+- `sweep skipped: project timed out after <n>s`, where the project lookup has 120 seconds
+- `sweep skipped: project could not start: <error>`
+- `sweep skipped: project exited <code>: <stderr>`
+- `sweep skipped: project not registered`
+- `sweep skipped: project printed no JSON`
+- `sweep skipped: project payload lacked <key>`
+- `sweep skipped: lock unavailable: <error>`
+- `sweep skipped: lock still held after <n>s`
+
+A `sweep failed` line carries the exit code, the start of the result text, and the tail
+of stderr, which is what tells a missing `claude` binary from a timeout or a rejected key.
+It then names the files the run changed and the commit, as a `sweep finished` line does.
 The log rotates at 1 MB with two backups kept, so it holds weeks of ordinary use. Set
 `log.level` to `debug` to see the version handshake and each git call.
 

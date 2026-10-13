@@ -259,6 +259,9 @@ a per-project `fcntl.flock` on the store's `sweep.lock` while it runs, so a seco
 for the same project queues behind the first rather than being dropped. The kernel
 releases it when the worker exits, however it exits, so nothing ages it out, and the
 file is never deleted, since a waiter would otherwise lock a new file at the same path.
+Only `BlockingIOError` from `flock` means another worker holds it. Any other failure sets
+`Lock.error`, which ends a worker's wait at once and reads as no sweep when a hook decides
+whether to commit, so a lock file that cannot be opened never blocks either.
 
 **A hit is relative to its field, not a fixed distance.** `fieldindex.search` keeps a
 page within `DEFAULT_MAX_DISTANCE` (0.45) only when it also sits `DEFAULT_MIN_MARGIN`
@@ -398,13 +401,16 @@ The sweep may write anywhere inside its own project's folder, which is what a la
 strengthening a memory means. Two backstops run after the model finishes, and neither is
 complete. `Sweep._validate_writes` walks the tool-use stream's reported paths and reverts
 anything outside the project folder, restoring it from the vault's `HEAD` or quarantining
-it when git cannot. It then scrubs for secrets by content hash: `snapshot.take` hashes
-the project folder before and after the run, skipping symlinks, and every file whose hash
+it when git cannot. It then scrubs for secrets by content hash: `snapshot.take` hashes the
+project folder before and after the run, skipping symlinks, and every file whose hash
 changed is scrubbed, which is what catches a write made through Bash, since a Bash write
-never appears in the tool-use stream. A deletion is noted, not undone.
-`Sweep._enforce_shapes` then checks what `hooks/sessionhooks/shape.py` knows of a page's
-shape: a new learning, log, or top-level file that fails is quarantined, and a modified
-learning that fails is restored from `HEAD` (`_restore_or_quarantine`). A Bash write
+never appears in the tool-use stream. A file that cannot be read is recorded as
+`snapshot.UNREADABLE` rather than left out, so it reads as modified and never as created
+or deleted. A deletion is noted, not undone. `Sweep._enforce_shapes` then checks what
+`hooks/sessionhooks/shape.py` knows of a page's shape: a new learning, log, or top-level
+file that fails is quarantined, as is a new file nested below `learnings/` or `logs/`, and
+a modified learning that fails is restored from `HEAD` (`_restore_or_quarantine`). Debris
+that `shape.is_debris` names, mirroring `field.is_debris`, is left alone. A Bash write
 **outside** the project folder, a sibling project's folder foremost, is caught by nothing
 here and is committed by the next hook. Git history is the recovery. The prompt forbids
 deleting a page, and a page the model deletes through Bash is committed as a deletion.
