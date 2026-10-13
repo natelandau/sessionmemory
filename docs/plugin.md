@@ -153,9 +153,19 @@ add: projects/invoice-api/logs/2026-10-13-retry-handling.md
 edit: projects/invoice-api/specs/retries.md
 ```
 
-A commit that touches several projects reads `invoice-api, billing: update 5 files`. A
-change to the vault's own files, such as the project registry, reads `vault: edit 1 file`
-when nothing else changed, and appears only in the body otherwise. A subject over 70
+A commit that touches several projects names them and counts files only, and the vault's
+own files appear in the body but not in the count:
+
+```text
+billing, invoice-api: update 3 files
+
+edit: _system/registry.toml
+add: projects/billing/learnings/invoices-round-half-up.md
+add: projects/invoice-api/learnings/idempotency-keys-expire.md
+add: projects/invoice-api/logs/2026-10-13-key-expiry.md
+```
+
+A change to the vault's own files alone reads `vault: edit 1 file`. A subject over 70
 characters is cut at a separator and ends with `...`.
 
 Four situations are skipped rather than committed. A merge, rebase, cherry-pick, or
