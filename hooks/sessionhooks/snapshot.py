@@ -37,7 +37,7 @@ class Changes:
 
 
 def take(root: Path) -> dict[Path, str]:
-    """Hash every regular file under `root`, skipping index files; never raises.
+    """Hash every regular file under `root`, skipping symlinks and index files; never raises.
 
     The derived `.sqlite3` indexes are rewritten by any read of a field and hold
     nothing a person wrote, so they would only add noise to the diff.
@@ -51,7 +51,8 @@ def take(root: Path) -> dict[Path, str]:
         if ".sqlite3" in path.name:
             continue
         try:
-            if not path.is_file():
+            # A symlink resolves outside the folder, and judging it would move the target.
+            if path.is_symlink() or not path.is_file():
                 continue
             hashes[path.resolve()] = hashlib.sha256(path.read_bytes()).hexdigest()
         except OSError:

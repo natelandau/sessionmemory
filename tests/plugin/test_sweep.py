@@ -1537,7 +1537,30 @@ def test_run_job_scrubs_but_keeps_a_concurrent_edit(tmp_path: Path) -> None:
     assert spec.exists()
     assert "«redacted-secret»" in spec.read_text(encoding="utf-8")
     assert f"secret-redacted: {spec.resolve()}" in notes
-    assert not any(n.startswith(("escaped", "quarantined")) and str(spec) in n for n in notes)
+    assert not any(
+        n.startswith(("escaped", "quarantined")) and str(spec.resolve()) in n for n in notes
+    )
+
+
+def test_run_job_leaves_the_target_of_a_new_symlink_alone(tmp_path: Path) -> None:
+    """Verify a symlink created during the run never moves or edits the file it points at."""
+    store = _job_store(tmp_path)
+    target = _target_at(tmp_path / "vault")
+    outside = tmp_path / "outside.md"
+    outside.write_text("token: ghp_" + "d" * 36, encoding="utf-8")
+    link = target.learnings_dir / "x.md"
+    sweep = Sweep(
+        store,
+        SessionMemoryConfig(),
+        _WritingRunner(lambda: link.symlink_to(outside)),
+        _FakeVault(target),
+    )
+
+    notes = sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="sess-link"))
+
+    assert outside.read_text(encoding="utf-8") == "token: ghp_" + "d" * 36
+    assert not any("escaped" in n or "quarantined" in n for n in notes)
+    assert not (store.state_dir / "quarantine").exists()
 
 
 # ---------------------------------------------------------------------------

@@ -11,8 +11,8 @@ The agent may write anywhere inside this project's vault folder and nowhere else
 tool-reported write outside it is reverted or quarantined. The agent keeps Bash for
 the whole run, and a write made through it never appears in the tool-use stream, so
 the project folder is hashed before and after the run and every file whose hash
-changed is scrubbed for secrets as well. A Bash write outside the project folder is caught by
-nothing here. Every boundary fails open so a sweep never wedges the session.
+changed is scrubbed for secrets as well. A Bash write outside the project folder is
+caught by nothing here. Every boundary fails open so a sweep never wedges the session.
 """
 
 from __future__ import annotations

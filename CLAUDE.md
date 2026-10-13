@@ -398,12 +398,12 @@ The sweep may write anywhere inside its own project's folder, which is what a la
 strengthening a memory means. Two backstops run after the model finishes, and neither is
 complete. `Sweep._validate_writes` walks the tool-use stream's reported paths and reverts
 anything outside the project folder, restoring it from the vault's `HEAD` or quarantining
-it when git cannot. It then scrubs for secrets by content hash: `snapshot.take` hashes the project
-folder before and after the run, and every file whose hash changed is scrubbed, which is
-what catches a write made through Bash, since a Bash write never appears in the tool-use
-stream. A deletion is noted, not undone. A Bash write **outside** the
-project folder, a sibling project's folder foremost, is caught by nothing here and is
-committed by the next hook. Git history is the recovery. The prompt forbids deleting a
+it when git cannot. It then scrubs for secrets by content hash: `snapshot.take` hashes
+the project folder before and after the run, skipping symlinks, and every file whose hash
+changed is scrubbed, which is what catches a write made through Bash, since a Bash write
+never appears in the tool-use stream. A deletion is noted, not undone. A Bash write
+**outside** the project folder, a sibling project's folder foremost, is caught by
+nothing here and is committed by the next hook. Git history is the recovery. The prompt forbids deleting a
 page, and a page the model deletes through Bash is committed as a deletion.
 
 `hooks.json` budgets each hook's own worst case. `SessionStart` runs `Store.for_cwd` (one
