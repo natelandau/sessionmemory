@@ -45,6 +45,16 @@ uv run ruff check src/   # Check code quality
 uv run ruff format src/  # Format code
 ```
 
+Every check duty runs its command through `gated()`, which wraps it in `gate-cache`: a
+check that already passed on the same git tree prints `already passed ... skipping` and
+exits 0, and that skip is a pass, not a check that failed to run. The pre-commit hooks
+call the duties rather than the tools, so hooks, agents, and the terminal share one set
+of markers. A new check gets a duty that calls `gated()`, a local hook running
+`uv run duty <name>`, and its hook id in `PREK_DUTY_HOOKS` so the `prek` duty does not
+run it twice. A marker covers only the tree, so an input git does not track goes in the
+gate name, as the test duty does with the Python version. `GATE_CACHE_DISABLE=1` forces
+a real run; gate-cache is off whenever `CI` is set.
+
 ### CLI Wiring
 
 The root `typer.Typer()` lives in `cli.py`, and its `@app.callback()` holds the global

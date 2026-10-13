@@ -55,26 +55,13 @@ repos:
       - id: end-of-file-fixer
         types: [python]
 
-  - repo: "https://github.com/adrienverge/yamllint.git"
-    rev: v1.38.0
-    hooks:
-      - id: yamllint
-        files: ^.*\.(yaml|yml)$
-        entry: yamllint --strict --config-file .yamllint.yml
-
-  - repo: "https://github.com/astral-sh/ruff-pre-commit"
-    rev: v0.16.10
-    hooks:
-      - id: ruff-check
-      - id: ruff-format
-        args: [--check]
-
   - repo: "https://github.com/adhtruong/mirrors-typos"
     rev: v1.50.3
     hooks:
+      # Files are checked by the typos duty below; this hook covers the commit message only.
       - id: typos
         args: ["--force-exclude"]
-        stages: [commit-msg, pre-commit]
+        stages: [commit-msg]
 
   - repo: "https://github.com/gitleaks/gitleaks"
     rev: v8.30.1
@@ -98,23 +85,60 @@ repos:
       - id: committed
         stages: [commit-msg]
 
+  # Checks with a duty run through it, so gate-cache skips any that already passed on
+  # this tree. Keep these ids in sync with PREK_DUTY_HOOKS in duties.py.
   - repo: local
     hooks:
-      - id: shellcheck
-        name: shellcheck
-        entry: shellcheck --check-sourced --severity=warning
+      - id: ruff
+        name: ruff check
+        entry: uv run duty ruff
         language: system
-        exclude: "reference/"
-        types: [shell]
+        pass_filenames: false
+        types: [python]
+        stages: [pre-commit, pre-push]
+
+      - id: format
+        name: ruff format
+        entry: uv run duty format
+        language: system
+        pass_filenames: false
+        types: [python]
+        stages: [pre-commit, pre-push]
 
       - id: ty
         name: ty
-        entry: uv run ty check src/
-        exclude: "tests/|duties.py|scripts/|src/vclient/_sync/"
+        entry: uv run duty ty
         language: system
+        pass_filenames: false
+        files: ^src/
         types: [python]
+        stages: [pre-commit, pre-push]
 
-      - id: pytest
+      - id: typos
+        name: typos
+        entry: uv run duty typos
+        language: system
+        pass_filenames: false
+        stages: [pre-commit, pre-push]
+
+      - id: yamllint
+        name: yamllint
+        entry: uv run duty yamllint
+        language: system
+        pass_filenames: false
+        types: [yaml]
+        stages: [pre-commit, pre-push]
+
+      - id: shellcheck
+        name: shellcheck
+        entry: uv run duty shellcheck
+        language: system
+        pass_filenames: false
+        files: ^bin/
+        types: [shell]
+        stages: [pre-commit, pre-push]
+
+      - id: test
         name: pytest
         entry: uv run duty test
         language: system
@@ -123,9 +147,11 @@ repos:
           (?x)^(
           src/|
           tests/|
+          hooks/|
           uv\.lock|
           pyproject\.toml
           )
+        stages: [pre-commit, pre-push]
 
       # Workaround until commitizen fixes its commitizen-branch hook (see commitizen #1923).
       # The upstream hook's args contain the literal "$PRE_COMMIT_FROM_REF..$PRE_COMMIT_TO_REF",

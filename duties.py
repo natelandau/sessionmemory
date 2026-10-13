@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import sys
 import tomllib
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from duty import duty, tools
+from duty import duty
 from rich.console import Console
 
 if TYPE_CHECKING:
@@ -25,6 +26,7 @@ PY_SRC_LIST = tuple(str(_) for _ in PY_SRC_PATHS)
 SH_SRC_LIST = tuple(str(_) for _ in sorted(Path("bin").glob("*")) if _.is_file())
 CI = os.environ.get("CI", "0") in {"1", "true", "yes", ""}
 PROJECT_ROOT = Path(__file__).parent
+PREK_DUTY_HOOKS = ("ruff", "format", "ty", "typos", "yamllint", "shellcheck", "test")
 VERSION = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))["project"]["version"]
 
 
@@ -41,6 +43,21 @@ def strip_ansi(text: str) -> str:
 
     # Replace [ with \[ so rich doesn't interpret output as style tags
     return ansi_chars.sub("", text).replace("[", r"\[")
+
+
+def gated(*command: str, name: str | None = None) -> list[str]:
+    """Wrap a command in gate-cache so it skips when it already passed on the same tree.
+
+    gate-cache turns itself off when `CI` is set, so CI always runs the command.
+
+    Args:
+        *command (str): The command and its arguments.
+        name (str | None): A gate name for inputs git does not track. Defaults to the command line.
+
+    Returns:
+        list[str]: The argv to pass to `ctx.run`.
+    """
+    return ["gate-cache", *(["--name", name] if name else []), "--", *command]
 
 
 def pyprefix(title: str) -> str:
@@ -65,54 +82,45 @@ def clean(ctx: Context) -> None:
     ctx.run("rm -rf pip-wheel-metadata")
     ctx.run("find . -type d -name __pycache__ | xargs rm -rf")
     ctx.run("find . -name '.DS_Store' -delete")
+    ctx.run(["gate-cache", "clear"])
 
 
 @duty
 def ruff(ctx: Context) -> None:
     """Check the code quality with ruff."""
     ctx.run(
-        tools.ruff.check(*PY_SRC_LIST, fix=False, config="pyproject.toml"),
+        gated("ruff", "check", "--config", "pyproject.toml", "--no-fix", *PY_SRC_LIST),
         title=pyprefix("code quality check"),
-        command=f"ruff check --config pyproject.toml --no-fix {' '.join(PY_SRC_LIST)}",
     )
 
 
 @duty
 def format(ctx: Context) -> None:  # noqa: A001
-    """Format the code with ruff."""
+    """Check the code formatting with ruff."""
     ctx.run(
-        tools.ruff.format(*PY_SRC_LIST, check=True, config="pyproject.toml"),
+        gated("ruff", "format", "--config", "pyproject.toml", "--check", *PY_SRC_LIST),
         title=pyprefix("code formatting"),
-        command=f"ruff format --config pyproject.toml {' '.join(PY_SRC_LIST)}",
     )
 
 
 @duty
 def ty(ctx: Context) -> None:
     """Check the code with ty."""
-    ctx.run(
-        ["ty", "check", "src/"],
-        title="ty check",
-    )
+    ctx.run(gated("ty", "check", "src/"), title=pyprefix("ty check"))
 
 
 @duty
 def typos(ctx: Context) -> None:
     """Check the code with typos."""
-    ctx.run(
-        ["typos", "--config", ".typos.toml"],
-        title=pyprefix("typos check"),
-        command="typos --config .typos.toml",
-    )
+    ctx.run(gated("typos", "--config", ".typos.toml"), title=pyprefix("typos check"))
 
 
 @duty
 def yamllint(ctx: Context) -> None:
     """Check YAML files with yamllint."""
     ctx.run(
-        ["yamllint", "--strict", "--config-file", ".yamllint.yml", "."],
+        gated("yamllint", "--strict", "--config-file", ".yamllint.yml", "."),
         title=pyprefix("yamllint check"),
-        command="yamllint --strict --config-file .yamllint.yml .",
     )
 
 
@@ -120,17 +128,17 @@ def yamllint(ctx: Context) -> None:
 def shellcheck(ctx: Context) -> None:
     """Check shell scripts with shellcheck."""
     ctx.run(
-        ["shellcheck", "--check-sourced", "--severity=warning", *SH_SRC_LIST],
+        gated("shellcheck", "--check-sourced", "--severity=warning", *SH_SRC_LIST),
         title=pyprefix("shellcheck"),
-        command=f"shellcheck --check-sourced --severity=warning {' '.join(SH_SRC_LIST)}",
     )
 
 
 @duty(skip_if=CI, skip_reason="skip prek in CI environments")
 def prek(ctx: Context) -> None:
     """Run prek hooks."""
+    # Skip the hooks that call a lint duty, since `lint` runs those duties itself
     ctx.run(
-        "PREK_SKIP=ty,pytest,ruff-check prek run --all-files",
+        gated("env", f"PREK_SKIP={','.join(PREK_DUTY_HOOKS)}", "prek", "run", "--all-files"),
         title=pyprefix("prek hooks"),
     )
 
@@ -152,17 +160,20 @@ def update(ctx: Context) -> None:
 @duty()
 def test(ctx: Context, *cli_args: str) -> None:
     """Test package and generate coverage reports."""
+    # The interpreter is not in the tree, so name it to keep one version's pass from skipping another's
+    python = f"python{sys.version_info.major}.{sys.version_info.minor}"
     ctx.run(
-        tools.pytest(
+        gated(
+            "pytest",
             "tests/",
-            config_file="pyproject.toml",
-            color="yes",
-        ).add_args(
+            "-c",
+            "pyproject.toml",
             "--cov",
             "--cov-config=pyproject.toml",
             "--cov-report=xml",
             "--cov-report=term",
             *cli_args,
+            name=shlex.join(["pytest", python, *cli_args]),
         ),
         title=pyprefix("Running tests - this may take a while"),
         capture=CI,
