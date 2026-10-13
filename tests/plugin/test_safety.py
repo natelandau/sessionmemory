@@ -202,3 +202,209 @@ def test_scrub_long_indented_line_without_a_header_is_linear() -> None:
     assert out == text
     assert changed is False
     assert elapsed < 1.0
+
+
+# Split so a secret scanner does not flag this file as holding a real key.
+_PGP_BEGIN = "-----BEGIN PGP " + "PRIVATE KEY BLOCK-----"
+_PGP_END = "-----END PGP " + "PRIVATE KEY BLOCK-----"
+_PGP_ARMOR = ["Version: GnuPG v2", "Comment: exported for backup"]
+
+
+@pytest.mark.parametrize("prefix", ["", "    ", "> "])
+def test_scrub_redacts_a_whole_pgp_private_key_block(prefix: str) -> None:
+    """Verify a PGP private key block is redacted through its armor headers and checksum."""
+    # Given a PGP block with Version and Comment headers, a blank line, and a checksum
+    lines = [_PGP_BEGIN, *_PGP_ARMOR, "", *_PEM_BODY, "=Ab3d", _PGP_END]
+    text = "Key:\n" + "".join(f"{prefix}{line}\n" for line in lines) + "after\n"
+    # When scrubbed
+    out, changed = scrub(text)
+    # Then no armor, body, or checksum line survives and the text around the block is kept
+    assert out == f"Key:\n{REDACTED}\nafter\n"
+    assert changed is True
+
+
+def test_scrub_redacts_an_unterminated_pgp_block_through_its_checksum() -> None:
+    """Verify a PGP block cut off before its END line is redacted through its short checksum."""
+    # Given a PGP block with no END line, ending in its checksum line
+    lines = [_PGP_BEGIN, *_PGP_ARMOR, "", *_PEM_BODY, "=Ab3d"]
+    text = "".join(f"{line}\n" for line in lines)
+    # When scrubbed
+    out, changed = scrub(text)
+    # Then nothing of the block survives, not even the checksum
+    assert out == REDACTED + "\n"
+    assert "Ab3d" not in out
+    assert changed is True
+
+
+def test_scrub_leaves_a_bare_pgp_header_alone() -> None:
+    """Verify a bare PGP header in an example, followed by an ellipsis, is untouched."""
+    # Given a setup example showing only the PGP header
+    text = "Paste it here:\n" + _PGP_BEGIN + "\n...\n"
+    # When scrubbed
+    out, changed = scrub(text)
+    # Then the text is unchanged
+    assert out == text
+    assert changed is False
+
+
+def test_scrub_redacts_the_short_last_line_of_an_unterminated_pem_block() -> None:
+    """Verify an unterminated PEM block loses its final short base64 fragment too."""
+    # Given a PEM block cut off after a short final line of key material
+    header = "-----BEGIN RSA " + "PRIVATE KEY-----"
+    text = header + "\n" + "".join(f"{line}\n" for line in _PEM_BODY) + "xYz0+/==\n"
+    # When scrubbed
+    out, changed = scrub(text)
+    # Then no fragment of the key survives
+    assert out == REDACTED + "\n"
+    assert changed is True
+
+
+def test_scrub_redacts_a_multi_line_short_tail_of_an_indented_block() -> None:
+    """Verify every short trailing line that carries the block's prefix is consumed."""
+    # Given an indented unterminated block ending in two short base64 lines
+    header = "-----BEGIN " + "PRIVATE KEY-----"
+    lines = [header, *_PEM_BODY, "abcd", "ef=="]
+    text = "".join(f"    {line}\n" for line in lines) + "after\n"
+    # When scrubbed
+    out, changed = scrub(text)
+    # Then both short lines are gone and the unprefixed prose after the block is kept
+    assert out == f"{REDACTED}\nafter\n"
+    assert changed is True
+
+
+@pytest.mark.parametrize(
+    ("begin", "end"),
+    [
+        ("-----BEGIN RSA " + "PRIVATE KEY-----", "-----END RSA " + "PRIVATE KEY-----"),
+        (_PGP_BEGIN, _PGP_END),
+    ],
+)
+def test_scrub_redacts_a_json_escaped_block(begin: str, end: str) -> None:
+    """Verify a key block escaped onto one JSON line is redacted from BEGIN through END."""
+    # Given a JSON string holding a key block whose newlines are the two characters \n
+    escaped = "\\n".join([begin, *_PEM_BODY, "=Ab3d", end])
+    text = '{"key": "' + escaped + '\\n", "other": 1}\n'
+    # When scrubbed
+    out, changed = scrub(text)
+    # Then the whole block is one redaction and the JSON around it is intact
+    assert out == '{"key": "' + REDACTED + '\\n", "other": 1}\n'
+    assert changed is True
+
+
+def test_scrub_redacts_a_json_escaped_pgp_block_with_armor_headers() -> None:
+    """Verify a JSON-escaped PGP block is redacted through its armor headers and blank line."""
+    # Given a JSON string holding a PGP block with headers and a blank separator
+    escaped = "\\r\\n".join([_PGP_BEGIN, *_PGP_ARMOR, "", *_PEM_BODY, _PGP_END])
+    text = '{"key": "' + escaped + '"}'
+    # When scrubbed
+    out, changed = scrub(text)
+    # Then nothing of the block survives
+    assert out == '{"key": "' + REDACTED + '"}'
+    assert changed is True
+
+
+def test_scrub_redacts_an_unterminated_json_escaped_block_through_its_run() -> None:
+    """Verify a JSON-escaped block with no END is redacted through the end of its base64 run."""
+    # Given a JSON string holding a key block cut off after a short final fragment
+    header = "-----BEGIN " + "PRIVATE KEY-----"
+    escaped = "\\n".join([header, *_PEM_BODY, "xYz=="])
+    text = '{"key": "' + escaped + '", "n": 2}'
+    # When scrubbed
+    out, changed = scrub(text)
+    # Then the header, body, and fragment are gone and the JSON around them is kept
+    assert out == '{"key": "' + REDACTED + '", "n": 2}'
+    assert changed is True
+
+
+def test_scrub_leaves_a_json_escaped_bare_header_alone() -> None:
+    """Verify a JSON-escaped header followed by an ellipsis is untouched."""
+    # Given a JSON example naming only the header
+    text = '{"hint": "-----BEGIN ' + 'PRIVATE KEY-----\\n...\\n"}'
+    # When scrubbed
+    out, changed = scrub(text)
+    # Then the text is unchanged
+    assert out == text
+    assert changed is False
+
+
+@pytest.mark.parametrize("unit", ["Aa: b\\n", "ab\\n", "\\n"])
+def test_scrub_json_escaped_header_with_many_short_units_is_linear(unit: str) -> None:
+    """Verify a JSON-escaped header followed by many non-key units is unchanged and quick."""
+    # Given a JSON-escaped header followed by 50,000 units that never form a key
+    text = "-----BEGIN " + "PRIVATE KEY-----\\n" + unit * 50_000
+    # When scrubbed
+    started = time.perf_counter()
+    out, changed = scrub(text)
+    elapsed = time.perf_counter() - started
+    # Then the text is unchanged and the scrub finishes well under a second
+    assert out == text
+    assert changed is False
+    assert elapsed < 1.0
+
+
+def test_scrub_many_short_body_lines_without_a_long_line_is_linear() -> None:
+    """Verify a header followed by many short base64 lines and no long line scrubs quickly."""
+    # Given a header followed by 50,000 short lines and no END line
+    text = "-----BEGIN " + "PRIVATE KEY-----\n" + "ab\n" * 50_000
+    # When scrubbed
+    started = time.perf_counter()
+    out, changed = scrub(text)
+    elapsed = time.perf_counter() - started
+    # Then the text is unchanged and the scrub finishes well under a second
+    assert out == text
+    assert changed is False
+    assert elapsed < 1.0
+
+
+def test_scrub_redacts_a_short_tail_after_a_long_line_with_trailing_spaces() -> None:
+    """Verify a short final fragment goes even when the long line above it ends in spaces."""
+    # Given an unterminated block whose long and short lines both carry trailing spaces
+    header = "-----BEGIN " + "PRIVATE KEY-----"
+    text = header + "\n" + "A" * 64 + "  \nZm9vYmFy  \n"
+    # When scrubbed
+    out, changed = scrub(text)
+    # Then no fragment of the key survives
+    assert "Zm9vYmFy" not in out
+    assert out == REDACTED + "  \n"
+    assert changed is True
+
+
+@pytest.mark.parametrize(
+    ("after", "kept"),
+    [("\\nThe end", "\\nThe end"), ("\\nhello-world", "\\nhello-world")],
+)
+def test_scrub_json_tail_never_takes_part_of_a_prose_word(after: str, kept: str) -> None:
+    """Verify an unterminated JSON-escaped block stops before a following prose unit."""
+    # Given an unterminated escaped block, a short fragment, then prose in the same string
+    header = "-----BEGIN " + "PRIVATE KEY-----"
+    escaped = "\\n".join([header, *_PEM_BODY, "abc="]) + after
+    text = '{"key": "' + escaped + '"}'
+    # When scrubbed
+    out, changed = scrub(text)
+    # Then the fragment goes and the prose unit is kept whole
+    assert out == '{"key": "' + REDACTED + kept + '"}'
+    assert changed is True
+
+
+def test_scrub_redacts_a_json_block_that_escapes_slashes() -> None:
+    """Verify a JSON-escaped block whose encoder escaped every slash is redacted in full."""
+    # Given a key block serialized by an encoder that escapes forward slashes
+    begin = "-----BEGIN RSA " + "PRIVATE KEY-----"
+    end = "-----END RSA " + "PRIVATE KEY-----"
+    body = [line.replace("/", "\\/") for line in _PEM_BODY]
+    text = '{"key": "' + "\\n".join([begin, *body, end]) + '\\n"}'
+    # When scrubbed
+    out, changed = scrub(text)
+    # Then the whole block is one redaction
+    assert out == '{"key": "' + REDACTED + '\\n"}'
+    assert changed is True
+
+
+def test_scrub_redacts_an_unterminated_json_block_that_escapes_slashes() -> None:
+    """Verify an unterminated block with escaped slashes is redacted through its run."""
+    header = "-----BEGIN " + "PRIVATE KEY-----"
+    body = [line.replace("/", "\\/") for line in _PEM_BODY]
+    text = '{"key": "' + "\\n".join([header, *body, "x\\/y=="]) + '"}'
+    out, changed = scrub(text)
+    assert out == '{"key": "' + REDACTED + '"}'
+    assert changed is True
