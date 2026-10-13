@@ -208,31 +208,26 @@ def test_run_includes_the_datetime_check(tmp_path):
     assert doctor.unquoted_datetimes in doctor.CHECKS
 
 
-def test_uncounted_backlog_lines_reports_a_bullet_outside_the_item_shape(tmp_path):
-    """Verify a ticked line, an old checkbox line, and an undated bullet are reported with their line numbers, and an item is not."""
+def test_ticked_backlog_lines_reports_only_ticked_lines(tmp_path):
+    """Verify the backlog check reports a ticked line and nothing a person wrote by hand."""
     directory = _learnings(tmp_path)
     backlog = directory.parent / "backlog.md"
     backlog.write_text(
-        "# Backlog\n\n## feat\n\n- [S] open - 2026-09-01 [#a]\n- [x] [S] finished - 2026-09-01\n"
-        "- [ ] [M] old shape - 2026-09-01\n- undated bullet\n  - an indented note\n",
+        "# Backlog\n\n## feat\n\n- [x] done\n- plain prose\n- [M] undated\n  - note\n",
         encoding="utf-8",
     )
 
-    findings = doctor.uncounted_backlog_lines(tmp_path, StubEmbedder())
+    findings = doctor.ticked_backlog_lines(tmp_path, StubEmbedder())
 
-    assert [(f.check, f.path) for f in findings] == [("backlog", str(backlog))] * 3
-    assert findings[0].message.startswith("line 6: ")
-    assert "delete" in findings[0].message
-    assert findings[1].message.startswith("line 7: ")
-    assert findings[2].message.startswith("line 8: ")
-    assert "not counted" in findings[2].message
+    assert [f.message for f in findings] == ["line 5: ticked; finished work is deleted, not ticked"]
+    assert [(f.check, f.path) for f in findings] == [("backlog", str(backlog))]
 
 
-def test_uncounted_backlog_lines_stays_quiet_without_a_backlog(tmp_path):
+def test_ticked_backlog_lines_stays_quiet_without_a_backlog(tmp_path):
     """Verify a project with no backlog.md is not a finding."""
     _learnings(tmp_path)
 
-    assert doctor.uncounted_backlog_lines(tmp_path, StubEmbedder()) == []
+    assert doctor.ticked_backlog_lines(tmp_path, StubEmbedder()) == []
 
 
 def test_run_includes_the_backlog_check(tmp_path):
@@ -243,3 +238,106 @@ def test_run_includes_the_backlog_check(tmp_path):
     findings = doctor.run(tmp_path, StubEmbedder())
 
     assert [f.check for f in findings] == ["backlog"]
+
+
+def _project_file(vault, slug, folder, name, text) -> Path:
+    directory = vault / "projects" / slug / folder
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / name
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_dangling_references_reports_a_missing_runbook(tmp_path):
+    """Verify a spec naming a runbook that does not exist yields one finding."""
+    spec = _project_file(tmp_path, "demo", "specs", "s.md", "see `runbooks/rotate-a-token.md`\n")
+
+    findings = doctor.dangling_references(tmp_path, StubEmbedder())
+
+    assert [(f.check, f.path) for f in findings] == [("reference", str(spec))]
+    assert "line 1" in findings[0].message
+    assert "runbooks/rotate-a-token.md" in findings[0].message
+
+
+def test_dangling_references_resolves_a_named_project(tmp_path):
+    """Verify a mention naming another project resolves inside that project."""
+    _project_file(tmp_path, "a", "learnings", "l.md", "see projects/b/specs/x.md\n")
+    target = _project_file(tmp_path, "b", "specs", "x.md", "x")
+
+    assert doctor.dangling_references(tmp_path, StubEmbedder()) == []
+
+    target.unlink()
+
+    assert len(doctor.dangling_references(tmp_path, StubEmbedder())) == 1
+
+
+def test_dangling_references_accepts_the_vault_absolute_path(tmp_path):
+    """Verify a mention spelled with the vault's absolute path resolves."""
+    target = _project_file(tmp_path, "a", "reference", "hosting.md", "x")
+    _project_file(tmp_path, "a", "specs", "s.md", f"see {target}\n")
+
+    assert doctor.dangling_references(tmp_path, StubEmbedder()) == []
+
+
+def test_dangling_references_ignores_plans(tmp_path):
+    """Verify a mention of a plan is never checked."""
+    _project_file(tmp_path, "a", "specs", "s.md", "see plans/2026-10-01-x.md\n")
+
+    assert doctor.dangling_references(tmp_path, StubEmbedder()) == []
+
+
+def test_dangling_references_ignores_placeholders_and_repository_paths(tmp_path):
+    """Verify placeholders and paths inside a repository are not vault mentions."""
+    text = "specs/<date>-<slug>.md\ndocs/specs/x.md\nweb/src/reference/a.md\n"
+    _project_file(tmp_path, "a", "specs", "s.md", text)
+
+    assert doctor.dangling_references(tmp_path, StubEmbedder()) == []
+
+
+def test_dangling_references_does_not_read_logs_or_plans(tmp_path):
+    """Verify only specs, runbooks, reference, and learnings are scanned."""
+    _project_file(tmp_path, "a", "logs", "l.md", "see specs/missing.md\n")
+    _project_file(tmp_path, "a", "plans", "p.md", "see specs/missing.md\n")
+
+    assert doctor.dangling_references(tmp_path, StubEmbedder()) == []
+
+
+def test_dangling_references_ignores_a_longer_extension(tmp_path):
+    """Verify `specs/foo.mdx` is not read as a mention of `specs/foo.md`."""
+    _project_file(tmp_path, "a", "specs", "s.md", "see specs/foo.mdx and runbooks/bar.md_old\n")
+
+    assert doctor.dangling_references(tmp_path, StubEmbedder()) == []
+
+
+def test_dangling_references_allows_a_sentence_ending_period(tmp_path):
+    """Verify a mention closing a sentence is still checked."""
+    _project_file(tmp_path, "a", "specs", "s.md", "See specs/missing.md.\n")
+
+    findings = doctor.dangling_references(tmp_path, StubEmbedder())
+
+    assert ["specs/missing.md" in f.message for f in findings] == [True]
+
+
+def test_dangling_references_checks_a_log_target(tmp_path):
+    """Verify a mention of a log resolves in `logs/` and is reported when missing."""
+    _project_file(tmp_path, "a", "learnings", "l.md", "from logs/2026-10-01-deploy.md\n")
+
+    findings = doctor.dangling_references(tmp_path, StubEmbedder())
+
+    assert ["logs/2026-10-01-deploy.md" in f.message for f in findings] == [True]
+
+    _project_file(tmp_path, "a", "logs", "2026-10-01-deploy.md", "x")
+
+    assert doctor.dangling_references(tmp_path, StubEmbedder()) == []
+
+
+def test_dangling_references_reports_each_mention_on_one_line(tmp_path):
+    """Verify two missing mentions on one line yield two findings."""
+    _project_file(tmp_path, "a", "specs", "s.md", "see specs/one.md and runbooks/two.md\n")
+
+    findings = doctor.dangling_references(tmp_path, StubEmbedder())
+
+    assert [f.message for f in findings] == [
+        "line 1: names specs/one.md, which does not exist",
+        "line 1: names runbooks/two.md, which does not exist",
+    ]

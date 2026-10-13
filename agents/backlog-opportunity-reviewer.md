@@ -20,9 +20,12 @@ few high-value quick wins worth doing now.
 ## What the caller gives you
 
 - The absolute path to this project's `backlog.md`, and one or more item lines
-  from it, verbatim. An item is one line: `- [S|M|L] <description> - <date>
-  [#topic]`, under a `## <kind>` heading naming its conventional-commit type.
-  Read the file yourself for the section each line sits in.
+  from it, verbatim. An item is one top-level bullet, under any heading or none. Its
+  full shape is `- [S|M|L] <description> - <date> [#topic]`, and the CLI files it
+  under a `## <kind>` heading naming its conventional-commit type, or `## decide` for
+  a question to the user. The size, the date, and the topic may be missing. A
+  missing part is unknown, not malformed. Read the file yourself for the section
+  each line sits in.
 - You run in the project's repo, so you can read code and inspect git history.
 
 ## How to judge
@@ -31,7 +34,8 @@ few high-value quick wins worth doing now.
   a user-facing capability unblocked, recurring friction or risk eliminated. Ground
   it in the actual code, not the wording of the line. Rate high / medium / low.
 - **Effort** - read the code the change would touch and estimate the real size
-  (S / M / L). Note when your estimate disagrees with the line's `[S|M|L]`.
+  (S / M / L). Note when your estimate disagrees with the line's `[S|M|L]`. When the line has
+  no size, your estimate is the only one, so give it.
 - **Recommend now** - a quick win is high (or medium) impact AND small-to-moderate
   effort. Only recommend items that clear that bar.
 

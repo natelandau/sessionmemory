@@ -10,6 +10,8 @@ from typer.testing import CliRunner
 
 from sessionmemory.cli import app
 from sessionmemory.lib import paths as paths_lib
+from sessionmemory.lib import registry
+from sessionmemory.lib.config import today
 
 runner = CliRunner()
 REMOTE = "ssh://git@gitea.example.org:2222/nate/demo.git"
@@ -577,3 +579,72 @@ def test_project_register_creates_the_project_folder_and_its_fields(vault, repo)
     assert paths_lib.project_dir(vault, "demo").is_dir()
     assert paths_lib.learnings_dir(vault, "demo").is_dir()
     assert paths_lib.logs_dir(vault, "demo").is_dir()
+
+
+def test_project_mark_reviewed_records_today(vault, repo):
+    """Verify --mark-reviewed stamps today's date on the resolved project."""
+    runner.invoke(app, ["project", "--register", "--cwd", str(repo)])
+
+    result = runner.invoke(app, ["project", "--mark-reviewed", "--cwd", str(repo)])
+
+    assert result.exit_code == 0
+    assert registry.load(vault)["demo"].reviewed == today()
+    assert result.output == f"✓ reviewed 'demo'\n  └─ root: {repo}\n"
+
+
+def test_project_mark_reviewed_json_reports_the_project(vault, repo):
+    """Verify --mark-reviewed --json records the date and prints the project payload."""
+    runner.invoke(app, ["project", "--register", "--cwd", str(repo)])
+
+    result = runner.invoke(app, ["project", "--mark-reviewed", "--json", "--cwd", str(repo)])
+
+    assert result.exit_code == 0
+    assert registry.load(vault)["demo"].reviewed == today()
+    payload = json.loads(result.stdout)
+    assert payload["slug"] == "demo"
+    assert payload["registered"] is True
+    assert payload["paths"] == paths_lib.project_paths(vault, "demo")
+
+
+def test_register_keeps_another_projects_reviewed_date(vault, repo, tmp_path):
+    """Verify registering a second project does not drop the first one's review date."""
+    runner.invoke(app, ["project", "--register", "--cwd", str(repo)])
+    runner.invoke(app, ["project", "--mark-reviewed", "--cwd", str(repo)])
+    other = tmp_path / "other"
+    other.mkdir()
+
+    result = runner.invoke(app, ["project", "--register", "--cwd", str(other)])
+
+    assert result.exit_code == 0
+    assert registry.load(vault)["demo"].reviewed == today()
+
+
+def test_project_mark_reviewed_outside_a_project_fails(vault, tmp_path):
+    """Verify --mark-reviewed in an unregistered directory exits 1 and writes nothing."""
+    stray = tmp_path / "stray"
+    stray.mkdir()
+
+    result = runner.invoke(app, ["project", "--mark-reviewed", "--cwd", str(stray)])
+
+    assert result.exit_code == 1
+    assert registry.load(vault) == {}
+
+
+def test_project_mark_reviewed_with_register_fails(vault, repo):
+    """Verify --mark-reviewed cannot be combined with --register."""
+    result = runner.invoke(app, ["project", "--mark-reviewed", "--register", "--cwd", str(repo)])
+
+    assert result.exit_code == 1
+    assert registry.load(vault) == {}
+
+
+def test_project_mark_reviewed_with_slug_fails(vault, repo):
+    """Verify --mark-reviewed cannot be combined with --slug."""
+    runner.invoke(app, ["project", "--register", "--cwd", str(repo)])
+    before = registry.load(vault)
+
+    result = runner.invoke(app, ["project", "--mark-reviewed", "--slug", "x", "--cwd", str(repo)])
+
+    assert result.exit_code == 1
+    assert registry.load(vault) == before
+    assert before["demo"].reviewed == ""

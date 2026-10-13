@@ -13,6 +13,7 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -98,6 +99,48 @@ def test_json_output_is_parseable_in_a_colored_shell(colored, arguments):
     assert ESCAPE not in result.stdout
     payload = json.loads(result.stdout)
     assert isinstance(payload, dict | list)
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        pytest.param(["learning", "--title", "prose learning", "--summary", "s"], id="learning"),
+        pytest.param(["spec", "--title", "prose spec"], id="spec"),
+        pytest.param(["plan", "--title", "prose plan"], id="plan"),
+        pytest.param(["runbook", "--title", "prose runbook"], id="runbook"),
+        pytest.param(["reference", "--title", "prose reference"], id="reference"),
+        pytest.param(
+            ["backlog", "--kind", "feat", "--size", "S", "--title", "prose backlog"], id="backlog"
+        ),
+    ],
+)
+def test_new_prose_output_is_unstyled_in_a_colored_shell(colored, arguments):
+    """Verify every `new` subcommand prints its values without escape codes."""
+    env, project = colored
+    result = _run(env, "new", *arguments, "--cwd", str(project))
+
+    assert result.returncode == 0
+    assert ESCAPE not in result.stdout
+    lines = result.stdout.decode().splitlines()
+    assert lines
+    assert Path(lines[-1]).is_file()
+
+
+@pytest.mark.parametrize(
+    ("kind", "tail"),
+    [("project", ""), ("learnings", "/learnings"), ("backlog", "/backlog.md")],
+)
+def test_path_output_is_unstyled_in_a_colored_shell(colored, kind, tail):
+    """Verify path prints a bare, unwrapped path where color is forced."""
+    env, project = colored
+    slug = project.name
+    expected = f"{env['SESSIONMEMORY_VAULT']}/projects/{slug}{tail}\n"
+
+    result = _run(env, "path", kind, "--cwd", str(project))
+
+    assert result.returncode == 0
+    assert ESCAPE not in result.stdout
+    assert result.stdout.decode() == expected
 
 
 def test_version_is_unstyled_in_a_colored_shell(colored):

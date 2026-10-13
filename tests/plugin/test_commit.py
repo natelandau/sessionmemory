@@ -9,7 +9,6 @@ from sessionhooks import commit as commit_module  # ty: ignore[unresolved-import
 from sessionhooks.commit import (  # ty: ignore[unresolved-import]
     CommitOutcome,
     commit_vault,
-    is_repository,
     is_safe_to_commit,
     message,
 )
@@ -78,7 +77,6 @@ def test_commit_vault_excludes_the_derived_index(tmp_path):
 def test_commit_vault_outside_a_repository_is_skipped(tmp_path):
     """Verify a plain directory is left alone."""
     assert commit_vault(tmp_path, env=clean_environ()) == CommitOutcome(reason="not a repository")
-    assert is_repository(tmp_path, env=clean_environ()) is False
 
 
 def test_commit_vault_ignores_an_ambient_git_dir(tmp_path):
@@ -452,3 +450,108 @@ def test_commit_vault_skips_when_only_the_derived_index_changed(tmp_path):
     (root / "index.sqlite3").write_text("x", encoding="utf-8")
 
     assert commit_vault(root, env=clean_environ()) == CommitOutcome(reason="clean")
+
+
+def _tracked(cwd) -> str:
+    return subprocess.run(
+        ["git", "ls-files"], cwd=cwd, capture_output=True, text=True, check=True
+    ).stdout
+
+
+def _write_plan_and_spec(vault: Path) -> None:
+    for relative in ("projects/p/plans/x.md", "projects/p/specs/y.md"):
+        page = vault / relative
+        page.parent.mkdir(parents=True, exist_ok=True)
+        page.write_text("x", encoding="utf-8")
+
+
+def test_commit_vault_excludes_plans_even_without_an_ignore_rule(tmp_path):
+    """Verify a plan never enters git, even with an empty .gitignore."""
+    root = _repo(tmp_path)
+    (root / ".gitignore").write_text("", encoding="utf-8")
+    _write_plan_and_spec(root)
+
+    commit_vault(root, env=clean_environ())
+
+    tracked = _tracked(root).splitlines()
+    assert "projects/p/specs/y.md" in tracked
+    assert "projects/p/plans/x.md" not in tracked
+
+
+def test_commit_vault_excludes_plans_in_a_nested_vault(tmp_path):
+    """Verify a plan is excluded when the vault sits inside a larger repository."""
+    outer = _repo(tmp_path)
+    vault = outer / "vault"
+    _write_plan_and_spec(vault)
+
+    commit_vault(vault, env=clean_environ())
+
+    tracked = _tracked(outer).splitlines()
+    assert "vault/projects/p/specs/y.md" in tracked
+    assert "vault/projects/p/plans/x.md" not in tracked
+
+
+def test_commit_vault_excludes_plans_in_a_vault_under_an_outer_projects_dir(tmp_path):
+    """Verify a vault nested in an outer `projects/` folder still keeps its plans out."""
+    outer = _repo(tmp_path)
+    vault = outer / "projects" / "notes"
+    _write_plan_and_spec(vault)
+
+    commit_vault(vault, env=clean_environ())
+
+    tracked = _tracked(outer).splitlines()
+    assert "projects/notes/projects/p/specs/y.md" in tracked
+    assert "projects/notes/projects/p/plans/x.md" not in tracked
+
+
+def test_commit_vault_stages_the_outer_repository_plans(tmp_path):
+    """Verify the exclusion is anchored to the vault, not to every `projects/*/plans`."""
+    outer = _repo(tmp_path)
+    vault = outer / "vault"
+    _write_plan_and_spec(vault)
+    app_plan = outer / "projects" / "app" / "plans" / "x.md"
+    app_plan.parent.mkdir(parents=True)
+    app_plan.write_text("x", encoding="utf-8")
+
+    commit_vault(vault, env=clean_environ())
+
+    tracked = _tracked(outer).splitlines()
+    assert "projects/app/plans/x.md" in tracked
+    assert "vault/projects/p/plans/x.md" not in tracked
+
+
+def test_commit_vault_excludes_plans_under_a_prefix_with_glob_characters(tmp_path):
+    """Verify a vault folder whose name holds glob characters still keeps its plans out."""
+    outer = _repo(tmp_path)
+    vault = outer / "my [vault]*"
+    _write_plan_and_spec(vault)
+
+    commit_vault(vault, env=clean_environ())
+
+    tracked = _tracked(outer).splitlines()
+    assert "my [vault]*/projects/p/specs/y.md" in tracked
+    assert "my [vault]*/projects/p/plans/x.md" not in tracked
+
+
+def test_plans_exclusion_falls_back_to_any_depth_without_a_prefix():
+    """Verify an unknown prefix falls back to the unanchored plans glob."""
+    assert commit_module._plans_exclusion(None) == ":(exclude,glob)**/projects/*/plans/**"
+    assert commit_module._plans_exclusion("") == ":(top,exclude,glob)projects/*/plans/**"
+    assert commit_module._plans_exclusion("a/") == ":(top,exclude,glob)a/projects/*/plans/**"
+
+
+def test_commit_vault_leaves_an_already_tracked_plan_tracked(tmp_path):
+    """Verify the exclusion does not untrack a plan that was committed earlier."""
+    root = _repo(tmp_path)
+    _write_plan_and_spec(root)
+    _git("add", "-f", "projects/p/plans/x.md", cwd=root)
+    _git("commit", "-q", "-m", "plan", cwd=root)
+    (root / "projects/p/plans/x.md").write_text("edited", encoding="utf-8")
+
+    commit_vault(root, env=clean_environ())
+
+    assert "projects/p/plans/x.md" in _tracked(root).splitlines()
+    status = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=root, capture_output=True, text=True, check=True
+    ).stdout
+    assert " M projects/p/plans/x.md" in status.splitlines()

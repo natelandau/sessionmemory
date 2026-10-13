@@ -9,7 +9,9 @@ import typer
 from nclutils import pp
 
 from sessionmemory.commands._common import (
+    VersionedGroup,
     emit_json,
+    emit_value,
     fail,
     require_project,
     require_vault,
@@ -19,6 +21,7 @@ from sessionmemory.lib import backlog, field, paths
 from sessionmemory.lib.config import now, today
 
 app = typer.Typer(
+    cls=VersionedGroup,
     no_args_is_help=True,
     help="Create a learning, spec, plan, runbook, reference doc, or backlog item.",
 )
@@ -34,7 +37,11 @@ BODY = typer.Option("", "--body", help="Markdown body.")
 BODY_FILE = typer.Option(None, "--body-file", help="Read the body from a file, or stdin for '-'.")
 CWD = typer.Option(None, "--cwd", help="Directory to resolve the project from.")
 JSON = typer.Option(False, "--json", help="Emit JSON instead of prose.")  # noqa: FBT003
-KIND = typer.Option(..., "--kind", help="The commit type heading the item goes under.")
+KIND = typer.Option(
+    ...,
+    "--kind",
+    help="The commit type heading the item goes under, or decide for an open question.",
+)
 SIZE = typer.Option(..., "--size", help="Effort: S, M, or L.")
 DESCRIPTION = typer.Option(..., "--title", help="The imperative description of the work.")
 TOPIC = typer.Option(None, "--topic", help="A topic tag, without the leading hash.")
@@ -47,7 +54,7 @@ def _report(path: Path, *, as_json: bool, uuid: str | None = None) -> None:
             payload["uuid"] = uuid
         emit_json(payload)
         return
-    pp.success(f"created {path.name}", details=[str(path)])
+    emit_value(str(path))
 
 
 @app.command("learning")
@@ -157,6 +164,27 @@ def new_reference(
     )
 
 
+def _warn_about_shape(*, in_use: list[str], title: str, topic: str | None) -> None:
+    """Warn, without blocking the write, about a new topic tag or an overlong description.
+
+    `in_use` is read before the write, since the line just written always carries its own
+    topic.
+    """
+    if topic is not None:
+        tag = topic.strip().removeprefix("#")
+        if tag and in_use and tag not in in_use:
+            pp.warning(
+                f"#{tag} is a new topic in this backlog",
+                details=[f"in use: {', '.join(in_use)}"],
+            )
+    length = len(title.strip())
+    if length > backlog.LONG_DESCRIPTION:
+        pp.warning(
+            f"the description is {length} characters, over the {backlog.LONG_DESCRIPTION} limit",
+            details=["keep a line to one sentence and put detail in a spec"],
+        )
+
+
 @app.command("backlog", help="Add one open item to this project's backlog.md.")
 def new_backlog(
     kind: Kind = KIND,
@@ -175,13 +203,15 @@ def new_backlog(
     vault = require_vault()
     slug = require_project(vault, cwd)
     path = paths.backlog_path(vault, slug)
+    in_use = backlog.topics(path)
     try:
         line = backlog.add_item(
             path, kind=kind.value, size=size.value, description=title, topic=topic, today=today()
         )
     except backlog.BacklogError as error:
         fail(str(error))
+    _warn_about_shape(in_use=in_use, title=title, topic=topic)
     if as_json:
         emit_json({"path": str(path), "line": line})
         return
-    pp.success(f"added to {path.name}", details=[line, str(path)])
+    emit_value(f"{line}\n{path}")

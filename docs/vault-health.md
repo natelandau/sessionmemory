@@ -8,12 +8,13 @@ sessionmemory doctor
 ```
 
 ```
-6 suggestions
+7 suggestions
   ├─ filename: ~/repos/my-vault/projects/invoice-api/learnings/Bad Name.md: not lowercase ascii letters, digits, and hyphens
-  ├─ size: ~/repos/my-vault/projects/invoice-api/learnings/an-oversized-page.md: 9764 bytes; split it, the limit is 8192
+  ├─ size: ~/repos/my-vault/projects/invoice-api/learnings/an-oversized-page.md: 10044 bytes; split it, the limit is 8192
   ├─ datetime: ~/repos/my-vault/projects/invoice-api/learnings/an-undated-page.md: created, updated: unquoted; quote the value
   ├─ project: old-service: root ~/repos/old-service does not exist
-  ├─ backlog: ~/repos/my-vault/projects/invoice-api/backlog.md: line 10: ticked; finished work is deleted, not ticked
+  ├─ backlog: ~/repos/my-vault/projects/invoice-api/backlog.md: line 15: ticked; finished work is deleted, not ticked
+  ├─ reference: ~/repos/my-vault/projects/invoice-api/specs/2026-10-13-move-pdf-rendering-to-a-worker-queue.md: line 8: names runbooks/deploy-the-worker.md, which does not exist
   └─ index: ~/repos/my-vault/projects/invoice-api/learnings: index is behind its pages; run: sessionmemory reindex
 ```
 
@@ -37,7 +38,7 @@ A clean vault says so:
 ]
 ```
 
-## The seven checks
+## The eight checks
 
 Each finding names the check that produced it.
 
@@ -101,23 +102,36 @@ a project and every other command fails.
 
 ### `backlog`
 
-A top-level bullet in a project's `backlog.md` is not in the shape a session start
-counts as an open item: `- [S|M|L] <description> - <YYYY-MM-DD> [#topic]`, with the
-topic optional.
+A top-level bullet in a project's `backlog.md` is ticked as `- [x]`. Every other
+top-level bullet with text counts as an open item at session start, whether or not it
+carries a size, a date, or a topic.
 
 ```
-2 suggestions
-  ├─ backlog: ~/repos/my-vault/projects/invoice-api/backlog.md: line 10: ticked; finished work is deleted, not ticked
-  └─ backlog: ~/repos/my-vault/projects/invoice-api/backlog.md: line 11: not counted as open; the shape is `- [S|M|L] <description> - <YYYY-MM-DD> [#topic]`
+1 suggestion
+  └─ backlog: ~/repos/my-vault/projects/invoice-api/backlog.md: line 15: ticked; finished work is deleted, not ticked
 ```
 
 A ticked `- [x]` line is finished work. Delete it: the backlog has no checkbox, and git
-history is the record of what was done. Any other bullet is a line the session start
-silently leaves out of its count, most often one written by hand without a size or a
-date, or one from before the format dropped its checkbox, as `- [ ] [S] ...`. Rewrite it
-in the shape above, or run `/sessionmemory:backlog`, which deletes ticked lines and
-rewrites checkbox lines before it triages. An indented bullet is a note under an item
-and is not reported.
+history is the record of what was done. You can also run `/sessionmemory:backlog`, which
+deletes ticked lines before it triages. An indented bullet is a note under an item and is
+not reported.
+
+### `reference`
+
+A spec, runbook, reference doc, or learning names a vault file that does not exist, such
+as `runbooks/deploy-the-worker.md` or `specs/2026-09-03-export-invoices.md`. Only a
+mention that starts the line or follows whitespace, a backtick, a quote, `(`, `[`, or `<`
+counts, and the mention ends at `.md`, so a repository path like `docs/specs/x.md`, a
+placeholder like `specs/<slug>.md`, and a longer extension like `specs/x.mdx` do not.
+
+```
+1 suggestion
+  └─ reference: ~/repos/my-vault/projects/invoice-api/specs/2026-10-13-move-pdf-rendering-to-a-worker-queue.md: line 8: names runbooks/deploy-the-worker.md, which does not exist
+```
+
+Either the file was renamed or deleted, or it was never written. Correct the mention to
+the real name, write the missing page, or delete the sentence that points at it. A mention
+of a plan is never reported, since plans are scratch and may be gone by design.
 
 ### `index`
 

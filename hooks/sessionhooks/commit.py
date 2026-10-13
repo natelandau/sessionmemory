@@ -11,6 +11,7 @@ HEAD is skipped as well.
 
 from __future__ import annotations
 
+import re
 import subprocess
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -81,10 +82,36 @@ def _git(
     return proc
 
 
-def is_repository(root: Path, *, env: Mapping[str, str], timeout: int = 10) -> bool:
-    """Report whether `root` is inside a git work tree."""
-    proc = _git(root, "rev-parse", "--is-inside-work-tree", env=env, timeout=timeout)
-    return proc is not None and proc.returncode == 0 and proc.stdout.strip() == "true"
+def _work_tree_prefix(
+    root: Path, *, env: Mapping[str, str], timeout: int
+) -> tuple[bool, str | None]:
+    """Report whether `root` is in a work tree, and its path from the top when git says.
+
+    One call answers both, so the commit's git-call budget does not grow.
+    """
+    proc = _git(
+        root, "rev-parse", "--is-inside-work-tree", "--show-prefix", env=env, timeout=timeout
+    )
+    if proc is None or proc.returncode != 0:
+        return False, None
+    inside, newline, rest = proc.stdout.partition("\n")
+    if inside.strip() != "true":
+        return False, None
+    if not newline or not rest:
+        return True, None
+    return True, rest.split("\n", 1)[0]
+
+
+def _plans_exclusion(prefix: str | None) -> str:
+    """Return the pathspec keeping the vault's plans out, anchored at the vault when known.
+
+    Anchoring keeps an outer repository's own `projects/*/plans` staged when the vault is
+    nested inside it. Without a prefix, plans are excluded at any depth.
+    """
+    if prefix is None:
+        return ":(exclude,glob)**/projects/*/plans/**"
+    escaped = re.sub(r"([*?\[\\])", r"\\\1", prefix)
+    return f":(top,exclude,glob){escaped}projects/*/plans/**"
 
 
 def _unsafe_reason(root: Path, *, env: Mapping[str, str], timeout: int) -> str | None:
@@ -203,7 +230,8 @@ def commit_vault(  # noqa: PLR0911 - each early return names a distinct reason n
     A failed `git add` is not committed over: that would write a commit silently
     missing the one file that needed attention. `note` opens the commit body.
     """
-    if not is_repository(root, env=env, timeout=timeout):
+    inside, prefix = _work_tree_prefix(root, env=env, timeout=timeout)
+    if not inside:
         return CommitOutcome(reason="not a repository")
     unsafe = _unsafe_reason(root, env=env, timeout=timeout)
     if unsafe is not None:
@@ -213,11 +241,19 @@ def commit_vault(  # noqa: PLR0911 - each early return names a distinct reason n
         return CommitOutcome(reason="git unavailable")
     if not status.stdout.strip():
         return CommitOutcome(reason="clean")
-    # The pathspec excludes the derived index rather than trusting .gitignore: a
-    # vault's ignore file may predate the index, since `sessionmemory init` never
-    # overwrites an existing one.
+    # The pathspec excludes the derived index and plans rather than trusting
+    # .gitignore: a vault's ignore file may predate either rule, since
+    # `sessionmemory init` never overwrites an existing one.
     added = _git(
-        root, "add", "-A", "--", ":/", ":(exclude,glob)**/*.sqlite3*", env=env, timeout=timeout
+        root,
+        "add",
+        "-A",
+        "--",
+        ":/",
+        ":(exclude,glob)**/*.sqlite3*",
+        _plans_exclusion(prefix),
+        env=env,
+        timeout=timeout,
     )
     if added is None or added.returncode != 0:
         return CommitOutcome(reason=_failure(added, "add"))

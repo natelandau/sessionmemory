@@ -273,3 +273,63 @@ def test_load_ignores_a_legacy_tags_key(tmp_path):
     )
 
     assert registry.load(tmp_path)["demo"].root == "/r"
+
+
+def test_save_then_load_round_trips_the_review_date(tmp_path):
+    """Verify the review date survives a save and load and is written as a string."""
+    save(tmp_path, {"gx": Project(slug="gx", remotes=(), root="/r", reviewed="2026-10-13")})
+
+    assert load(tmp_path)["gx"].reviewed == "2026-10-13"
+    text = (tmp_path / SYSTEM_DIR / REGISTRY_FILE).read_text(encoding="utf-8")
+    assert 'reviewed = "2026-10-13"' in text
+
+
+def test_save_omits_an_empty_review_date(tmp_path):
+    """Verify a project never reviewed leaves no key in the file."""
+    save(tmp_path, {"gx": Project(slug="gx", remotes=(), root="/r")})
+
+    text = (tmp_path / SYSTEM_DIR / REGISTRY_FILE).read_text(encoding="utf-8")
+    assert "reviewed" not in text
+    assert load(tmp_path)["gx"].reviewed == ""
+
+
+def test_load_reads_a_bare_toml_date_as_an_iso_string(tmp_path):
+    """Verify an unquoted TOML date is read as its `YYYY-MM-DD` string."""
+    _write_raw_registry(tmp_path, "[projects.gx]\nreviewed = 2026-08-01\n")
+    assert load(tmp_path)["gx"].reviewed == "2026-08-01"
+
+
+def test_load_reads_a_bare_toml_datetime_as_its_date(tmp_path):
+    """Verify an unquoted TOML datetime keeps only its date."""
+    _write_raw_registry(tmp_path, "[projects.gx]\nreviewed = 2026-08-01T09:30:00\n")
+    assert load(tmp_path)["gx"].reviewed == "2026-08-01"
+
+
+@pytest.mark.parametrize("value", ["5", "true", "09:30:00", '["2026-08-01"]'])
+def test_load_treats_any_other_review_value_as_never_reviewed(tmp_path, value):
+    """Verify a review value that is neither a string nor a date reads as never reviewed."""
+    _write_raw_registry(tmp_path, f"[projects.gx]\nreviewed = {value}\n")
+    assert load(tmp_path)["gx"].reviewed == ""
+
+
+def test_mark_reviewed_sets_only_that_project(tmp_path):
+    """Verify marking one project leaves the others unreviewed."""
+    save(
+        tmp_path,
+        {
+            "a": Project(slug="a", remotes=(), root="/a"),
+            "b": Project(slug="b", remotes=(), root="/b"),
+        },
+    )
+
+    registry.mark_reviewed(tmp_path, "a", "2026-10-13")
+
+    loaded = load(tmp_path)
+    assert loaded["a"].reviewed == "2026-10-13"
+    assert loaded["b"].reviewed == ""
+
+
+def test_mark_reviewed_rejects_an_unregistered_slug(tmp_path):
+    """Verify an unknown slug raises rather than creating an entry."""
+    with pytest.raises(RegistryError, match="nope"):
+        registry.mark_reviewed(tmp_path, "nope", "2026-10-13")

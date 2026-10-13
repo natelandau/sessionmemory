@@ -76,3 +76,11 @@ def test_the_prompt_does_not_count_a_commit_message_as_a_record():
     assert "or a commit message already states" not in text
     assert "or a commit message that states it" not in text
     assert "only in a commit message is still unrecorded" in text
+
+
+def test_sweep_prompt_routes_open_questions_to_decide():
+    """Verify the deferred-work section names the decide kind and sends user questions under it."""
+    text = " ".join(_rendered_prompt().split())
+
+    assert "## decide" in text
+    assert "ci, decide" in text

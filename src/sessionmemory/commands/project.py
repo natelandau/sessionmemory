@@ -15,8 +15,10 @@ from sessionmemory.commands._common import (
 )
 from sessionmemory.lib import paths as paths_lib
 from sessionmemory.lib import registry
+from sessionmemory.lib.config import today
 from sessionmemory.lib.gitinfo import git_context
 from sessionmemory.lib.ids import slugify
+from sessionmemory.lib.resolve import Resolution
 from sessionmemory.lib.resolve import resolve as resolve_project
 
 CWD_OPTION = typer.Option(None, "--cwd", help="Directory to resolve. Defaults to the shell's.")
@@ -26,6 +28,11 @@ REGISTER_OPTION = typer.Option(
     False,  # noqa: FBT003
     "--register",
     help="Create this directory's registry entry.",
+)
+MARK_REVIEWED_OPTION = typer.Option(
+    False,  # noqa: FBT003
+    "--mark-reviewed",
+    help="Record that this project's learnings were reviewed today.",
 )
 
 
@@ -146,7 +153,14 @@ def _entry_root(vault: Path, slug: str, fallback: Path) -> str:
     return entry.root if entry else str(fallback)
 
 
-def _report(vault: Path, target: Path, action: str | None, *, as_json: bool) -> None:
+def _report(
+    vault: Path,
+    target: Path,
+    action: str | None,
+    *,
+    as_json: bool,
+    resolved: Resolution | None = None,
+) -> None:
     """Print the entry as it now stands, and exit non-zero when there is none.
 
     This is the command's only stdout in either mode, so a write is reported by showing
@@ -158,14 +172,18 @@ def _report(vault: Path, target: Path, action: str | None, *, as_json: bool) -> 
         action (str | None): The verb naming a write that just happened, or None for a
             plain view.
         as_json (bool): Emit the payload instead of prose.
+        resolved (Resolution | None): The directory's resolution when the caller already
+            has one, or None to resolve it here.
 
     Raises:
         Exit: With code 1 when the directory is not registered.
     """
-    try:
-        result = resolve_project(vault, target)
-    except registry.RegistryError as error:
-        report_malformed_registry(vault, error)
+    result = resolved
+    if result is None:
+        try:
+            result = resolve_project(vault, target)
+        except registry.RegistryError as error:
+            report_malformed_registry(vault, error)
 
     project_paths = (
         paths_lib.project_paths(vault, result.slug) if result.registered and result.slug else {}
@@ -307,21 +325,34 @@ def project_command(
     slug: str | None = SLUG_OPTION,
     *,
     register: bool = REGISTER_OPTION,
+    mark_reviewed: bool = MARK_REVIEWED_OPTION,
     as_json: bool = JSON_OPTION,
 ) -> None:
     """Report this directory's project, or create its registry entry.
 
     Raises:
-        Exit: When `--slug` is given without `--register`, when `--register` names a
+        Exit: When `--mark-reviewed` is combined with `--register` or `--slug`, when
+            `--slug` is given without `--register`, when `--register` names a
             directory that does not exist, is a bare repository, or is already
             registered, or with code 1 when the directory has no project.
     """
+    if mark_reviewed and (register or slug is not None):
+        fail("--mark-reviewed cannot be combined with --register or --slug")
     if slug is not None and not register:
         fail("--slug applies only with --register", ["a slug is permanent once notes carry it"])
     vault = require_vault()
     target = _target(cwd)
     action: str | None = None
+    resolved: Resolution | None = None
     if register:
         _register(vault, target, slug)
         action = "registered"
-    _report(vault, target, action, as_json=as_json)
+    elif mark_reviewed:
+        try:
+            resolved = resolve_project(vault, target)
+            if resolved.registered and resolved.slug:
+                registry.mark_reviewed(vault, resolved.slug, today())
+                action = "reviewed"
+        except registry.RegistryError as error:
+            report_malformed_registry(vault, error)
+    _report(vault, target, action, as_json=as_json, resolved=resolved)

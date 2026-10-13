@@ -78,3 +78,17 @@ def test_doctor_json_reports_a_bad_filename(workspace):
     assert len(output) == 1
     assert output[0]["check"] == "filename"
     assert str(directory / "Bad Name.md") in output[0]["path"]
+
+
+def test_doctor_json_reports_a_dangling_reference(workspace):
+    """Verify a mention of a missing vault file appears in doctor --json and exits 0."""
+    vault, _ = workspace
+    directory = vault / "projects" / "demo" / "specs"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "s.md").write_text("see runbooks/gone.md\n", encoding="utf-8")
+
+    result = runner.invoke(app, ["doctor", "--json"])
+
+    assert result.exit_code == 0, result.output
+    output = json.loads(result.stdout)
+    assert [entry["check"] for entry in output] == ["reference"]

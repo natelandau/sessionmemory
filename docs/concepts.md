@@ -27,7 +27,7 @@ commits the vault when a session starts and again when a session ends.
       <date>-<time>.md
       nomic-embed-text-v1.5.sqlite3
     specs/<date>-<slug>.md           plain files, not a field, never indexed
-    plans/<date>-<slug>.md
+    plans/<date>-<slug>.md           scratch (gitignored)
     runbooks/<slug>.md
     reference/<slug>.md
     backlog.md                       a list of open work, not a page
@@ -94,7 +94,9 @@ write `title`, `created`, and `updated`, and nothing else. After that they are o
 files, so edit them directly.
 
 A spec or plan records work at the time it was designed, so its file is named for its
-local creation date and title, as `2026-09-03-export-invoices-as-ubl.md`.
+local creation date and title, as `2026-09-03-export-invoices-as-ubl.md`. A plan is
+scratch for the work it describes, so the vault's `.gitignore` and the plugin's commits
+both keep `plans/` out of git. A spec is committed like any other file.
 
 A runbook is a step-by-step procedure to follow by hand, such as configuring a service or
 rotating a credential. It has its own folder so a procedure someone will run again is not
@@ -109,8 +111,9 @@ edited in place for as long as they are true, so a date in the name would be wro
 the first edit. A title whose name is already taken is refused rather than given a second
 file, since two copies of one living doc drift apart.
 
-`backlog.md` is a list of open work. Each item is one line, grouped under a heading for
-its commit type:
+`backlog.md` is a list of open work. Every top-level bullet with text is an open item,
+whether or not it carries a size, a date, or a topic. The full shape, which
+`sessionmemory new backlog` writes, is grouped under a heading for its commit type:
 
 ```markdown
 # Backlog
@@ -119,19 +122,21 @@ its commit type:
 
 - [M] cache the embedding model between reindex runs - 2026-09-02 [#index]
 
-## docs
+## decide
 
-- [S] document the seven doctor checks - 2026-09-01 [#doctor]
+- [S] Should failed webhooks be retried? - 2026-09-02
 ```
 
 The size is `S`, `M`, or `L`. The heading is one of `feat`, `fix`, `refactor`, `perf`,
-`docs`, `test`, `build`, or `ci`. `sessionmemory new backlog` writes an item in exactly
-that shape, dated, under its heading, and creates the file or the heading when either is
-missing. There is no checkbox: finished work is deleted from the file, the same as work
-that will never happen, and git history is the record of what was done. A session start
-reports how many lines in that shape the file holds, and nothing more; a line in any
-other shape, a ticked `- [x]` line included, is not counted, and `sessionmemory doctor`
-reports it.
+`docs`, `test`, `build`, `ci`, or `decide`. `## decide` holds questions the user has to
+answer before work can start, so a session sees them as a decision to ask for and not as
+a task to begin. `sessionmemory new backlog` writes an item in the full shape, dated,
+under its heading, and creates the file or the heading when either is missing. There is
+no checkbox: finished work is deleted from the file, the same as work that will never
+happen, and git history is the record of what was done. A session start reports how many
+bullets the file holds, and nothing more. An indented bullet is a note under an item and
+is not counted. A ticked `- [x]` line is not an open item either, and
+`sessionmemory doctor` reports it.
 
 ## Logs
 
@@ -187,7 +192,8 @@ migration is needed.
 
 `sessionmemory inject` prints one block: a fixed guidance section that says how to read
 and write the vault, then the title of every learning the project holds, then the name of every reference
-doc, then a count of open backlog items and a count of specs. No summaries, no bodies, no triggers.
+doc and every runbook, then a count of open backlog items and a count of specs. No
+summaries, no bodies, no triggers.
 
 Specs are counted rather than listed because a spec outlives the work it describes. A
 list of them is a changelog rather than open work, and it grows with every feature the
@@ -198,7 +204,14 @@ not mentioned at all. The tool that writes them manages them.
 
 Reference docs are listed by name, because they are few and are edited rather than
 accumulated. A session working on a deploy that sees `reference/hosting.md` knows to read
-it, which a count would not tell it.
+it, which a count would not tell it. Runbooks are listed for the same reason: a session
+that is about to rotate a credential should see that a procedure for it exists.
+
+When a project holds at least 10 learnings and was never reviewed, or was last reviewed
+more than 30 days ago, one line under the titles suggests running `/sessionmemory:review`.
+The guidance also tells a session how to find a path (`sessionmemory path <kind>`), that
+a request to remember something goes through `sessionmemory new learning` and never the
+agent's own memory files, and that the hooks commit the vault.
 
 Titles rather than summaries, because injection is a push channel and must not grow into
 the thing it is trying to save. For a project with 62 pages, titles cost roughly 400

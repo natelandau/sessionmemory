@@ -33,6 +33,9 @@ GITIGNORE = """\
 *.sqlite3
 *.sqlite3-journal
 
+# Plans are scratch for the session that writes them and never belong in history.
+projects/*/plans/
+
 # Obsidian's per-machine window state, which conflicts on every sync.
 .obsidian/workspace*.json
 
@@ -47,9 +50,11 @@ One folder per project under `projects/`. Inside each:
 - `learnings/` is a field: flat markdown pages, embedded and searchable.
 - `logs/` is a second field, one page per session, searched on request.
 - `specs/`, `plans/`, `runbooks/`, `reference/`, and `backlog.md` are plain files, never
-  indexed.
-- `backlog.md` is the list of open items for the project, one line each, sized by
-  effort and grouped by commit type.
+  indexed. `plans/` is scratch and is never committed: `.gitignore` and the plugin's
+  commits both leave it out.
+- `backlog.md` is the list of open items for the project: every top-level bullet is an
+  open item, under any heading or none. A question for the user goes under `## decide`.
+  A finished item is deleted, not ticked.
 
 The `{MODEL_CODE}.sqlite3` file inside a field is its vector index. It is
 derived from the pages beside it, gitignored, and rebuilt by `sessionmemory reindex`.

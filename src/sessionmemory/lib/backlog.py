@@ -1,11 +1,11 @@
 """Append an item to a project's backlog and recognize one.
 
-This is the one place the item line's shape is known. A backlog line carries a kind that
-must match a `## <kind>` heading, a size from a fixed set, a date, and a topic tag, and
-the inject count, the doctor check, and the backlog skill all depend on that shape being
-exact. The line has no checkbox: finished work is deleted, and git history is the
-record of it, so there is nothing to tick. Deleting a line needs no validation and
-stays a direct edit.
+This is the one place the item line's shape is known. A line written here carries a size
+from a fixed set, a date, and an optional topic tag under a `## <kind>` heading. Counting
+does not depend on that shape: a person writes lines by hand, often as plain prose, and
+every top-level bullet with text is an item. The line has no checkbox: finished work is
+deleted, and git history is the record of it, so there is nothing to tick. Deleting a
+line needs no validation and stays a direct edit.
 """
 
 from __future__ import annotations
@@ -18,13 +18,12 @@ from sessionmemory.lib import atomic
 if TYPE_CHECKING:
     from pathlib import Path
 
-KINDS = ("feat", "fix", "refactor", "perf", "docs", "test", "build", "ci")
+KINDS = ("feat", "fix", "refactor", "perf", "docs", "test", "build", "ci", "decide")
 SIZES = ("S", "M", "L")
 HEADING = "# Backlog"
-ITEM_PATTERN = re.compile(
-    rf"^- \[(?:{'|'.join(SIZES)})\] \S.* - \d{{4}}-\d{{2}}-\d{{2}}(?: \[#[^\s\]]+\])?$"
-)
 _SECTION_PREFIX = "## "
+LONG_DESCRIPTION = 200
+_TOPIC_TAG = re.compile(r"\[#([^\s\]]+)\]")
 
 
 class BacklogError(ValueError):
@@ -46,8 +45,8 @@ def format_item(*, kind: str, size: str, description: str, topic: str | None, to
         str: The line, without a trailing newline.
 
     Raises:
-        BacklogError: A field is empty, spans lines, contains whitespace where a tag
-            cannot, or names an unknown kind or size.
+        BacklogError: A field is empty, spans lines, contains whitespace or a bracket
+            where a tag cannot, or names an unknown kind or size.
     """
     if kind not in KINDS:
         msg = f"kind must be one of {', '.join(KINDS)}, not {kind!r}"
@@ -72,20 +71,41 @@ def format_item(*, kind: str, size: str, description: str, topic: str | None, to
     if any(character.isspace() for character in topic):
         msg = "the topic cannot contain whitespace"
         raise BacklogError(msg)
+    if "[" in topic or "]" in topic:
+        msg = f"the topic cannot contain a bracket, which ends its [#topic] tag: {topic!r}"
+        raise BacklogError(msg)
     return f"{line} [#{topic}]"
 
 
 def is_item(line: str) -> bool:
-    """Return whether `line` is an open item, the only shape the session start counts.
+    """Return whether `line` is an open item, the only lines the session start counts.
 
     Args:
-        line (str): One line of `backlog.md`; leading whitespace is ignored.
+        line (str): One line of `backlog.md`.
 
     Returns:
-        bool: True for `- [S|M|L] <description> - <YYYY-MM-DD>` with an optional
-            `[#topic]`, and False for anything else, a checkbox included.
+        bool: True for a bullet at column 0 with text after an optional empty `[ ]` box,
+            whatever size, date, or topic it carries. False for a ticked `- [x]` line,
+            an indented sub-bullet, an empty bullet, and anything that is not a bullet.
     """
-    return ITEM_PATTERN.match(line.lstrip()) is not None
+    if not line.startswith("- ") or line.startswith(("- [x]", "- [X]")):
+        return False
+    return bool(line.removeprefix("- ").removeprefix("[ ]").strip())
+
+
+def topics(path: Path) -> list[str]:
+    """Return the sorted distinct `[#topic]` tags on the item lines of a backlog.
+
+    Args:
+        path (Path): The project's `backlog.md`.
+
+    Returns:
+        list[str]: The tags without their hash, empty when the file is missing.
+    """
+    if not path.is_file():
+        return []
+    lines = path.read_text(encoding="utf-8").splitlines()
+    return sorted({tag for line in lines if is_item(line) for tag in _TOPIC_TAG.findall(line)})
 
 
 def _insert(lines: list[str], kind: str, item: str) -> list[str]:
