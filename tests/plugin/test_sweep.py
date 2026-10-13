@@ -299,6 +299,41 @@ def test_run_job_gives_up_at_once_when_the_lock_is_unavailable(
     )
 
 
+def test_run_job_stops_waiting_when_the_lock_becomes_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify a queued worker stops polling once the lock fails for a reason other than contention."""
+    # Given a lock another worker holds, whose file stops opening while this one waits
+    hooks_log = _capture_log(tmp_path)
+    store = _job_store(tmp_path)
+    held = Lock(store.lock_path)
+    assert held.acquire() is True
+    waits: list[float] = []
+
+    def _sleep(seconds: float) -> None:
+        waits.append(seconds)
+        _deny_open(monkeypatch, store.lock_path)
+
+    runner = _RecordingRunner()
+    sweep = Sweep(
+        store,
+        SessionMemoryConfig(),
+        runner,
+        _FakeVault(_target_at(tmp_path / "vault")),
+        sleep=_sleep,
+    )
+    try:
+        # When the worker runs
+        notes = sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id=""))
+    finally:
+        held.release()
+    # Then it gave up after one poll without running
+    assert notes == []
+    assert waits == [sweep_mod.QUEUE_POLL]
+    assert runner.prompt is None
+    assert "sweep skipped: lock unavailable: " in hooks_log_text(hooks_log)
+
+
 # ---------------------------------------------------------------------------
 # in_progress
 # ---------------------------------------------------------------------------
