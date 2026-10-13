@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from sessionmemory.lib import field, inject
+import pytest
+
+from sessionmemory.lib import field, inject, registry
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -40,13 +42,13 @@ def _project(vault: Path) -> Path:
 
 
 def test_build_lists_titles_sorted_and_counts_open_backlog_and_specs(tmp_path):
-    """Verify titles come from the pages, sorted, only lines in the item shape count as open, and specs are counted rather than listed."""
+    """Verify titles come from the pages, sorted, every top-level unticked bullet counts as open, and specs are counted rather than listed."""
     _project(tmp_path)
 
     result = inject.build(tmp_path, "demo")
 
     assert result.titles == ("Alpha learning", "Beta learning")
-    assert result.open_backlog == 2
+    assert result.open_backlog == 3
     assert result.specs == 2
 
 
@@ -69,7 +71,7 @@ def test_render_leads_with_guidance_and_names_the_command(tmp_path):
     assert "/x/bin/sessionmemory search" in text
     assert "## What this project knows" in text
     assert "  - Alpha learning\n  - Beta learning" in text
-    assert "2 open backlog items" in text
+    assert "3 open backlog items" in text
     assert "2 specs in specs/" in text
 
 
@@ -137,18 +139,142 @@ def test_render_singular_spec(tmp_path):
 
 
 def test_guidance_teaches_the_backlog_line_and_the_project_paths():
-    """Verify the guidance carries what no skill can be counted on to load: the backlog item shape and where every file lives."""
+    """Verify the guidance carries what no skill can be counted on to load: the backlog shape, the paths, and the vault rules."""
     text = inject.GUIDANCE.format(command="sessionmemory")
+    # Phrases are matched with whitespace collapsed so a reflow of the text cannot break them.
+    flat = " ".join(text.split())
 
-    assert "`- [S] <imperative description> - <YYYY-MM-DD> [#topic]`" in text
-    assert "- [ ]" not in text
-    assert "Delete a finished line" in text
-    assert "`## <kind>` heading" in text
-    assert "sessionmemory new backlog --kind <kind> --size <S|M|L>" in text
-    assert "# Backlog" not in text
-    assert "sessionmemory project --json" in text
-    assert "--logs" in text
-    assert "--read" in text
+    assert "`- [S] <imperative description> - <YYYY-MM-DD> [#topic]`" in flat
+    assert "- [ ]" not in flat
+    assert "Delete a finished line" in flat
+    assert "`## <kind>` heading" in flat
+    assert "sessionmemory new backlog --kind <kind> --size <S|M|L>" in flat
+    assert "# Backlog" not in flat
+    assert "sessionmemory path <kind>" in flat
+    assert "project --json" in flat
+    assert "--logs" in flat
+    assert "--read" in flat
+    assert "remember" in flat
+    assert "new learning" in flat
+    assert "## decide" in flat
+    assert "feat, fix, refactor, perf, docs, test, build, ci, decide" in flat
+    assert "top-level bullet" in flat
+    assert "must carry a date" not in flat
+    bullets = text.split("\n  - ")
+    assert any("commit" in bullet and "vault" in bullet for bullet in bullets)
+
+
+def _learnings(vault: Path, count: int) -> None:
+    for number in range(count):
+        field.new_page(
+            vault / "projects" / "demo" / "learnings",
+            title=f"Learning {number:02d}",
+            summary="s",
+            body="",
+            now=NOW,
+        )
+
+
+def test_build_lists_every_runbook_by_filename(tmp_path):
+    """Verify runbooks are listed by filename under the same rule as reference docs."""
+    runbooks = tmp_path / "projects" / "demo" / "runbooks"
+    field.new_living_document(runbooks, title="Deploy", body="", now=NOW)
+    (runbooks / "Rotate A Token.md").write_text("# Rotate\n", encoding="utf-8")
+    (runbooks / "diagram.png").write_bytes(b"")
+    (runbooks / ".DS_Store").write_bytes(b"")
+    (runbooks / "._deploy.md").write_bytes(b"")
+
+    result = inject.build(tmp_path, "demo")
+
+    assert result.runbooks == ("Rotate A Token.md", "deploy.md")
+
+
+def test_render_lists_runbooks_under_their_folder():
+    """Verify runbooks render under their own heading, and the heading is absent when there are none."""
+    text = inject.render(
+        inject.Injection("demo", (), 0, 0, (), runbooks=("rotate-a-token.md",)),
+        command="sessionmemory",
+    )
+
+    assert "## Runbooks\n\n  runbooks/rotate-a-token.md" in text
+    assert "## Runbooks" not in inject.render(
+        inject.Injection("demo", (), 0, 0, ()), command="sessionmemory"
+    )
+
+
+def test_review_is_due_with_ten_learnings_never_reviewed(tmp_path):
+    """Verify ten learnings and no review date makes a review due and names the slash command."""
+    _learnings(tmp_path, 10)
+
+    result = inject.build(tmp_path, "demo", today="2026-10-13")
+    text = inject.render(result, command="sessionmemory")
+
+    assert result.review_due is True
+    assert result.reviewed == ""
+    assert "never" in text
+    assert "/sessionmemory:review" in text
+
+
+def test_review_is_not_due_below_ten_learnings(tmp_path):
+    """Verify nine learnings never prompt a review."""
+    _learnings(tmp_path, 9)
+
+    result = inject.build(tmp_path, "demo", today="2026-10-13")
+
+    assert result.review_due is False
+    assert "/sessionmemory:review" not in inject.render(result, command="sessionmemory")
+
+
+@pytest.mark.parametrize(("reviewed", "due"), [("2026-09-12", True), ("2026-09-13", False)])
+def test_review_is_due_after_thirty_days(tmp_path, reviewed, due):
+    """Verify a review is due only when more than thirty days have passed since the last."""
+    _learnings(tmp_path, 10)
+    registry.save(
+        tmp_path,
+        {"demo": registry.Project(slug="demo", root="/r", remotes=(), reviewed=reviewed)},
+    )
+
+    result = inject.build(tmp_path, "demo", today="2026-10-13")
+
+    assert result.reviewed == reviewed
+    assert result.review_due is due
+
+
+def test_review_with_an_unparsable_date_counts_as_never(tmp_path):
+    """Verify a malformed reviewed date is treated as never reviewed rather than raising."""
+    _learnings(tmp_path, 10)
+    registry.save(
+        tmp_path,
+        {"demo": registry.Project(slug="demo", root="/r", remotes=(), reviewed="soon")},
+    )
+
+    assert inject.build(tmp_path, "demo", today="2026-10-13").review_due is True
+
+
+@pytest.mark.parametrize("content", [b"[demo\nbroken", b"\xff\xfe\x00bad"])
+def test_review_survives_a_registry_that_cannot_be_read(tmp_path, content):
+    """Verify an invalid or undecodable registry reads as never reviewed rather than raising."""
+    _learnings(tmp_path, 10)
+    registry_file = tmp_path / "_system" / "registry.toml"
+    registry_file.parent.mkdir(parents=True, exist_ok=True)
+    registry_file.write_bytes(content)
+
+    result = inject.build(tmp_path, "demo", today="2026-10-13")
+
+    assert result.reviewed == ""
+    assert result.review_due is True
+
+
+def test_render_puts_the_review_line_after_the_titles(tmp_path):
+    """Verify the nudge follows the last title and precedes the open work."""
+    _learnings(tmp_path, 10)
+
+    text = inject.render(
+        inject.build(tmp_path, "demo", today="2026-10-13"), command="sessionmemory"
+    )
+
+    assert text.index("/sessionmemory:review") > text.index("Learning 09")
+    assert text.index("/sessionmemory:review") < text.index("## Open work")
 
 
 def test_titles_sort_by_their_first_word_not_their_first_character(tmp_path):

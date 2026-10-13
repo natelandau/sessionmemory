@@ -55,6 +55,9 @@ def test_inject_json_names_the_same_fields_as_the_prose(workspace):
     assert payload["open_backlog"] == 0
     assert payload["specs"] == 0
     assert payload["reference"] == []
+    assert payload["runbooks"] == []
+    assert payload["reviewed"] == ""
+    assert payload["review_due"] is False
     assert "plans" not in payload
     assert "/x/sessionmemory search" in payload["guidance"]
 

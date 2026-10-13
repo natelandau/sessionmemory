@@ -166,8 +166,7 @@ sessionmemory new learning \
 ```
 
 ```
-✓ created stripe-retries-a-webhook-for-72-hours-so-the-handler-must-be-idempotent.md
-  └─ ~/repos/my-vault/projects/invoice-api/learnings/stripe-retries-a-webhook-for-72-hours-so-the-handler-must-be-idempotent.md
+~/repos/my-vault/projects/invoice-api/learnings/stripe-retries-a-webhook-for-72-hours-so-the-handler-must-be-idempotent.md
 ```
 
 The vault path is shortened to `~` here; the command prints absolute paths.
@@ -179,7 +178,7 @@ and the summary is what a search result shows. Both state the fact and not the t
 ## What a session sees
 
 `sessionmemory inject` prints the block a session starts with. This is the block for a
-project holding four learnings, one spec, one plan, one reference doc, and two open
+project holding one learning, one spec, one reference doc, one runbook, and four open
 backlog items:
 
 ```
@@ -189,8 +188,9 @@ Durable memory for this project lives in a vault of markdown pages. Nothing belo
 loaded for you: the titles are what the vault holds, and each is one `sessionmemory search`
 away. The project's folder has `learnings/` and `logs/`, searched by meaning, beside
 `specs/`, `runbooks/`, `reference/`, and `backlog.md`, which are ordinary files you Read
-and Edit.
-`sessionmemory project --json` prints every path.
+and Edit. `sessionmemory path <kind>` prints one path, where kind is project, learnings,
+logs, specs, runbooks, reference, or backlog; `sessionmemory project --json` prints
+them all for a script.
 
   - Before assuming nothing was written down, search: `sessionmemory search "<words>"`
     prints each hit's path, title, and summary, and `--read` prints every hit's whole
@@ -200,11 +200,13 @@ and Edit.
   - Past sessions, one page each: `sessionmemory search "<words>" --logs`. Search them
     for why something was decided, what happened the last time an area changed, or
     whether a fix was already tried.
-  - Open work: read `backlog.md`. An item is one line under a `## <kind>` heading
-    (feat, fix, refactor, perf, docs, test, build, ci), sized S, M, or L:
-    `- [S] <imperative description> - <YYYY-MM-DD> [#topic]`. Add one with
+  - Open work: read `backlog.md`. Any top-level bullet is an open item. Under a
+    `## <kind>` heading (feat, fix, refactor, perf, docs, test, build, ci, decide), the
+    full shape is sized S, M, or L: `- [S] <imperative description> - <YYYY-MM-DD> [#topic]`.
+    Add one with
     `sessionmemory new backlog --kind <kind> --size <S|M|L> --title "..." --topic <topic> --cwd .`,
-    which creates the file or heading when missing. Delete a finished line, and one
+    which writes that shape and creates the file or heading when missing. Questions
+    for the user to answer go under `## decide`. Delete a finished line, and one
     that will never be done, directly; never tick or annotate it. Git history is the
     record of what was finished.
   - Specs: `specs/` holds one design record per feature, named `<date>-<topic>.md`
@@ -222,25 +224,29 @@ and Edit.
     whose name matches. Keep a doc current by editing it in place. Create one with
     `sessionmemory new reference --title "..." --cwd .`, which prints its path. Public
     documentation stays in the repository.
+  - The hooks commit the vault. Do not commit it, and do not tell the user vault
+    changes are left uncommitted.
   - Learnings are captured at session end, not by you mid-session. When the user asks
-    to keep one now: `sessionmemory new learning --title "..." --summary "..." --cwd .`
+    you to remember something about this project, or to keep a learning now, never
+    use your own memory files: `sessionmemory new learning --title "..." --summary "..." --cwd .`
     creates the page and prints the path to write prose into. Title and summary state
     the fact, not the topic. Keep a page under 8KB; more detail is another page.
 
 ## What this project knows
 
-  - Invoice numbers come from a Postgres sequence, never from max(id) plus one
-  - pytest-asyncio needs asyncio_mode = auto or every async test is skipped
-  - Stripe retries a webhook for 72 hours, so the handler must be idempotent
-  - The nightly reconciliation job must start after the 02:00 bank feed
+  - Stripe retries a webhook for 72 hours
 
 ## Reference docs
 
   reference/hosting.md
 
+## Runbooks
+
+  runbooks/rotate-the-stripe-webhook-signing-secret.md
+
 ## Open work
 
-  2 open backlog items
+  4 open backlog items
   1 spec in specs/
 ```
 
