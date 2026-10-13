@@ -7,7 +7,7 @@ unquoted, so a value's type would depend on whether the note had been round trip
 
 from __future__ import annotations
 
-import datetime
+import datetime as dt
 from typing import TYPE_CHECKING, Any
 
 import yaml
@@ -36,7 +36,7 @@ def _stringify_dates(value: Any) -> Any:  # noqa: ANN401
     Returns:
         Any: The same structure with dates replaced by ISO strings.
     """
-    if isinstance(value, datetime.date):
+    if isinstance(value, dt.date):
         return value.isoformat()
     if isinstance(value, dict):
         return {k: _stringify_dates(v) for k, v in value.items()}
@@ -140,7 +140,7 @@ def unquoted_datetime_keys(text: str) -> list[str]:
         FrontmatterError: If the block is missing, unterminated, or not a mapping.
     """
     raw_meta, _body = _split(text)
-    return [key for key, value in _load(raw_meta).items() if isinstance(value, datetime.date)]
+    return [key for key, value in _load(raw_meta).items() if isinstance(value, dt.date)]
 
 
 def serialize(meta: Mapping[str, Any], body: str) -> str:

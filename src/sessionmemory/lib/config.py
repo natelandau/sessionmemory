@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import datetime
+import datetime as dt
 import os
 import tomllib
 from pathlib import Path
@@ -91,7 +91,7 @@ def today() -> str:
     Returns:
         str: Today's date.
     """
-    return datetime.datetime.now().astimezone().date().isoformat()
+    return dt.datetime.now().astimezone().date().isoformat()
 
 
 def now() -> str:
@@ -100,7 +100,7 @@ def now() -> str:
     Second precision and a `Z` suffix: PyYAML quotes a value of this shape on dump, which
     is what keeps a YAML 1.1 parser from coercing it to a datetime on the way back in.
     """
-    stamp = datetime.datetime.now(tz=datetime.UTC).replace(microsecond=0)
+    stamp = dt.datetime.now(tz=dt.UTC).replace(microsecond=0)
     return stamp.isoformat().replace("+00:00", "Z")
 
 

@@ -10,7 +10,7 @@ path that happens to contain a colon followed by digits is never mistaken for on
 from __future__ import annotations
 
 import contextlib
-import datetime
+import datetime as dt
 import fcntl
 import os
 import re
@@ -25,7 +25,7 @@ from sessionmemory.lib import atomic, ids
 from sessionmemory.lib.paths import SYSTEM_DIR
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Iterator, Mapping
+    from collections.abc import Generator, Iterable, Mapping
 
 REGISTRY_FILE = "registry.toml"
 
@@ -121,9 +121,9 @@ def _reviewed(value: object) -> str:
     """
     if isinstance(value, str):
         return value
-    if isinstance(value, datetime.datetime):
+    if isinstance(value, dt.datetime):
         return value.date().isoformat()
-    if isinstance(value, datetime.date):
+    if isinstance(value, dt.date):
         return value.isoformat()
     return ""
 
@@ -215,7 +215,7 @@ def save(vault: Path, projects: Mapping[str, Project]) -> None:
 
 
 @contextlib.contextmanager
-def locked(vault: Path) -> Iterator[None]:
+def locked(vault: Path) -> Generator[None]:
     """Hold the registry's write lock for a whole load, modify, and save.
 
     Every writer rewrites the one shared file from what it loaded, so two writers

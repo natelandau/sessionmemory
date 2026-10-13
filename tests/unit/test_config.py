@@ -140,7 +140,7 @@ def test_is_initialized_false_for_a_corrupt_marker(tmp_path):
 
 def test_today_is_the_local_date(monkeypatch):
     """Verify today() follows the process's time zone rather than UTC."""
-    import datetime
+    import datetime as dt
     import time
     import zoneinfo
 
@@ -150,7 +150,7 @@ def test_today_is_the_local_date(monkeypatch):
         monkeypatch.setenv("TZ", zone)
         time.tzset()
         dates[zone] = config.today()
-        assert dates[zone] == datetime.datetime.now(tz=zoneinfo.ZoneInfo(zone)).date().isoformat()
+        assert dates[zone] == dt.datetime.now(tz=zoneinfo.ZoneInfo(zone)).date().isoformat()
     monkeypatch.delenv("TZ")
     time.tzset()
 

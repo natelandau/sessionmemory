@@ -14,7 +14,7 @@ title and headings, since a spec's body is too long and too uniform to embed who
 
 from __future__ import annotations
 
-import datetime
+import datetime as dt
 import hashlib
 import json
 import sqlite3
@@ -136,7 +136,7 @@ def _embedding_text(field_dir: Path, path: Path, text: str) -> str:
 
 
 def _mtime_iso(path: Path) -> str:
-    stamp = datetime.datetime.fromtimestamp(path.stat().st_mtime, tz=datetime.UTC)
+    stamp = dt.datetime.fromtimestamp(path.stat().st_mtime, tz=dt.UTC)
     return stamp.replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
