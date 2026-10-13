@@ -1589,6 +1589,26 @@ def test_run_sweep_pins_the_resolved_vault_root_for_the_agent(tmp_path: Path, mo
     assert captured["extra_env"] == {sweep_mod.ROOT_ENV: str(root)}
 
 
+def test_run_sweep_builds_the_runner_with_the_configured_timeout(
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    """Verify the sweep's runner is constructed with the configured timeout."""
+    # Given a located vault and a config with a custom timeout
+    root = tmp_path / "vault-root"
+    (root / "_system").mkdir(parents=True)
+    (root / "_system" / "vault.toml").write_text("", encoding="utf-8")
+    runner_cls = mocker.patch.object(sweep_mod, "ClaudeRunner", autospec=True)
+    # When the sweep is wired up
+    sweep_mod.run_sweep(
+        {"cwd": str(tmp_path), "transcript_path": ""},
+        env={"XDG_STATE_HOME": str(tmp_path / "state"), sweep_mod.ROOT_ENV: str(root)},
+        store=store_at(tmp_path),
+        config=SessionMemoryConfig(sweep_timeout=42),
+    )
+    # Then the runner got that timeout
+    assert runner_cls.call_args.kwargs["timeout"] == 42
+
+
 def test_run_sweep_reuses_a_store_the_caller_already_resolved(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

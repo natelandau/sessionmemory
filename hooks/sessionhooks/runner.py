@@ -16,6 +16,8 @@ import subprocess
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
+from sessionhooks.config import DEFAULT_SWEEP_TIMEOUT
+
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
@@ -34,7 +36,6 @@ OUTRANKING_AUTH_ENV = (
 # may revert.
 MUTATING_TOOLS = frozenset({"Write", "Edit", "MultiEdit", "NotebookEdit"})
 DEFAULT_MODEL = "claude-sonnet-4-6"
-DEFAULT_TIMEOUT = 180
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,7 +181,7 @@ class ClaudeRunner:
         self,
         *,
         model: str = DEFAULT_MODEL,
-        timeout: int = DEFAULT_TIMEOUT,
+        timeout: int = DEFAULT_SWEEP_TIMEOUT,
         save_transcript: bool = True,
         extra_env: Mapping[str, str] | None = None,
     ) -> None:

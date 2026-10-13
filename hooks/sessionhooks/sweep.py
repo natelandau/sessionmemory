@@ -696,6 +696,7 @@ def run_sweep(
     runner = ClaudeRunner(
         model=config.sweep_model,
         save_transcript=config.sweep_save_transcript,
+        timeout=config.sweep_timeout,
         extra_env={ROOT_ENV: str(root)},
     )
     Sweep(store, config, runner, env=env, vault_root=root).trigger(event)

@@ -4,13 +4,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import pytest
 from sessionhooks.config import SessionMemoryConfig  # ty: ignore[unresolved-import]
 from sessionhooks.headless import HEADLESS_ENV, is_headless  # ty: ignore[unresolved-import]
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-    import pytest
 
 
 def test_load_defaults_when_no_files(tmp_path: Path) -> None:
@@ -218,3 +217,27 @@ def test_a_project_config_overrides_the_global_log_level(tmp_path):
     )
     cfg = SessionMemoryConfig.load(home=home, project_dir=str(proj))
     assert cfg.log_level == "error"
+
+
+def _write_global(home: Path, body: str) -> None:
+    """Write the global plugin config under a fake home."""
+    (home / ".claude").mkdir(parents=True, exist_ok=True)
+    (home / ".claude" / "sessionmemory.toml").write_text(body, encoding="utf-8")
+
+
+def test_sweep_timeout_defaults_to_600(tmp_path):
+    """Verify the sweep timeout defaults to ten minutes with no config file."""
+    assert SessionMemoryConfig.load(home=tmp_path).sweep_timeout == 600
+
+
+def test_sweep_timeout_reads_the_sweep_table(tmp_path):
+    """Verify sweep.timeout overrides the default."""
+    _write_global(tmp_path, "[sweep]\ntimeout = 900\n")
+    assert SessionMemoryConfig.load(home=tmp_path).sweep_timeout == 900
+
+
+@pytest.mark.parametrize("raw", ["0", "-5", '"soon"', "true", "1.5"])
+def test_sweep_timeout_falls_back_on_a_value_that_cannot_be_a_timeout(tmp_path, raw):
+    """Verify a zero, negative, non-integer, or boolean timeout falls back to 600."""
+    _write_global(tmp_path, f"[sweep]\ntimeout = {raw}\n")
+    assert SessionMemoryConfig.load(home=tmp_path).sweep_timeout == 600

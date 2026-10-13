@@ -33,6 +33,9 @@ DEFAULT_MIN_EXCHANGES = 10
 # a long question that changed no code is exactly what the sweep exists to keep.
 DEFAULT_MIN_USER_MESSAGES = 3
 DEFAULT_MIN_USER_CHARS = 400
+# A sweep reads the repo and commits before it writes, so one still running at
+# ten minutes is stuck rather than slow.
+DEFAULT_SWEEP_TIMEOUT = 600
 DEFAULT_LOG_LEVEL = "info"
 # `off` is a level name rather than a separate toggle so one key answers both
 # "how much" and "whether", and a misspelling falls back to info instead of silence.
@@ -55,6 +58,7 @@ class SessionMemoryConfig:
     # Persist the headless sweep's own `claude -p` session to ~/.claude/projects
     # so its API-token usage is auditable; false re-adds --no-session-persistence.
     sweep_save_transcript: bool = True
+    sweep_timeout: int = DEFAULT_SWEEP_TIMEOUT
     # Where the hooks log. Empty means the XDG state root, which is the normal case.
     log_path: str = ""
     log_level: str = DEFAULT_LOG_LEVEL
@@ -92,6 +96,7 @@ class SessionMemoryConfig:
             ),
             min_user_chars=_as_int(sweep.get("min_user_chars"), default=DEFAULT_MIN_USER_CHARS),
             sweep_save_transcript=_as_bool(sweep.get("save_transcript"), default=True),
+            sweep_timeout=_as_positive_int(sweep.get("timeout"), default=DEFAULT_SWEEP_TIMEOUT),
             log_path=_as_str(log.get("path"), default=""),
             log_level=_as_choice(log.get("level"), LOG_LEVELS, default=DEFAULT_LOG_LEVEL),
         )
@@ -140,6 +145,12 @@ def _as_int(value: object, *, default: int) -> int:
         except ValueError:
             return default
     return default
+
+
+def _as_positive_int(value: object, *, default: int) -> int:
+    """Coerce a config value to an int above zero, falling back otherwise."""
+    result = _as_int(value, default=default)
+    return result if result > 0 else default
 
 
 def _as_str(value: object, *, default: str) -> str:
