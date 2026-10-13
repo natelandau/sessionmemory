@@ -141,10 +141,10 @@ goes through `emit_value`. Six are worth naming. `search` prints a path, a title
 summary per hit, all of which a caller copies or parses, and bracketed prose in a summary
 is exactly what Rich would eat as markup. `inject` prints a block a caller redirects or
 pipes whole. `new --json` prints the path a caller writes the body into. Without `--json`,
-every `new` command prints that same plain path and nothing else (`new backlog` prints
-the line, then the path), so `path=$(sessionmemory new spec ...)` works. `path <kind>`
-prints one bare path the same way, and `project --json` prints every path the plugin's
-hooks read.
+every `new` command prints that same plain path and nothing else (`new backlog` prints the
+line, then the path), so `path=$(sessionmemory new spec ...)` works, and `log` prints the
+path of the page it wrote the same way. `path <kind>` prints one bare path the same way,
+and `project --json` prints every path the plugin's hooks read.
 
 `CliRunner` is not a terminal and the console decides its color system at import, so an
 in-process test proves nothing here. `tests/integration/test_cli_machine_output.py` runs
@@ -260,12 +260,14 @@ requires. `fieldindex._embedding_text` dispatches on the directory name: a file 
 `specs/` embeds `specs.embedding_input` instead, which is the title, the text under the
 `# ` title minus metadata lines, the frontmatter `summary`, the purpose sections whole
 (`PURPOSE_HEADINGS`), every `## ` heading joined by `; `, and the decision sections whole
-(`DECISION_HEADINGS`), cut at the last whole line within `field.PAGE_LIMIT`. The body is
-never embedded. This revises the 2026-10-02 spec's rejection of an index over specs,
-which assumed one embedding of a spec's first 8KB: a filename fails once a topic crosses
-several features, specs reach 40KB so their detail cannot be embedded anyway, and search
-only has to land on the spec, which the reader then opens. The specs index keeps the
-spec's table and nothing else, and a spec is not subject to the page rules.
+(`DECISION_HEADINGS`), cut at the last whole line within `field.PAGE_LIMIT`. A leading
+`---` block that does not parse is dropped through its closing line before any part is
+derived, so raw YAML never reaches the input or a hit's summary. The body is never
+embedded. This revises the 2026-10-02 spec's rejection of an index over specs, which
+assumed one embedding of a spec's first 8KB: a filename fails once a topic crosses several
+features, specs reach 40KB so their detail cannot be embedded anyway, and search only has
+to land on the spec, which the reader then opens. The specs index keeps the spec's table
+and nothing else, and a spec is not subject to the page rules.
 
 Freshness is the sha256 of the raw bytes, so a page edited in any editor is re-embedded on
 the next read and nothing has to be told that a file changed. A hash cannot see a change
@@ -286,18 +288,26 @@ directory `paths.iter_index_dirs` lists rather than resolving one project.
 that has no reason to fail. Nothing may treat a value read from the index as
 authoritative.
 
-**There is no application lock, and nothing here needs one.** A page write is an atomic
-rename, each field's index is one SQLite file under SQLite's own locking with a five
-second busy timeout, and two sessions ending in different projects touch different files
-entirely. Two hooks committing at once race on git's own `index.lock`, the loser skips,
-and the next session's hook commits what it left behind. Do not reintroduce
-`lib/locking.py`: the shared index and the taxonomy file it guarded are both gone.
-The one lock in the repository belongs to the plugin, not the CLI: the sweep worker holds
-a per-project `fcntl.flock` on the store's `sweep.lock` while it runs, so a second sweep
-for the same project queues behind the first rather than being dropped. The kernel
-releases it when the worker exits, however it exits, so nothing ages it out, and the
-file is never deleted, since a waiter would otherwise lock a new file at the same path.
-Only `BlockingIOError` from `flock` means another worker holds it. Any other failure sets
+**There is no general application lock, and the CLI holds exactly one.** A page write is
+an atomic rename, each field's index is one SQLite file under SQLite's own locking with a
+five second busy timeout, and two sessions ending in different projects touch different
+files entirely. Two hooks committing at once race on git's own `index.lock`, the loser
+skips, and the next session's hook commits what it left behind. Do not reintroduce
+`lib/locking.py`: the shared index and the taxonomy file it guarded are both gone. The
+CLI's one lock is `registry.locked`, an exclusive `fcntl.flock` on a descriptor opened on
+the vault's `_system/` directory, held for the whole load, modify, and save of
+`registry.toml` by registration and by `mark_reviewed`. Every writer rewrites that one
+shared file from what it loaded, so two unlocked writers would each save a registry
+missing the other's entry. It creates no lock file, and `registry.save` is called by those
+paths only inside it. The plugin's lock is separate: the sweep worker holds a per-project
+`fcntl.flock` on the store's `sweep.lock` while it runs, so a second sweep for the same
+project queues behind the first rather than being dropped. The kernel releases it when the
+worker exits, however it exits, so nothing ages it out, and the file is never deleted,
+since a waiter would otherwise lock a new file at the same path. A queued worker polls
+every `QUEUE_POLL` seconds for `sweep.queue_wait`, which is
+`max(3600, 4 * (sweep_timeout + 120))`: several queued sweeps' worth at the configured
+timeout, so raising the timeout never turns a queued sweep into a dropped one. Only
+`BlockingIOError` from `flock` means another worker holds it. Any other failure sets
 `Lock.error`, which ends a worker's wait at once and reads as no sweep when a hook decides
 whether to commit, so a lock file that cannot be opened never blocks either.
 
@@ -468,21 +478,26 @@ new one: without it, the model has no way to keep what was already recorded.
 
 The sweep may write anywhere inside its own project's folder, which is what a later pass
 strengthening a memory means. Two backstops run after the model finishes, and neither is
-complete. `Sweep._validate_writes` walks the tool-use stream's reported paths and reverts
-anything outside the project folder, restoring it from the vault's `HEAD` or quarantining
-it when git cannot. It then scrubs for secrets by content hash: `snapshot.take` hashes the
-project folder before and after the run, skipping symlinks, and every file whose hash
-changed is scrubbed, which is what catches a write made through Bash, since a Bash write
-never appears in the tool-use stream. A file that cannot be read is recorded as
+complete. `Sweep._validate_writes` walks the tool-use stream's reported paths, which
+`ClaudeRunner.run` reads from a timed-out run's partial output too, and reverts anything
+outside the project folder, restoring it from the vault's `HEAD` or quarantining it when
+git cannot. It then scrubs for secrets by content hash: `snapshot.take` hashes the project
+folder before and after the run, skipping symlinks, and every file whose hash changed is
+scrubbed, which is what catches a write made through Bash, since a Bash write never
+appears in the tool-use stream. A file that cannot be read is recorded as
 `snapshot.UNREADABLE` rather than left out, so it reads as modified and never as created
 or deleted. A deletion is noted, not undone. `Sweep._enforce_shapes` then checks what
 `hooks/sessionhooks/shape.py` knows of a page's shape: a new learning, log, or top-level
 file that fails is quarantined, as is a new file nested below `learnings/` or `logs/`, and
-a modified learning that fails is restored from `HEAD` (`_restore_or_quarantine`). Debris
-that `shape.is_debris` names, mirroring `field.is_debris`, is left alone. A Bash write
-**outside** the project folder, a sibling project's folder foremost, is caught by nothing
-here and is committed by the next hook. Git history is the recovery. The prompt forbids
-deleting a page, and a page the model deletes through Bash is committed as a deletion.
+a modified learning that fails is restored from `HEAD` (`_restore_or_quarantine`). A
+created or modified learning that cannot be read, because the snapshot recorded
+`snapshot.UNREADABLE` or `shape.learning_problem` hit an `OSError`, is quarantined with
+the note `unreadable-quarantined: <path>` rather than restored, since its content is
+unknown and an unreadable file would fail `git add`. Debris that `shape.is_debris` names,
+mirroring `field.is_debris`, is left alone. A Bash write **outside** the project folder, a
+sibling project's folder foremost, is caught by nothing here and is committed by the next
+hook. Git history is the recovery. The prompt forbids deleting a page, and a page the
+model deletes through Bash is committed as a deletion.
 
 `hooks.json` budgets each hook's own worst case. `SessionStart` runs `Store.for_cwd` (one
 git call, `_GIT_TIMEOUT` 5s), `head_commit` (5s), two `VaultCLI.discover` handshakes
@@ -501,12 +516,12 @@ and starts no subprocess, commits with git alone, and hands the sweep worker a r
 rather than a `VaultCLI`, so the version handshake runs in the worker after it detaches.
 A commit cut short costs nothing, since the next `SessionStart` commits what it left.
 
-Both start and end hooks skip their commit while any project's sweep is running, since
-the commit stages the whole vault and would capture a worker's writes before it scrubs and
+Both start and end hooks skip their commit while any project's sweep is running, since the
+commit stages the whole vault and would capture a worker's writes before it scrubs and
 shape-checks them. `sweep.any_in_progress` probes every project's lock under the state
-root. A worker skips its own commit the same way while another project's sweep runs, and
-the last worker to finish commits everything. `sessionend.py` commits whether or not the
-sweep is enabled, so a session that wrote a page by hand still lands it.
+root. A worker skips its commit while another project's sweep runs, so when two finish at
+once both may skip, and the next hook commits what they left. `sessionend.py` commits
+whether or not the sweep is enabled, so a page written by hand still lands.
 
 ### Committing
 
@@ -523,13 +538,16 @@ rather than a fixed set because the `GIT_CONFIG_KEY_<n>` family is indexed and c
 enumerated, and a config override such as `core.worktree` relocates a repository exactly
 as `GIT_DIR` does.
 
-The message is built from `git diff --cached --name-status` by `commit.message`: the subject
-groups paths by the segment after `projects/` (or `vault` for `_system/`). One project's
-subject counts its paths by kind, and `_system` paths ride along with it; several projects
-get `<names>: update <n> files`, counting every staged path. `vault` is not a project, so
-it names the subject only when it is alone. The body lists every path and opens with the
-sweep log's summary when there is one. The message goes to `git commit -F -` on stdin, so
-a large first commit cannot exceed the argument limit.
+The message is built from `git diff --cached --name-status` by `commit.message`: the
+subject groups paths by the segment after the vault's own `projects/` (or `vault` for
+`_system/`). That segment is read right after the prefix `--show-prefix` reports, since a
+vault may sit under an outer folder that is itself named `projects`, and a path outside
+the prefix belongs to no project. One project's subject counts its paths by kind, and
+`_system` paths ride along with it; several projects get `<names>: update <n> files`,
+counting every staged path. `vault` is not a project, so it names the subject only when it
+is alone. The body lists every path and opens with the sweep log's summary when there is
+one. The message goes to `git commit -F -` on stdin, so a large first commit cannot
+overflow the per-argument size limit.
 
 Staging is
 `git add -A -- :/ ':(exclude,glob)**/*.sqlite3*' ':(top,exclude,glob)<prefix>projects/*/plans/**'`.
