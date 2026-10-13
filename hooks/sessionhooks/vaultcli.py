@@ -66,8 +66,8 @@ RESOLVE_TIMEOUT = 5
 # can outlast the interactive timeouts, so its CLI calls get a long one.
 WORKER_CLI_TIMEOUT = 120
 
-# commit_vault runs up to seven git calls in sequence; five seconds each keeps its
-# worst case at 35s, inside the SessionStart budget. SessionEnd's budget is Claude
+# commit_vault runs up to eight git calls in sequence; five seconds each keeps its
+# worst case at 40s, inside the SessionStart budget. SessionEnd's budget is Claude
 # Code's, not ours, so a commit there is best effort.
 COMMIT_GIT_TIMEOUT = 5
 

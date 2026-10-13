@@ -411,9 +411,9 @@ page, and a page the model deletes through Bash is committed as a deletion.
 
 `hooks.json` budgets each hook's own worst case. `SessionStart` runs `Store.for_cwd` (one
 git call, `_GIT_TIMEOUT` 5s), `head_commit` (5s), two `VaultCLI.discover` handshakes
-(`VERSION_TIMEOUT` 5s each), the vault commit (`COMMIT_GIT_TIMEOUT` 5s across up to seven
-git calls, so 35s), `VaultCLI.resolve` and `VaultCLI.register` (`RESOLVE_TIMEOUT` 5s
-each), and `VaultCLI.inject` (`TIMEOUT` 25s): a worst case of 90s under a timeout of
+(`VERSION_TIMEOUT` 5s each), the vault commit (`COMMIT_GIT_TIMEOUT` 5s across up to eight
+git calls, so 40s), `VaultCLI.resolve` and `VaultCLI.register` (`RESOLVE_TIMEOUT` 5s
+each), and `VaultCLI.inject` (`TIMEOUT` 25s): a worst case of 95s under a timeout of
 100. `PreCompact` only gates and spawns, and its timeout is 10. Raising any of those
 constants means raising the timeout that covers them.
 
@@ -447,7 +447,9 @@ as `GIT_DIR` does.
 
 The message is built from `git diff --cached --name-status` by `commit.message`: the subject
 groups paths by the segment after `projects/` (or `vault` for `_system/`) and counts them
-by kind, and the body lists every path, opened by the sweep log's summary when there is one.
+by kind (`vault` is not a project, so it names the subject only when it is alone). The body
+lists every path and opens with the sweep log's summary when there is one. The message goes
+to `git commit -F -` on stdin, so a large first commit cannot exceed the argument limit.
 
 Staging is `git add -A -- :/ ':(exclude,glob)**/*.sqlite3*'`. `:/` keeps the whole
 repository in scope for a vault nested inside a larger one, and the exclusion keeps the

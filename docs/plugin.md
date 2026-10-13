@@ -138,11 +138,25 @@ Nothing is committed here, and the timeout is 10 seconds.
 
 A commit stages everything under the vault except the derived index files, and writes one
 message that says what changed. The subject names the project and counts the changes by
-kind, such as `invoice-api: add 1 log, 2 learnings; edit backlog`, and the body lists
-every path. When a sweep wrote the commit, the body opens with the summary of the
-session's log. A commit that touches several projects reads
-`invoice-api, vault: update 5 files`, and a subject over 70 characters is cut at a
-separator and ends with `...`.
+kind. The body lists every path, and opens with the summary of the session's log when a
+sweep wrote the commit:
+
+```text
+invoice-api: add 1 log, 2 learnings; edit backlog, 1 spec
+
+Made the charge handler idempotent
+
+edit: projects/invoice-api/backlog.md
+add: projects/invoice-api/learnings/retries-need-idempotency-keys.md
+add: projects/invoice-api/learnings/webhooks-arrive-out-of-order.md
+add: projects/invoice-api/logs/2026-10-13-retry-handling.md
+edit: projects/invoice-api/specs/retries.md
+```
+
+A commit that touches several projects reads `invoice-api, billing: update 5 files`. A
+change to the vault's own files, such as the project registry, reads `vault: edit 1 file`
+when nothing else changed, and appears only in the body otherwise. A subject over 70
+characters is cut at a separator and ends with `...`.
 
 Four situations are skipped rather than committed. A merge, rebase, cherry-pick, or
 revert in progress is skipped, because a commit landing in the middle of one bakes

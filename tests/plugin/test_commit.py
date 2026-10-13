@@ -171,10 +171,10 @@ def test_commit_vault_reports_a_failed_add(tmp_path, monkeypatch):
     (root / "page.md").write_text("x", encoding="utf-8")
     real_git = commit_module._git
 
-    def _fake_git(root_, *args, env, timeout=10) -> subprocess.CompletedProcess | None:
+    def _fake_git(root_, *args, env, timeout=10, **kwargs) -> subprocess.CompletedProcess | None:
         if args and args[0] == "add":
             return subprocess.CompletedProcess(args, returncode=1, stdout="", stderr="boom")
-        return real_git(root_, *args, env=env, timeout=timeout)
+        return real_git(root_, *args, env=env, timeout=timeout, **kwargs)
 
     monkeypatch.setattr(commit_module, "_git", _fake_git)
 
@@ -196,10 +196,10 @@ def test_commit_vault_reports_a_failed_commit(tmp_path, monkeypatch):
     (root / "page.md").write_text("x", encoding="utf-8")
     real_git = commit_module._git
 
-    def _fake_git(root_, *args, env, timeout=10) -> subprocess.CompletedProcess | None:
+    def _fake_git(root_, *args, env, timeout=10, **kwargs) -> subprocess.CompletedProcess | None:
         if args and args[0] == "commit":
             return subprocess.CompletedProcess(args, returncode=1, stdout="", stderr="boom")
-        return real_git(root_, *args, env=env, timeout=timeout)
+        return real_git(root_, *args, env=env, timeout=timeout, **kwargs)
 
     monkeypatch.setattr(commit_module, "_git", _fake_git)
 
@@ -221,10 +221,10 @@ def test_commit_vault_reports_git_unavailable_when_status_fails(tmp_path, monkey
     (root / "page.md").write_text("x", encoding="utf-8")
     real_git = commit_module._git
 
-    def _fake_git(root_, *args, env, timeout=10) -> subprocess.CompletedProcess | None:
+    def _fake_git(root_, *args, env, timeout=10, **kwargs) -> subprocess.CompletedProcess | None:
         if args and args[0] == "status":
             return subprocess.CompletedProcess(args, returncode=1, stdout="", stderr="boom")
-        return real_git(root_, *args, env=env, timeout=timeout)
+        return real_git(root_, *args, env=env, timeout=timeout, **kwargs)
 
     monkeypatch.setattr(commit_module, "_git", _fake_git)
 
@@ -242,10 +242,10 @@ def test_commit_vault_reports_the_sha_as_unavailable_when_rev_parse_fails(tmp_pa
     (root / "page.md").write_text("x", encoding="utf-8")
     real_git = commit_module._git
 
-    def _fake_git(root_, *args, env, timeout=10) -> subprocess.CompletedProcess | None:
+    def _fake_git(root_, *args, env, timeout=10, **kwargs) -> subprocess.CompletedProcess | None:
         if args[:2] == ("rev-parse", "--short"):
             return subprocess.CompletedProcess(args, returncode=1, stdout="", stderr="boom")
-        return real_git(root_, *args, env=env, timeout=timeout)
+        return real_git(root_, *args, env=env, timeout=timeout, **kwargs)
 
     monkeypatch.setattr(commit_module, "_git", _fake_git)
 
@@ -267,7 +267,7 @@ def test_commit_vault_names_a_lost_index_lock_race(tmp_path, monkeypatch):
     (root / "page.md").write_text("x", encoding="utf-8")
     real_git = commit_module._git
 
-    def _locked(root_, *args, env, timeout) -> subprocess.CompletedProcess:
+    def _locked(root_, *args, env, timeout, **kwargs) -> subprocess.CompletedProcess:
         if args[0] == "commit":
             return subprocess.CompletedProcess(
                 args=["git", *args],
@@ -275,7 +275,7 @@ def test_commit_vault_names_a_lost_index_lock_race(tmp_path, monkeypatch):
                 stdout="",
                 stderr="fatal: Unable to create '.git/index.lock': File exists.",
             )
-        return real_git(root_, *args, env=env, timeout=timeout)
+        return real_git(root_, *args, env=env, timeout=timeout, **kwargs)
 
     monkeypatch.setattr(commit_module, "_git", _locked)
     assert commit_vault(root, env=clean_environ()) == CommitOutcome(reason="index lock")
@@ -402,3 +402,52 @@ def test_commit_vault_works_in_a_nested_vault(tmp_path):
     )
     assert log.stdout.splitlines()[0] == "crosstune: add 1 log"
     assert "add: notes/vault/projects/crosstune/logs/a.md" in log.stdout
+
+
+def test_message_orders_nouns_whatever_order_git_lists_paths():
+    """Verify git's path-sorted input still reads log, learning, backlog, spec."""
+    changes = [
+        ("M", "projects/crosstune/backlog.md"),
+        ("A", "projects/crosstune/learnings/b.md"),
+        ("A", "projects/crosstune/learnings/c.md"),
+        ("A", "projects/crosstune/logs/a.md"),
+        ("M", "projects/crosstune/specs/d.md"),
+    ]
+
+    subject, _ = message(changes)
+
+    assert subject == "crosstune: add 1 log, 2 learnings; edit backlog, 1 spec"
+
+
+def test_message_for_a_project_beside_the_vault():
+    """Verify _system paths stay out of the subject but appear in the body."""
+    changes = [
+        ("A", "projects/crosstune/logs/a.md"),
+        ("M", "_system/registry.toml"),
+    ]
+
+    subject, body = message(changes)
+
+    assert subject == "crosstune: add 1 log"
+    assert "edit: _system/registry.toml" in body
+
+
+def test_message_for_two_projects_beside_the_vault_does_not_list_it():
+    """Verify the vault is not named among several projects."""
+    changes = [
+        ("A", "projects/a/logs/x.md"),
+        ("A", "projects/b/logs/x.md"),
+        ("M", "_system/registry.toml"),
+    ]
+
+    subject, _ = message(changes)
+
+    assert subject == "a, b: update 2 files"
+
+
+def test_commit_vault_skips_when_only_the_derived_index_changed(tmp_path):
+    """Verify an untracked .sqlite3 alone is reported as clean rather than raising."""
+    root = _repo(tmp_path)
+    (root / "index.sqlite3").write_text("x", encoding="utf-8")
+
+    assert commit_vault(root, env=clean_environ()) == CommitOutcome(reason="clean")

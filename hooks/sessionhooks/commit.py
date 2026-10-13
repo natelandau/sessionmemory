@@ -39,6 +39,8 @@ _NOUNS = {
     "reference": "reference doc",
 }
 _VAULT_GROUP = "vault"
+# Nouns read in this order within a verb, whatever order git lists the paths in.
+_NOUN_ORDER = ("log", "learning", "backlog", "spec", "plan", "runbook", "reference doc", "file")
 
 # A commit landing during any of these bakes half-resolved state into history.
 _IN_PROGRESS = ("MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply")
@@ -57,14 +59,16 @@ class CommitOutcome:
 
 
 def _git(
-    root: Path, *args: str, env: Mapping[str, str], timeout: int
+    root: Path, *args: str, env: Mapping[str, str], timeout: int, stdin: str | None = None
 ) -> subprocess.CompletedProcess[str] | None:
     try:
         proc = subprocess.run(  # noqa: S603
             ["git", *args],  # noqa: S607
             cwd=str(root),
             capture_output=True,
-            text=True,
+            input=stdin,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
             check=False,
             env=git_safe_env(env),
@@ -141,7 +145,7 @@ def _clause(verb: str, rests: list[str]) -> str:
         counts[noun] = counts.get(noun, 0) + 1
     items = [
         noun if noun == "backlog" else f"{count} {noun if count == 1 else noun + 's'}"
-        for noun, count in counts.items()
+        for noun, count in sorted(counts.items(), key=lambda item: _NOUN_ORDER.index(item[0]))
     ]
     return f"{verb} {', '.join(items)}"
 
@@ -154,15 +158,21 @@ def message(changes: list[tuple[str, str]], *, note: str = "") -> tuple[str, str
     """
     verbed = [(_VERBS.get(status, "edit"), *_locate(path), path) for status, path in changes]
     groups = sorted({group for _, group, _, _ in verbed})
-    if len(groups) > 1:
-        subject = f"{', '.join(groups)}: update {len(verbed)} file{'' if len(verbed) == 1 else 's'}"
+    # `vault` is not a project: beside a real project its paths live only in the body.
+    projects = [group for group in groups if group != _VAULT_GROUP] or groups
+    if len(projects) > 1:
+        scoped = [entry for entry in verbed if entry[1] in projects]
+        subject = (
+            f"{', '.join(projects)}: update {len(scoped)} file{'' if len(scoped) == 1 else 's'}"
+        )
     else:
+        scoped = [entry for entry in verbed if entry[1] == projects[0]]
         clauses = [
-            _clause(verb, [rest for v, _, rest, _ in verbed if v == verb])
+            _clause(verb, [rest for v, _, rest, _ in scoped if v == verb])
             for verb in ("add", "edit", "delete")
-            if any(v == verb for v, _, _, _ in verbed)
+            if any(v == verb for v, _, _, _ in scoped)
         ]
-        subject = f"{groups[0]}: {'; '.join(clauses)}"
+        subject = f"{projects[0]}: {'; '.join(clauses)}"
     lines = [f"{verb}: {path}" for verb, _, _, path in verbed]
     body = "\n".join([note, "", *lines] if note else lines)
     return _truncate(subject), body
@@ -215,9 +225,13 @@ def commit_vault(  # noqa: PLR0911 - each early return names a distinct reason n
     staged = _staged(root, env=env, timeout=timeout)
     if staged is None:
         return CommitOutcome(reason="git unavailable")
+    if not staged:
+        return CommitOutcome(reason="clean")
     subject, body = message(staged, note=note)
-    args = ["commit", "-q", "-m", subject, *(["-m", body] if body else [])]
-    committed = _git(root, *args, env=env, timeout=timeout)
+    # Via stdin: a large first commit's body would exceed the per-argument limit.
+    committed = _git(
+        root, "commit", "-q", "-F", "-", env=env, timeout=timeout, stdin=f"{subject}\n\n{body}\n"
+    )
     if committed is None or committed.returncode != 0:
         return CommitOutcome(reason=_failure(committed, "commit"))
     head = _git(root, "rev-parse", "--short", "HEAD", env=env, timeout=timeout)

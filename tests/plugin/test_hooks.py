@@ -376,7 +376,7 @@ def test_sessionstart_commits_the_vault(tmp_path: Path) -> None:
     log = subprocess.run(
         ["git", "log", "--oneline"], cwd=vault, capture_output=True, text=True, check=True
     )
-    assert "proj, vault: update" in log.stdout
+    assert "proj: add 1 learning" in log.stdout
 
 
 def test_sessionstart_disabled_inject_exits_silently(tmp_path: Path) -> None:
@@ -927,7 +927,7 @@ def test_sessionend_commits_the_vault(tmp_path: Path) -> None:
     log = subprocess.run(
         ["git", "log", "--oneline"], cwd=vault, capture_output=True, text=True, check=True
     )
-    assert "proj, vault: update" in log.stdout
+    assert "proj: add 1 learning" in log.stdout
 
 
 def test_sessionend_commits_when_the_sweep_is_disabled(tmp_path: Path) -> None:
@@ -961,7 +961,7 @@ def test_sessionend_commits_when_the_sweep_is_disabled(tmp_path: Path) -> None:
     log = subprocess.run(
         ["git", "log", "--oneline"], cwd=vault, capture_output=True, text=True, check=True
     )
-    assert "proj, vault: update" in log.stdout
+    assert "proj: add 1 learning" in log.stdout
 
 
 def test_sessionend_never_starts_the_vault_cli(tmp_path: Path) -> None:
