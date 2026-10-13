@@ -29,6 +29,7 @@ from sessionhooks.sweep import (  # ty: ignore[unresolved-import]
 )
 from sessionhooks.vaultcli import WORKER_CLI_TIMEOUT, Lookup  # ty: ignore[unresolved-import]
 
+from sessionmemory.lib.frontmatter import serialize
 from tests._env import clean_environ
 from tests.plugin._store_factory import store_at
 from tests.plugin.conftest import hooks_log_text
@@ -1239,6 +1240,68 @@ def test_log_summary_unquotes_the_first_summary_line(tmp_path: Path) -> None:
     assert sweep_mod._log_summary(tmp_path / "missing.md") == ""
 
 
+# Rendered by the CLI's own `frontmatter.serialize`, which wraps at 88 columns.
+_WRAPPED_SUMMARIES = [
+    (
+        (
+            "summary: Made the charge handler idempotent so retried webhooks never double-bill"
+            " a customer,\n  and documented the key expiry window in the learnings\n"
+        ),
+        (
+            "Made the charge handler idempotent so retried webhooks never double-bill a customer,"
+            " and documented the key expiry window in the learnings"
+        ),
+    ),
+    (
+        (
+            "summary: 'Fixed it: the handler now retries, and it''s idempotent across every"
+            " webhook delivery\n  the provider sends after a timeout'\n"
+        ),
+        (
+            "Fixed it: the handler now retries, and it's idempotent across every webhook delivery"
+            " the provider sends after a timeout"
+        ),
+    ),
+    (
+        (
+            'summary: "Tab\\there \\"quoted\\" and a long tail that keeps going on and on past'
+            ' the eighty-eight\\\n  \\ column width limit"\n'
+        ),
+        (
+            'Tab here "quoted" and a long tail that keeps going on and on past the eighty-eight'
+            " column width limit"
+        ),
+    ),
+]
+
+
+@pytest.mark.parametrize(("summary_yaml", "expected"), _WRAPPED_SUMMARIES)
+def test_log_summary_folds_a_wrapped_summary(
+    tmp_path: Path, summary_yaml: str, expected: str
+) -> None:
+    """Verify a summary the CLI wrapped onto continuation lines is read whole and unquoted."""
+    # Given a log whose summary the serializer folded across lines
+    path = tmp_path / "log.md"
+    path.write_text(
+        f"---\ntitle: t\n{summary_yaml}session_id: abc\n---\n\nbody\n", encoding="utf-8"
+    )
+    # When reading the summary / Then the whole sentence comes back on one line
+    assert sweep_mod._log_summary(path) == expected
+
+
+def test_log_summary_matches_the_cli_serializer(tmp_path: Path) -> None:
+    """Verify every wrapped form the CLI's serializer produces reads back to the original."""
+    summaries = [expected for _, expected in _WRAPPED_SUMMARIES]
+    for index, summary in enumerate(summaries):
+        # Given a log written by the CLI's own serializer
+        path = tmp_path / f"log-{index}.md"
+        path.write_text(
+            serialize({"summary": summary, "session_id": "s"}, "body"), encoding="utf-8"
+        )
+        # When reading the summary / Then it round-trips
+        assert sweep_mod._log_summary(path) == summary
+
+
 def test_run_job_clean_write_logs_and_releases_lock(tmp_path: Path) -> None:
     """Verify run_job validates writes, commits, logs, and releases the lock on a clean run."""
     # Given a store with a clean target file
@@ -1539,8 +1602,8 @@ def test_run_job_logs_a_failed_sweep_with_the_exit_code_and_stderr(tmp_path: Pat
     sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="fail-001"))
     text = hooks_log_text(hooks_log)
     assert (
-        "ERROR [sweep       ] demo: sweep failed: claude exited -3 (stderr: claude CLI not found) (session=fail-001)"
-        in text
+        "ERROR [sweep       ] demo: sweep failed: claude exited -3 (stderr: claude CLI not found),"
+        " 0 created, 0 modified, 0 deleted, committed abc1234 (session=fail-001)" in text
     )
 
 
@@ -1593,19 +1656,50 @@ def _failed_run_log(tmp_path: Path, *, text: str, stderr: str, session: str) -> 
 def test_run_job_logs_only_the_result_text_when_stderr_is_empty(tmp_path: Path) -> None:
     """Verify a failed run with no stderr logs the result text without a stderr label."""
     text = _failed_run_log(tmp_path, text="Invalid API key", stderr="", session="f-3")
-    assert "claude exited 1 (Invalid API key) (session=f-3)" in text
+    assert "claude exited 1 (Invalid API key), 0 created" in text
 
 
 def test_run_job_logs_no_output_when_a_failed_run_says_nothing(tmp_path: Path) -> None:
     """Verify a failed run with neither result text nor stderr still names the gap."""
     text = _failed_run_log(tmp_path, text="", stderr="", session="f-4")
-    assert "claude exited 1 (no output) (session=f-4)" in text
+    assert "claude exited 1 (no output), 0 created" in text
 
 
 def test_run_job_logs_a_multiline_failure_on_one_line(tmp_path: Path) -> None:
     """Verify newlines in the result text and stderr never split the log line."""
     text = _failed_run_log(tmp_path, text="bad\nkey\n", stderr="a\nb", session="f-5")
-    assert "claude exited 1 (bad key; stderr: a b) (session=f-5)" in text
+    assert "claude exited 1 (bad key; stderr: a b), 0 created" in text
+
+
+def test_run_job_logs_what_a_failed_run_wrote_and_committed(tmp_path: Path) -> None:
+    """Verify a failed run still reports its writes, its notes, and the commit outcome."""
+
+    # Given a run that writes a malformed learning and then exits non-zero
+    class _WriteThenFail:
+        def __init__(self, page: Path) -> None:
+            self.page = page
+
+        def run(
+            self, prompt: str, *, cwd: str, extra_env: Mapping[str, str] | None = None
+        ) -> RunResult:
+            self.page.write_text("no frontmatter\n", encoding="utf-8")
+            return RunResult(success=False, exit_code=2, changed_files=[], text="", stderr="")
+
+    hooks_log = _capture_log(tmp_path)
+    target = _target_at(tmp_path / "vault")
+    page = target.learnings_dir / "half-done.md"
+    sweep = Sweep(
+        _job_store(tmp_path), SessionMemoryConfig(), _WriteThenFail(page), _FakeVault(target)
+    )
+    # When the worker finishes
+    sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="f-6"))
+    # Then the error line names the change counts, the commit, and the notes
+    (line,) = [x for x in hooks_log_text(hooks_log).splitlines() if "sweep failed" in x]
+    assert (
+        "sweep failed: claude exited 2 (no output), 1 created, 0 modified, 0 deleted,"
+        " committed abc1234 (notes: malformed-quarantined: "
+    ) in line
+    assert "(no frontmatter)) (session=f-6)" in line
 
 
 def test_run_job_without_a_vault_logs_the_skip(tmp_path: Path) -> None:

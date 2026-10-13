@@ -240,8 +240,40 @@ def _strip_frontmatter(text: str) -> str:
     return _FRONTMATTER_RE.sub("", text, count=1).lstrip("\n")
 
 
+_DOUBLE_QUOTED_ESCAPES = {'"': '"', "\\": "\\", " ": " ", "/": "/", "t": "\t", "n": "\n"}
+_ESCAPE_RE = re.compile(r"\\(.)")
+
+
+def _fold_scalar(parts: list[str]) -> str:
+    """Join a YAML scalar's physical lines into its value, unquoting a quoted one.
+
+    Only the three styles `yaml.safe_dump` emits for a one-line string are handled: plain
+    and single-quoted lines fold with a space, and a double-quoted line ending in an escaped
+    line break joins with nothing, its next line's leading escaped space carrying the break.
+    """
+    first = parts[0]
+    if first.startswith('"'):
+        joined = ""
+        for part in parts:
+            stripped = part.removesuffix("\\")
+            # An odd run of trailing backslashes is an escaped line break.
+            escaped = (len(part) - len(part.rstrip("\\"))) % 2 == 1
+            joined += stripped if escaped else f"{part} "
+        value = joined.rstrip().removeprefix('"').removesuffix('"')
+        value = _ESCAPE_RE.sub(lambda m: _DOUBLE_QUOTED_ESCAPES.get(m[1], m[0]), value)
+    else:
+        value = " ".join(parts)
+        if first.startswith("'"):
+            value = value.removeprefix("'").removesuffix("'").replace("''", "'")
+    return " ".join(value.split())
+
+
 def _log_summary(path: Path) -> str:
-    """The first column-0 `summary:` line of a log's frontmatter, unquoted, or ''."""
+    """The `summary:` of a log's frontmatter, folded onto one line and unquoted, or ''.
+
+    The CLI wraps a long summary onto indented continuation lines, so every line after
+    `summary:` up to the next column-0 key belongs to it.
+    """
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
@@ -249,12 +281,16 @@ def _log_summary(path: Path) -> str:
     block = _FRONTMATTER_RE.match(text)
     if not block:
         return ""
-    for line in block.group(0).splitlines():
-        if line.startswith("summary:"):
-            value = line.removeprefix("summary:").strip()
-            if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":  # noqa: PLR2004
-                value = value[1:-1]
-            return value
+    lines = block.group(0).splitlines()[1:]
+    for index, line in enumerate(lines):
+        if not line.startswith("summary:"):
+            continue
+        parts = [line.removeprefix("summary:").strip()]
+        for continuation in lines[index + 1 :]:
+            if not continuation[:1].isspace():
+                break
+            parts.append(continuation.strip())
+        return _fold_scalar(parts) if parts[0] else ""
     return ""
 
 
@@ -549,15 +585,21 @@ class Sweep:
         self, result: RunResult, *, changes: Changes, commit: str, notes: list[str]
     ) -> None:
         """One line for the run: what it wrote and how the commit went, or why it failed."""
+        # Validation, shape checks, and the commit run whether or not claude succeeded.
+        outcome = f"{changes.describe()}, {commit}"
+        suffix = f" (notes: {'; '.join(notes)})" if notes else ""
         if result.success:
-            suffix = f" (notes: {'; '.join(notes)})" if notes else ""
-            _log.info("sweep finished: ok, %s, %s%s", changes.describe(), commit, suffix)
+            _log.info("sweep finished: ok, %s%s", outcome, suffix)
             return
         cause = " ".join((result.text or "").split())[:RESULT_TEXT_CHARS]
         tail = " ".join((result.stderr or "").split())[-STDERR_TAIL_CHARS:]
         parts = [part for part in (cause, f"stderr: {tail}" if tail else "") if part]
         _log.error(
-            "sweep failed: claude exited %s (%s)", result.exit_code, "; ".join(parts) or "no output"
+            "sweep failed: claude exited %s (%s), %s%s",
+            result.exit_code,
+            "; ".join(parts) or "no output",
+            outcome,
+            suffix,
         )
 
     def _quarantine(self, path: Path) -> None:
