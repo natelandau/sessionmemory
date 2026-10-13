@@ -401,13 +401,13 @@ anything outside the project folder, restoring it from the vault's `HEAD` or qua
 it when git cannot. It then scrubs for secrets by content hash: `snapshot.take` hashes
 the project folder before and after the run, skipping symlinks, and every file whose hash
 changed is scrubbed, which is what catches a write made through Bash, since a Bash write
-never appears in the tool-use stream. A deletion is noted, not undone. `Sweep._enforce_shapes` then checks what
-`hooks/sessionhooks/shape.py` knows of a page's shape: a new learning, log, or top-level
-file that fails is quarantined, and a modified learning that fails is restored from `HEAD`
-(`_restore_or_quarantine`). A Bash write
-**outside** the project folder, a sibling project's folder foremost, is caught by
-nothing here and is committed by the next hook. Git history is the recovery. The prompt forbids deleting a
-page, and a page the model deletes through Bash is committed as a deletion.
+never appears in the tool-use stream. A deletion is noted, not undone.
+`Sweep._enforce_shapes` then checks what `hooks/sessionhooks/shape.py` knows of a page's
+shape: a new learning, log, or top-level file that fails is quarantined, and a modified
+learning that fails is restored from `HEAD` (`_restore_or_quarantine`). A Bash write
+**outside** the project folder, a sibling project's folder foremost, is caught by nothing
+here and is committed by the next hook. Git history is the recovery. The prompt forbids
+deleting a page, and a page the model deletes through Bash is committed as a deletion.
 
 `hooks.json` budgets each hook's own worst case. `SessionStart` runs `Store.for_cwd` (one
 git call, `_GIT_TIMEOUT` 5s), `head_commit` (5s), two `VaultCLI.discover` handshakes
@@ -446,10 +446,12 @@ enumerated, and a config override such as `core.worktree` relocates a repository
 as `GIT_DIR` does.
 
 The message is built from `git diff --cached --name-status` by `commit.message`: the subject
-groups paths by the segment after `projects/` (or `vault` for `_system/`) and counts them
-by kind (`vault` is not a project, so it names the subject only when it is alone). The body
-lists every path and opens with the sweep log's summary when there is one. The message goes
-to `git commit -F -` on stdin, so a large first commit cannot exceed the argument limit.
+groups paths by the segment after `projects/` (or `vault` for `_system/`). One project's
+subject counts its paths by kind, and `_system` paths ride along with it; several projects
+get `<names>: update <n> files`, counting every staged path. `vault` is not a project, so
+it names the subject only when it is alone. The body lists every path and opens with the
+sweep log's summary when there is one. The message goes to `git commit -F -` on stdin, so
+a large first commit cannot exceed the argument limit.
 
 Staging is `git add -A -- :/ ':(exclude,glob)**/*.sqlite3*'`. `:/` keeps the whole
 repository in scope for a vault nested inside a larger one, and the exclusion keeps the
