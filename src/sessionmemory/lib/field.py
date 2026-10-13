@@ -197,8 +197,8 @@ def new_document(directory: Path, *, title: str, body: str, now: str, day: str) 
     return _create(directory, meta, body, stem=dated_stem(title, day))
 
 
-def new_reference(directory: Path, *, title: str, body: str, now: str) -> Path:
-    """Create a reference doc: a titled, undated file kept current by editing in place.
+def new_living_document(directory: Path, *, title: str, body: str, now: str) -> Path:
+    """Create a reference doc or runbook: a titled, undated file kept current by editing in place.
 
     The name is the title's slug alone, since a date would claim an age the doc stops
     having at its first edit. A taken name is refused rather than suffixed, because a

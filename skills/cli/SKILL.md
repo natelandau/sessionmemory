@@ -93,7 +93,8 @@ end-of-session sweep makes it.
 
 ## Create a spec, a plan, or a runbook
 
-A spec, a plan, and a runbook are files with a title and dates:
+A spec, a plan, and a runbook are files with a title and dates. A spec's or plan's
+filename leads with its creation date; a runbook's is the title's slug alone:
 
 ```bash
 "$CLI" new spec --title "..." --cwd . --body-file - <<'EOF'
@@ -105,7 +106,9 @@ EOF
 
 A runbook is a step-by-step procedure to follow by hand, such as configuring a
 service or rotating a credential. Every runbook goes in `runbooks/` through
-`new runbook`, never in another folder or the repository.
+`new runbook`, never in another folder or the repository. A runbook is kept current
+by editing it in place, so `new runbook` refuses a title whose file already exists.
+Edit that file instead.
 
 ## Create a reference doc
 

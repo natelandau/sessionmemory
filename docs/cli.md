@@ -225,9 +225,14 @@ sessionmemory new runbook --title "Rotate the Stripe webhook signing secret" --c
 ```
 
 ```
-✓ created 2026-09-03-rotate-the-stripe-webhook-signing-secret.md
-  └─ ~/repos/my-vault/projects/invoice-api/runbooks/2026-09-03-rotate-the-stripe-webhook-signing-secret.md
+✓ created rotate-the-stripe-webhook-signing-secret.md
+  └─ ~/repos/my-vault/projects/invoice-api/runbooks/rotate-the-stripe-webhook-signing-secret.md
 ```
+
+The filename is the title's slug with no date, because a runbook is followed again and
+corrected in place. It follows the same naming rules as `sessionmemory new reference`
+below: a title whose filename is already taken is refused, so edit the existing runbook
+instead.
 
 ## `sessionmemory new reference`
 

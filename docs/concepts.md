@@ -28,7 +28,7 @@ commits the vault when a session starts and again when a session ends.
       nomic-embed-text-v1.5.sqlite3
     specs/<date>-<slug>.md           plain files, not a field, never indexed
     plans/<date>-<slug>.md
-    runbooks/<date>-<slug>.md
+    runbooks/<slug>.md
     reference/<slug>.md
     backlog.md                       a list of open work, not a page
 ```
@@ -89,10 +89,12 @@ by hand under any other name is reported by `sessionmemory doctor` and is never 
 ## Specs, plans, runbooks, reference docs, and the backlog
 
 These sit beside the fields and are never embedded. `sessionmemory new spec`,
-`sessionmemory new plan`, and `sessionmemory new runbook` write `title`, `created`, and
-`updated`, and nothing else, and name the file for its local creation date and title, as
-`2026-09-03-export-invoices-as-ubl.md`. After that they are ordinary files, so edit them
-directly.
+`sessionmemory new plan`, `sessionmemory new runbook`, and `sessionmemory new reference`
+write `title`, `created`, and `updated`, and nothing else. After that they are ordinary
+files, so edit them directly.
+
+A spec or plan records work at the time it was designed, so its file is named for its
+local creation date and title, as `2026-09-03-export-invoices-as-ubl.md`.
 
 A runbook is a step-by-step procedure to follow by hand, such as configuring a service or
 rotating a credential. It has its own folder so a procedure someone will run again is not
@@ -101,11 +103,11 @@ lost among plans for work that has already shipped.
 A reference doc is a private document about the project that does not belong in its
 repository, such as hosting settings, where each credential lives, or a data dictionary.
 Public documentation stays in the repository, where it changes with the code it describes.
-`sessionmemory new reference` writes the same three fields, but names the file for its
-title alone, as `hosting.md`. A reference doc is edited in place for as long as it is
-true, so a date in its name would be wrong after its first edit. A title whose name is
-already taken is refused rather than given a second file, since two copies of one living
-doc drift apart.
+
+Runbooks and reference docs are named for their title alone, as `hosting.md`. Both are
+edited in place for as long as they are true, so a date in the name would be wrong after
+the first edit. A title whose name is already taken is refused rather than given a second
+file, since two copies of one living doc drift apart.
 
 `backlog.md` is a list of open work. Each item is one line, grouped under a heading for
 its commit type:

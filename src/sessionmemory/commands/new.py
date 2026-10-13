@@ -81,6 +81,14 @@ def _new_document(folder: Path, title: str, body: str, *, as_json: bool) -> None
     _report(path, as_json=as_json)
 
 
+def _new_living_document(folder: Path, title: str, body: str, *, as_json: bool) -> None:
+    try:
+        path = field.new_living_document(folder, title=title, body=body, now=now())
+    except field.PageError as error:
+        fail(str(error))
+    _report(path, as_json=as_json)
+
+
 @app.command("spec")
 def new_spec(
     title: str = TITLE,
@@ -127,7 +135,7 @@ def new_runbook(
     """Create a runbook for this project."""
     vault = require_vault()
     slug = require_project(vault, cwd)
-    _new_document(
+    _new_living_document(
         paths.runbooks_dir(vault, slug), title, resolve_body(body, body_file), as_json=as_json
     )
 
@@ -142,16 +150,11 @@ def new_reference(
     as_json: bool = JSON,
 ) -> None:
     """Create a reference doc for this project."""
-    body = resolve_body(body, body_file)
     vault = require_vault()
     slug = require_project(vault, cwd)
-    try:
-        path = field.new_reference(
-            paths.reference_dir(vault, slug), title=title, body=body, now=now()
-        )
-    except field.PageError as error:
-        fail(str(error))
-    _report(path, as_json=as_json)
+    _new_living_document(
+        paths.reference_dir(vault, slug), title, resolve_body(body, body_file), as_json=as_json
+    )
 
 
 @app.command("backlog", help="Add one open item to this project's backlog.md.")

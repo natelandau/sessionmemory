@@ -96,7 +96,7 @@ def test_render_sends_runbooks_to_their_folder(tmp_path):
 def test_build_lists_every_reference_doc_by_filename(tmp_path):
     """Verify a doc moved in by hand is listed under its own name, and debris and non-markdown files are not."""
     reference = tmp_path / "projects" / "demo" / "reference"
-    field.new_reference(reference, title="Hosting", body="", now=NOW)
+    field.new_living_document(reference, title="Hosting", body="", now=NOW)
     (reference / "Data Dictionary.md").write_text("# Data\n", encoding="utf-8")
     (reference / "diagram.png").write_bytes(b"")
     (reference / ".DS_Store").write_bytes(b"")
