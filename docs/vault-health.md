@@ -161,8 +161,9 @@ This run covers a vault holding one spec of each kind and one healthy spec:
 - **`superseded_by names this spec`**: the spec names itself as its replacement. Name the
   spec that replaced it.
 - **`frontmatter cannot be parsed; status ignored`**: the frontmatter block is not valid
-  YAML, so its `status` is never read and the spec counts as current. Fix the block. The
-  spec is still searched from its title and headings.
+  YAML, so its `status` is never read and the spec counts as current. Fix the block. Until
+  then, search leaves the whole block out of what it embeds and shows, and finds the spec
+  from its `# ` title, its opening text, and its headings.
 
 A spec with `superseded_by` set and no `status: superseded` is not reported. A spec with
 no frontmatter block at all is current and is not reported.

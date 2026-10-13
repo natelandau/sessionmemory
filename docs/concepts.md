@@ -270,9 +270,9 @@ page does not reach. A field with fewer than 8 pages measures against a fixed me
 Specs have their own cutoff, 0.38 and 0.07. Specs spread wide: the median distance from a
 query to a project's specs measured 0.53 to 0.56, so the margin alone let unrelated specs
 through at 0.42 to 0.44, and the absolute ceiling had to be tighter. At the learnings
-cutoff, 3 of 10 queries with no answer returned a spec. The two numbers were measured on 50 queries against one project's
-specs, and they are the cutoff that missed none of the 40 answered queries and returned a
-spec for none of the 10 unanswered ones.
+cutoff, 3 of 10 queries with no answer returned a spec. The two numbers were measured on
+50 queries against one project's specs, and they are the cutoff that missed none of the 40
+answered queries and returned a spec for none of the 10 unanswered ones.
 
 ## The memoryfield format
 

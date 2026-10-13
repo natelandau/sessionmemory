@@ -26,7 +26,7 @@ DECISION_HEADINGS = frozenset({"decision", "decisions", "key decisions", "approv
 
 # Bump whenever `embedding_input` changes what it derives from a spec. Freshness is by file
 # hash, so without this an unchanged spec would keep a vector built under the old rule.
-INPUT_VERSION = 1
+INPUT_VERSION = 2
 
 _NUMBERING = re.compile(r"^\d+[.)]\s*")
 _PART_LABEL = re.compile(r"^part \w+:\s*")
@@ -35,6 +35,8 @@ _TRAILING_PAREN = re.compile(r"\s*\([^)]*\)$")
 _METADATA = re.compile(r"^(?:[-*]\s+)?\*{0,2}[A-Z][\w ]{0,20}:\*{0,2}(\s|$)")
 _RULE = re.compile(r"^\s*([-*_])(\s*\1){2,}\s*$")
 _FENCES = ("```", "~~~")
+# A leading `---` block through the next column-0 `---` line, whatever it holds.
+_LEADING_BLOCK = re.compile(r"\A---\n.*?^---[ \t]*(?:\n|\Z)", re.DOTALL | re.MULTILINE)
 
 
 @dataclass(frozen=True)
@@ -140,7 +142,9 @@ def parse_spec(text: str, *, stem: str) -> ParsedSpec:
     """Split a spec into its title, preamble, and `## ` sections.
 
     The title comes from frontmatter, then the first H1, then `stem`. Lines inside a code
-    fence never open a section or an H1, so a spec quoting markdown parses as written.
+    fence never open a section or an H1, so a spec quoting markdown parses as written. A
+    leading block that does not parse is dropped through its closing `---` line, and one
+    that never closes is read as body, since where it ends cannot be known.
 
     Args:
         text (str): The full contents of the spec file.
@@ -153,8 +157,11 @@ def parse_spec(text: str, *, stem: str) -> ParsedSpec:
     text = text.removeprefix(frontmatter.BOM).replace("\r\n", "\n")
     try:
         meta, body = frontmatter.parse(text)
-    except frontmatter.FrontmatterError:
+    except frontmatter.MissingFrontmatterError:
         meta, body = {}, text
+    except frontmatter.FrontmatterError:
+        # A block that does not parse is still YAML, never prose to embed or show.
+        meta, body = {}, _LEADING_BLOCK.sub("", text, count=1)
 
     h1: str | None = None
     preamble: list[str] = []

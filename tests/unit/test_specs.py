@@ -99,6 +99,45 @@ def test_parse_spec_tolerates_unparsable_frontmatter():
     assert parsed.title == "T"
 
 
+_BROKEN_BLOCK = ["owner: [unclosed", "scope: billing reminders", "    nested: value"]
+_BROKEN_SPEC = (
+    "---\n" + "\n".join(_BROKEN_BLOCK) + "\n---\n# Send reminders\n\nThe intro.\n\n## Goal\n\nG.\n"
+)
+
+
+def test_embedding_input_omits_an_unparsable_frontmatter_block():
+    """Verify no line of a broken frontmatter block reaches the embedding input."""
+    # When building the embedding input of a spec whose block does not parse
+    text = specs.embedding_input(_BROKEN_SPEC, stem="s")
+    # Then no line of the block is embedded, and the H1 is still the title
+    for line in _BROKEN_BLOCK:
+        assert line.strip() not in text
+    assert "---" not in text
+    assert text.startswith("Send reminders\n\nThe intro.")
+
+
+def test_hit_summary_omits_an_unparsable_frontmatter_block():
+    """Verify a broken frontmatter block is never shown as a hit's summary."""
+    # When picking the summary of a spec whose block does not parse and has no Goal prose
+    summary = specs.hit_summary(_BROKEN_SPEC.replace("G.\n", "- x\n"))
+    # Then the opening paragraph is shown, not the raw YAML
+    assert summary == "The intro."
+
+
+def test_parse_spec_strips_an_unparsable_block_crlf():
+    """Verify a broken block written with CRLF endings is stripped through its closing line."""
+    parsed = specs.parse_spec(_BROKEN_SPEC.replace("\n", "\r\n"), stem="s")
+    assert parsed.title == "Send reminders"
+    assert parsed.preamble == "The intro."
+    assert parsed.meta == {}
+
+
+def test_parse_spec_keeps_an_unterminated_block_as_body():
+    """Verify a block with no closing line is left as body, since its end cannot be known."""
+    parsed = specs.parse_spec("---\nowner: [unclosed\n# T\n\nIntro.\n", stem="s")
+    assert parsed.title == "T"
+
+
 def test_parse_spec_drops_wrapped_metadata_continuation():
     """Verify lines wrapping a metadata entry are dropped with its label."""
     text = "# T\n\n**Scope:** the export path\nand its retry logic.\n\nProse stays.\n\n## G\n"
