@@ -65,10 +65,19 @@ sub-commands of its own:
 
     Use this shape by default. A module may export several such functions.
 
-- **A command group exports its own `typer.Typer()`.** `new.py` creates
-  `app = typer.Typer(no_args_is_help=True, help="Create a learning, spec, or plan.")`,
-  decorates each sub-command with `@app.command("learning")`, and `cli.py` mounts the
-  group:
+- **A command group exports its own `typer.Typer()`.** `new.py` creates its group:
+
+    ```python
+    app = typer.Typer(
+        cls=VersionedGroup,
+        no_args_is_help=True,
+        help="Create a learning, spec, plan, runbook, reference doc, or backlog item.",
+    )
+    ```
+
+    and decorates each sub-command with `@app.command("learning")`. `VersionedGroup` is
+    the group class that names the installed version when a command is unknown. `cli.py`
+    mounts the group:
 
     ```python
     app.add_typer(new_commands.app, name="new")
@@ -128,11 +137,14 @@ being wrapped mid-value.
 Prose for a person keeps its styling: `pp.success`, `pp.warning`, and `pp.error`.
 
 Every `--json` payload goes through `emit_json`, and every prose output a caller parses
-goes through `emit_value`. Four are worth naming. `search` prints a path, a title, and a
+goes through `emit_value`. Six are worth naming. `search` prints a path, a title, and a
 summary per hit, all of which a caller copies or parses, and bracketed prose in a summary
 is exactly what Rich would eat as markup. `inject` prints a block a caller redirects or
-pipes whole. `new --json` prints the path a caller writes the body into, and
-`project --json` prints every path the plugin's hooks read.
+pipes whole. `new --json` prints the path a caller writes the body into. Without `--json`,
+every `new` command prints that same plain path and nothing else (`new backlog` prints
+the line, then the path), so `path=$(sessionmemory new spec ...)` works. `path <kind>`
+prints one bare path the same way, and `project --json` prints every path the plugin's
+hooks read.
 
 `CliRunner` is not a terminal and the console decides its color system at import, so an
 in-process test proves nothing here. `tests/integration/test_cli_machine_output.py` runs
@@ -206,16 +218,24 @@ rather than beside it.
 writers racing for one title get two files rather than one overwritten page.
 
 **`lib/backlog.py` is the one place a backlog item's shape is known.** `KINDS`, `SIZES`,
-and the `is_item` predicate that `inject` counts by and `doctor` checks against live
-there, and `sessionmemory new backlog` is the CLI's one exception to leaving `backlog.md`
-to Read and Edit. It earns that because a line carries a heading from a fixed set, a size
-from a fixed set, and a date, none of which Edit validates, and a malformed line is
-silently not counted. The line has no checkbox: finished work is deleted, and git history
-is the record of it. A `- [ ]` prefix is an affordance, and an agent that sees one ticks
-it however the prompt reads, so the shape itself is what keeps a done item from lingering
-as `- [x]`. The command only appends: deleting needs no validation and stays a direct
-edit, and `add_item` never inserts the `# Backlog` heading into an existing file, since a
-file someone else structured is theirs.
+and the `is_item` predicate that `inject` counts by live there, and
+`sessionmemory new backlog` is the CLI's one exception to leaving `backlog.md` to Read
+and Edit. It earns that because a full line carries a heading from a fixed set, a size
+from a fixed set, and a date, none of which Edit validates. The shape the command writes
+is strict, but the shape the reader accepts is loose: `is_item` counts every column-0
+`- ` bullet with text, and no line is silently uncounted for being malformed. Only a
+ticked `- [x]` or `- [X]` line, and an indented bullet, which is a note under an item,
+are not open items. `KINDS` includes `decide`, written under a `## decide` heading, for
+a question the user has to answer. `new backlog` refuses a topic holding whitespace or a
+bracket, since `topics` could not read it back as one tag. Once the line is written it
+warns on stderr, without refusing, for a topic no existing line uses (listing the topics
+in use) and for a description over 200 characters, so a refused item prints no warning.
+The line has no checkbox: finished work is deleted, and git history is the record of it.
+A `- [ ]` prefix is an affordance, and an agent that sees one ticks it however the prompt
+reads, so the shape itself is what keeps a done item from lingering as `- [x]`. The
+command only appends: deleting needs no validation and stays a direct edit, and
+`add_item` never inserts the `# Backlog` heading into an existing file, since a file
+someone else structured is theirs.
 
 ### The index
 
@@ -313,11 +333,16 @@ hang.
 ### Injection
 
 `sessionmemory inject` emits a fixed guidance block, then every learning's title, then
-every reference doc's filename, then a count of open backlog items and a count of specs.
+every reference doc's and every runbook's filename, then a count of open backlog items
+and a count of specs. A review nudge line follows the titles when the project holds at
+least 10 learnings and `reviewed` in `_system/registry.toml` is absent or more than 30
+days old; `sessionmemory project --mark-reviewed` writes that key, and the review skill
+runs it last.
+
 Specs are counted rather than listed because they outlive the work they describe, so a
 list is a changelog that grows forever rather than open work; the guidance tells a
-session to list `specs/` before designing a feature. Reference docs are listed because
-they are few and edited in place rather than accumulated, and `_reference_docs` lists
+session to list `specs/` before designing a feature. Reference docs and runbooks are listed
+because they are few and edited in place rather than accumulated, and `_listed_docs` lists
 every markdown file rather than only conformant names, since a doc moved in by hand keeps
 the name it had. Plans are never mentioned, since the tool that writes them manages them. **The
 index is never read here**, and no page body ever enters an injection, which is what makes its cost
@@ -340,6 +365,11 @@ fails silently. `--command` is how the guidance spells this CLI, defaulting to
 name when the tool on `PATH` passed the handshake, and the shim's absolute path when the
 hooks fell back to it, since guidance naming a command the reader cannot run tells them
 nothing.
+
+The guidance also names `path <kind>` as the way to find a file, routes "remember this"
+to `new learning` rather than the agent's own memory files, says the hooks commit the
+vault, states the bullet rule for the backlog, and sends questions for the user to
+`## decide`.
 
 Injection is deliberately unranked and unlimited. If the titles prove not to be read, the
 next thing to try is a `UserPromptSubmit` hook that embeds each prompt and injects the
@@ -462,12 +492,21 @@ it names the subject only when it is alone. The body lists every path and opens 
 sweep log's summary when there is one. The message goes to `git commit -F -` on stdin, so
 a large first commit cannot exceed the argument limit.
 
-Staging is `git add -A -- :/ ':(exclude,glob)**/*.sqlite3*'`. `:/` keeps the whole
-repository in scope for a vault nested inside a larger one, and the exclusion keeps the
-derived index out of history whatever the vault's `.gitignore` says, since
-`sessionmemory init --force` adopts a directory without replacing an ignore file that
-predates the index. `_commit` checks `git add`'s exit status: `git add` stages what it can
-reach and still exits non-zero on a path it could not read, and committing over that
+Staging is
+`git add -A -- :/ ':(exclude,glob)**/*.sqlite3*' ':(top,exclude,glob)<prefix>projects/*/plans/**'`.
+`:/` keeps the whole repository in scope for a vault nested inside a larger one. The
+exclusion beside it keeps the derived index out of history, and the second keeps scratch
+plans out, whatever the vault's `.gitignore` says, since `sessionmemory init --force`
+adopts a directory without replacing an ignore file that predates either rule. The plans
+exclusion is anchored at the vault: `<prefix>` is the vault's own path inside the
+repository, read by the `git rev-parse --is-inside-work-tree --show-prefix` call that
+also checks for a work tree, with glob characters escaped, so an outer repository's own
+`projects/*/plans` is still staged. When git reports no prefix, the exclusion falls back
+to `**/projects/*/plans/**`. A plan already tracked stays tracked, but the exclusion keeps
+`git add -A` from staging an edit to it, so the hooks never commit one; a person commits
+it by hand. `sessionmemory init` writes `projects/*/plans/` into the vault's `.gitignore`
+for the same reason. `_commit` checks `git add`'s exit status: `git add` stages what it
+can reach and still exits non-zero on a path it could not read, and committing over that
 writes a commit silently missing the one file that needed attention.
 
 A commit is skipped rather than forced for seven reasons: `not a repository`, `clean`, a
@@ -507,18 +546,22 @@ it stays plaintext.
 
 ### Doctor
 
-`lib/doctor.py` holds seven checks and the `CHECKS` tuple that runs them. There are no
+`lib/doctor.py` holds eight checks and the `CHECKS` tuple that runs them. There are no
 tiers: every finding is a suggestion, `doctor_command` always exits 0, and nothing here
 can fail a build. Semantic retrieval never surfaces a page that does not match, so an
 imperfect page costs nothing, and a check that failed a build over one would fail it
 forever.
 
-The seven are a nonconformant filename, a page over `PAGE_LIMIT`, frontmatter that cannot
+The eight are a nonconformant filename, a page over `PAGE_LIMIT`, frontmatter that cannot
 be parsed or a learnings page missing `title` or `summary`, a bare date or datetime in
-frontmatter, a registered project whose root no longer exists, a top-level bullet in a
-`backlog.md` that `backlog.is_item` does not count (a ticked `- [x]` line foremost), and
-an index that is unreadable or behind its pages. A file that is not valid UTF-8 is
-reported by the frontmatter check. A logs page with no frontmatter block at all is fine, since a log has
+frontmatter, a registered project whose root no longer exists, a ticked `- [x]` or
+`- [X]` line in a `backlog.md` (any other top-level bullet is an open item, so nothing
+else there is reported), a reference to a vault file that does not exist, and an index
+that is unreadable or behind its pages. The reference check scans specs, runbooks,
+reference docs, and learnings for a mention such as `runbooks/deploy-the-worker.md` and
+reports each one that names no file. Plans are never a target, since a plan is scratch
+and may be gone by design. A file that is not valid UTF-8 is reported by the
+frontmatter check. A logs page with no frontmatter block at all is fine, since a log has
 nothing a search result would show. The datetime check has its own reader,
 `frontmatter.unquoted_datetime_keys`, because `frontmatter.parse` stringifies a date
 PyYAML typed and nothing downstream can then tell a quoted value from a bare one.
@@ -557,7 +600,7 @@ Four pages sit under `docs/`, and a change to behavior belongs in whichever ones
 - `cli.md`: every command, its options, and its real output.
 - `plugin.md`: the hooks, the sweep, every setting key and default, the slash commands,
   the review subagents.
-- `vault-health.md`: the seven `doctor` checks and what to do about each.
+- `vault-health.md`: the eight `doctor` checks and what to do about each.
 
 A new command, a new option, a new `doctor` check, a new settings key, or a changed
 default is a documentation change as much as a code change. The output in those pages is
