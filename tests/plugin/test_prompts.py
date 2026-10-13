@@ -65,7 +65,7 @@ def test_the_prompt_searches_the_repo_docs_before_a_learning():
 
     for doc in ("CLAUDE.md", "AGENTS.md", "README.md", "docs/"):
         assert doc in text
-    assert text.index("grep -rni") < command
+    assert text.index("grep -rnis") < command
     assert text.rindex("AGENTS.md", 0, command) > 0
 
 
