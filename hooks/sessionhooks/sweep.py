@@ -56,6 +56,7 @@ _GIT_TIMEOUT = 10
 # How much of a failed run's stderr the log keeps; enough to name the error, short
 # enough that a runaway traceback never dominates the file.
 STDERR_TAIL_CHARS = 500
+RESULT_TEXT_CHARS = 300
 # The model emits this when it judges the session worth no memory at all. It is
 # a diagnostic only: nothing reads it back, and a model that forgets it simply
 # leaves a sweep that recorded nothing looking like any other quiet sweep.
@@ -493,8 +494,12 @@ class Sweep:
             suffix = f" (notes: {'; '.join(notes)})" if notes else ""
             _log.info("sweep finished: ok, %s, %s%s", changes.describe(), commit, suffix)
             return
+        cause = (result.text or "").strip()[:RESULT_TEXT_CHARS]
         tail = (result.stderr or "").strip()[-STDERR_TAIL_CHARS:]
-        _log.error("sweep failed: claude exited %s (%s)", result.exit_code, tail or "no stderr")
+        parts = [part for part in (cause, f"stderr: {tail}" if tail else "") if part]
+        _log.error(
+            "sweep failed: claude exited %s (%s)", result.exit_code, "; ".join(parts) or "no output"
+        )
 
     def _quarantine(self, path: Path) -> None:
         """Move `path` into this project's quarantine directory rather than deleting it.

@@ -1433,9 +1433,37 @@ def test_run_job_logs_a_failed_sweep_with_the_exit_code_and_stderr(tmp_path: Pat
     sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="fail-001"))
     text = hooks_log_text(hooks_log)
     assert (
-        "ERROR [sweep       ] demo: sweep failed: claude exited -3 (claude CLI not found) (session=fail-001)"
+        "ERROR [sweep       ] demo: sweep failed: claude exited -3 (stderr: claude CLI not found) (session=fail-001)"
         in text
     )
+
+
+def test_run_job_logs_the_result_text_of_a_failed_run(tmp_path: Path) -> None:
+    """Verify a failed run logs the result text beside the stderr tail."""
+
+    class _FailingRunner:
+        def run(
+            self, prompt: str, *, cwd: str, extra_env: Mapping[str, str] | None = None
+        ) -> RunResult:
+            return RunResult(
+                success=False,
+                exit_code=1,
+                changed_files=[],
+                text="Invalid API key",
+                stderr="⚠ claude.ai connectors are disabled because ANTHROPIC_API_KEY is set",
+            )
+
+    hooks_log = _capture_log(tmp_path)
+    sweep = Sweep(
+        store_at(tmp_path),
+        SessionMemoryConfig(),
+        _FailingRunner(),
+        _FakeVault(_target_at(tmp_path / "vault")),
+    )
+    sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="fail-002"))
+    text = hooks_log_text(hooks_log)
+    assert "Invalid API key" in text
+    assert "stderr: ⚠ claude.ai connectors are disabled" in text
 
 
 def test_run_job_without_a_vault_logs_the_skip(tmp_path: Path) -> None:
