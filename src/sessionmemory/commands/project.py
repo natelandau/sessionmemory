@@ -275,32 +275,34 @@ def _register(
     if slug is not None:
         _require_slug_form(slug)
 
-    try:
-        projects = registry.load(vault)
-    except registry.RegistryError as error:
-        report_malformed_registry(vault, error)
+    # Held from load to save, so a registration racing this one cannot be lost.
+    with registry.locked(vault):
+        try:
+            projects = registry.load(vault)
+        except registry.RegistryError as error:
+            report_malformed_registry(vault, error)
 
-    existing = registry.find_by_remote(projects, context.remotes) or registry.find_by_root(
-        projects, str(root)
-    )
-    if existing:
-        pp.error(f"already registered as {existing.slug!r}")
-        raise typer.Exit(1)
+        existing = registry.find_by_remote(projects, context.remotes) or registry.find_by_root(
+            projects, str(root)
+        )
+        if existing:
+            pp.error(f"already registered as {existing.slug!r}")
+            raise typer.Exit(1)
 
-    resolved_slug = slug if slug is not None else _derived_slug(context.remotes, root)
-    if resolved_slug in projects:
-        pp.error(f"slug {resolved_slug!r} is already in use; pass --slug")
-        raise typer.Exit(1)
+        resolved_slug = slug if slug is not None else _derived_slug(context.remotes, root)
+        if resolved_slug in projects:
+            pp.error(f"slug {resolved_slug!r} is already in use; pass --slug")
+            raise typer.Exit(1)
 
-    # Read before the new entry is inserted, or it would match itself.
-    enclosing = registry.find_by_path_prefix(projects, str(root))
+        # Read before the new entry is inserted, or it would match itself.
+        enclosing = registry.find_by_path_prefix(projects, str(root))
 
-    projects[resolved_slug] = registry.Project(
-        slug=resolved_slug,
-        remotes=context.remotes,
-        root=str(root),
-    )
-    registry.save(vault, projects)
+        projects[resolved_slug] = registry.Project(
+            slug=resolved_slug,
+            remotes=context.remotes,
+            root=str(root),
+        )
+        registry.save(vault, projects)
 
     # The folder is created here rather than on the first page write because the
     # plugin's sweep runs inside it, and a project's first sweep is what writes its

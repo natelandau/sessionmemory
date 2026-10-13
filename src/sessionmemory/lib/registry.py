@@ -9,7 +9,10 @@ path that happens to contain a colon followed by digits is never mistaken for on
 
 from __future__ import annotations
 
+import contextlib
 import datetime
+import fcntl
+import os
 import re
 import tomllib
 from dataclasses import dataclass, replace
@@ -22,7 +25,7 @@ from sessionmemory.lib import atomic, ids
 from sessionmemory.lib.paths import SYSTEM_DIR
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping
+    from collections.abc import Iterable, Iterator, Mapping
 
 REGISTRY_FILE = "registry.toml"
 
@@ -211,6 +214,31 @@ def save(vault: Path, projects: Mapping[str, Project]) -> None:
     atomic.write_text(path, tomli_w.dumps(document))
 
 
+@contextlib.contextmanager
+def locked(vault: Path) -> Iterator[None]:
+    """Hold the registry's write lock for a whole load, modify, and save.
+
+    Every writer rewrites the one shared file from what it loaded, so two writers
+    interleaving would each save a registry missing the other's entry. The lock is an
+    exclusive `flock` on a descriptor for the `_system/` directory itself, so no lock
+    file is ever created, and the kernel drops it when the holder exits however it exits.
+
+    Args:
+        vault (Path): The vault root.
+
+    Yields:
+        None: Control, once no other writer holds the lock.
+    """
+    system = vault / SYSTEM_DIR
+    system.mkdir(parents=True, exist_ok=True)
+    fd = os.open(system, os.O_RDONLY)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
 def mark_reviewed(vault: Path, slug: str, day: str) -> None:
     """Record the day a project's learnings were last reviewed.
 
@@ -222,11 +250,12 @@ def mark_reviewed(vault: Path, slug: str, day: str) -> None:
     Raises:
         RegistryError: If the slug is not registered.
     """
-    projects = load(vault)
-    if slug not in projects:
-        msg = f"project {slug!r} is not registered"
-        raise RegistryError(msg)
-    save(vault, {**projects, slug: replace(projects[slug], reviewed=day)})
+    with locked(vault):
+        projects = load(vault)
+        if slug not in projects:
+            msg = f"project {slug!r} is not registered"
+            raise RegistryError(msg)
+        save(vault, {**projects, slug: replace(projects[slug], reviewed=day)})
 
 
 def find_by_remote(projects: Mapping[str, Project], remotes: Iterable[str]) -> Project | None:
