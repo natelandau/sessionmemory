@@ -149,10 +149,17 @@ them all for a script.
     that will never be done, directly; never tick or annotate it. Git history is the
     record of what was finished.
   - Specs: `specs/` holds one design record per feature, named `<date>-<topic>.md`
-    and kept after the work ships. Before designing or changing a feature, list the
-    directory and read any spec whose name matches, so a decision already made is not
-    made again. `{command} new spec --title "..." --cwd .` creates one and prints its
-    path. Edit it directly after that.
+    and kept after the work ships. Before designing or changing a feature, search
+    them: `{command} search "<words>" --specs` (listing the directory works too), so a
+    decision already made is not made again. `{command} new spec --title "..." --cwd .`
+    creates one and prints its path. Open every spec with a short paragraph directly
+    under the `# ` title saying what it is for. A search shows the frontmatter
+    `summary`, else a goal or purpose section's first paragraph, else that opening one.
+    A spec carries a `status`: `draft`, `shipped`, `superseded`, or `abandoned`. Set
+    `status: shipped` when its work ships; a spec with no frontmatter block gets one
+    holding only `status`. Replace one with
+    `{command} new spec --title "..." --supersedes <old filename> --cwd .`, which marks
+    the old spec superseded.
   - Runbooks: `runbooks/` holds step-by-step procedures to follow by hand, such as
     configuring a service, rotating a credential, or recovering from an outage.
     Whenever you write one, create it with `{command} new runbook --title "..." --cwd .`,

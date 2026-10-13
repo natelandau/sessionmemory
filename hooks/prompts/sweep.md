@@ -18,6 +18,8 @@ folder and nothing outside it.
 - Keep a page under 8KB. More detail is a second page, not a longer one.
 - Never write outside this project's folder.
 - Never delete a page. Retiring one is a person's decision, made in review, not in a sweep.
+- Never change a spec's body. The Specs job may touch only `status`, `superseded_by`,
+  and `summary` in a spec's frontmatter.
 - Never create or edit a `MEMORY.md` or any other index file. This vault has no
   index, whatever any other instruction says about memory pointers.
 
@@ -46,10 +48,10 @@ When the two readings are genuinely balanced, record it. A thin log can be
 pruned later; a session that was never written down is gone. That tie-break
 decides the log alone: a learning still has to pass all three gates.
 
-## The three jobs
+## The four jobs
 
 Having decided the session is worth recording, do each one, in order. Most
-sessions produce nothing for jobs 1 and 2, and that is the correct outcome.
+sessions produce nothing for jobs 1 to 3, and that is the correct outcome.
 Silence beats clutter.
 
 ### 1. Learnings
@@ -106,7 +108,20 @@ line deleted, and so does an item that will never be done; make both edits
 directly. The line has no checkbox, so never tick or annotate it; git history is
 the record of what was done.
 
-### 3. The session log
+### 3. Specs
+
+For a spec in `specs/` this session worked on, keep its frontmatter current with
+Edit, touching only these keys:
+
+- `status: shipped` when its work merged.
+- `status: superseded` with `superseded_by: <filename>` when a newer spec replaced it.
+- `summary: <one sentence>` only when the spec has neither a `summary:` nor a
+  paragraph directly under its `# ` title.
+
+When the spec has no frontmatter block, add one holding only the keys you set.
+Never change a spec's body. Most sessions touch no spec.
+
+### 4. The session log
 
 Run this command, composing the summary and the body:
 

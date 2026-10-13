@@ -10,7 +10,8 @@ holds:
 
 - `learnings/`, a flat field of markdown pages, searched by meaning.
 - `logs/`, a field with one page per past session, searched by meaning.
-- `specs/`, `plans/`, `runbooks/`, and `reference/`, ordinary files.
+- `specs/`, design records, indexed for `search --specs`, not a field.
+- `plans/`, `runbooks/`, and `reference/`, ordinary files.
 - `backlog.md`, the list of open work.
 
 The CLI does only what Read, Grep, and Write cannot: it searches pages by meaning,
@@ -32,6 +33,8 @@ required.
 "$CLI" search "connection pooling"               # this project's learnings, by meaning
 "$CLI" search "connection pooling" --read        # every hit's whole page, in one call
 "$CLI" search "deploy failed migration" --logs   # past sessions
+"$CLI" search "retry policy" --specs             # design records in specs/
+"$CLI" search "retry policy" --specs --include-retired   # also superseded and abandoned specs
 "$CLI" search "ruff" --json                      # path, title, summary, distance per hit
 ```
 
@@ -42,6 +45,9 @@ a paraphrase of those words still matches.
 Search the logs for why something was decided, what happened the last time an area
 changed, or whether a fix was already tried. Learnings hold the distilled facts. Logs
 hold the history.
+
+Search specs before designing or changing a feature. A search hides superseded and
+abandoned specs unless you pass `--include-retired`.
 
 Each hit is a path. Read it, or pass `--read` to get every hit's page in one call.
 `search` refreshes the index before it queries, so a page written a moment ago is
@@ -95,6 +101,20 @@ filename leads with its creation date; a runbook's is the title's slug alone:
 EOF
 "$CLI" new plan --title "..." --cwd .
 "$CLI" new runbook --title "..." --cwd .
+```
+
+Open every spec with a short paragraph directly under its `# ` title saying what it
+is for. A search shows the frontmatter `summary:`, else the first paragraph of a goal
+or purpose section, else that opening paragraph, so for a spec with neither, the
+opening paragraph is what results show and what the search embeds.
+
+A spec carries a `status`: `draft` (the default for a new spec), `shipped`,
+`superseded`, or `abandoned`. Set `status: shipped` in its frontmatter when its work
+ships. To replace a spec, create the new one with the old one named, which marks the
+old one `superseded` and records `superseded_by`:
+
+```bash
+"$CLI" new spec --title "..." --supersedes <old filename> --cwd .
 ```
 
 A runbook is a step-by-step procedure to follow by hand, such as configuring a

@@ -158,6 +158,19 @@ ranks by meaning and not by words in common. A hit has to stand out from the res
 project's pages, so a query that nothing answers returns no results rather than the
 nearest pages. Pass `--read` to print every hit in full.
 
+Specs are searched the same way with `--specs`, which finds a design record by its title,
+summary, and headings:
+
+```bash
+sessionmemory search "queue for rendering PDFs" --specs --cwd .
+```
+
+```
+~/repos/my-vault/projects/invoice-api/specs/2026-10-13-render-invoice-pdfs-in-a-worker-pool.md
+  Render invoice PDFs in a worker pool
+  Rendering a large invoice PDF blocks the request thread. Render in a pool of worker processes instead of a queue.
+```
+
 ```bash
 sessionmemory new learning \
   --title "Stripe retries a webhook for 72 hours, so the handler must be idempotent" \
@@ -178,7 +191,7 @@ and the summary is what a search result shows. Both state the fact and not the t
 ## What a session sees
 
 `sessionmemory inject` prints the block a session starts with. This is the block for a
-project holding one learning, one spec, one reference doc, one runbook, and four open
+project holding one learning, three specs, one reference doc, one runbook, and four open
 backlog items:
 
 ```
@@ -210,10 +223,17 @@ them all for a script.
     that will never be done, directly; never tick or annotate it. Git history is the
     record of what was finished.
   - Specs: `specs/` holds one design record per feature, named `<date>-<topic>.md`
-    and kept after the work ships. Before designing or changing a feature, list the
-    directory and read any spec whose name matches, so a decision already made is not
-    made again. `sessionmemory new spec --title "..." --cwd .` creates one and prints its
-    path. Edit it directly after that.
+    and kept after the work ships. Before designing or changing a feature, search
+    them: `sessionmemory search "<words>" --specs` (listing the directory works too), so a
+    decision already made is not made again. `sessionmemory new spec --title "..." --cwd .`
+    creates one and prints its path. Open every spec with a short paragraph directly
+    under the `# ` title saying what it is for. A search shows the frontmatter
+    `summary`, else a goal or purpose section's first paragraph, else that opening one.
+    A spec carries a `status`: `draft`, `shipped`, `superseded`, or `abandoned`. Set
+    `status: shipped` when its work ships; a spec with no frontmatter block gets one
+    holding only `status`. Replace one with
+    `sessionmemory new spec --title "..." --supersedes <old filename> --cwd .`, which marks
+    the old spec superseded.
   - Runbooks: `runbooks/` holds step-by-step procedures to follow by hand, such as
     configuring a service, rotating a credential, or recovering from an outage.
     Whenever you write one, create it with `sessionmemory new runbook --title "..." --cwd .`,
@@ -234,7 +254,7 @@ them all for a script.
 
 ## What this project knows
 
-  - Stripe retries a webhook for 72 hours
+  - Stripe retries a webhook for 72 hours, so the handler must be idempotent
 
 ## Reference docs
 
@@ -247,7 +267,7 @@ them all for a script.
 ## Open work
 
   4 open backlog items
-  1 spec in specs/
+  3 specs in specs/
 ```
 
 A page body never enters that block, so its cost grows with the number of pages and not

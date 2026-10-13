@@ -195,7 +195,7 @@ worker to finish commits everything. Two hooks reaching git at the same moment r
 git's own `index.lock`, and the loser skips. In every case the next hook commits what was
 left behind.
 
-## The sweep's three jobs
+## The sweep's four jobs
 
 `SessionEnd` and `PreCompact` start the same pass. The gating runs inline, and the heavy
 part runs in a detached worker that outlives session teardown, so nothing waits on it.
@@ -204,7 +204,7 @@ this project's vault folder.
 
 The pass first decides whether the session is worth recording at all. A session that was
 routine maintenance, or a couple of commands, or abandoned before anything was decided,
-is recorded as nothing at all. Then it does three jobs, in order:
+is recorded as nothing at all. Then it does four jobs, in order:
 
 1. **Learnings.** One page per durable fact that a future session in this repository
    would otherwise get wrong. Before writing one, the pass reads the repository and the
@@ -220,12 +220,18 @@ is recorded as nothing at all. Then it does three jobs, in order:
 2. **Deferred work.** Concrete work that was decided and not done becomes one line in
    `backlog.md`, written through `sessionmemory new backlog`. Work the transcript shows
    was finished has its line deleted.
-3. **The session log.** One page per session, written through `sessionmemory log`, which
+3. **Specs.** For a spec in `specs/` that the session worked on, the pass keeps three
+   frontmatter keys current: `status: shipped` when the work merged, `status: superseded`
+   with `superseded_by` when a newer spec replaced it, and a one-sentence `summary` for a
+   spec that has neither a `summary` nor a paragraph under its title. A spec with no
+   frontmatter block gets one holding only the keys the pass sets. It never changes a
+   spec's body.
+4. **The session log.** One page per session, written through `sessionmemory log`, which
    replaces the page's whole body on every call. The page is titled with the date and
    clock time the session began, in local time, so two sessions on one day are told
    apart by when each started.
 
-Most sessions produce nothing for jobs 1 and 2, and that is the correct outcome. Three
+Most sessions produce nothing for jobs 1 to 3, and that is the correct outcome. Three
 floors keep trivial sessions out of the vault, and below any one of them the whole pass
 is skipped. Two of the three are measured on your messages alone, so a long agent reply
 to one short instruction never clears them.
