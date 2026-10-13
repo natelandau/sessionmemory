@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import subprocess
+from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
 from sessionmemory.cli import app
+from sessionmemory.lib import fieldindex
 
 runner = CliRunner()
 
@@ -100,7 +102,7 @@ def test_search_drops_hits_beyond_max_distance(workspace):
 
     assert len(everything) == 1
     assert nothing.exit_code == 0
-    assert "nothing recorded matches this query" in nothing.output
+    assert "nothing in learnings matches" in nothing.output
     assert "--max-distance" not in nothing.output
 
 
@@ -161,3 +163,152 @@ def test_search_read_json_carries_the_content(workspace):
 
     assert set(payload[0]) == {"path", "title", "summary", "distance", "content"}
     assert payload[0]["content"] == path.read_text(encoding="utf-8")
+
+
+_FLAGS = ["--max-distance", "2", "--min-margin", "0"]
+
+
+def _new_spec(title: str, body: str, status: str | None = None) -> Path:
+    path = Path(runner.invoke(app, ["new", "spec", "--title", title]).stdout.strip())
+    front = f"---\nstatus: {status}\n---\n" if status else ""
+    path.write_text(f"{front}# {title}\n\n{body}\n")
+    return path
+
+
+def test_search_specs_prints_path_title_and_summary(workspace):
+    """Verify --specs prints each spec's path, title, and derived summary."""
+    path = _new_spec("Pricing", "## Goal\n\nWho pays.")
+
+    result = runner.invoke(app, ["search", "q", "--specs", *_FLAGS])
+
+    assert result.exit_code == 0, result.output
+    assert str(path) in result.stdout
+    assert "  Pricing" in result.stdout
+    assert "  Who pays." in result.stdout
+
+
+def test_search_specs_hides_retired_unless_asked(workspace):
+    """Verify retired specs are hidden by default and marked when included."""
+    _new_spec("Current design", "## Goal\n\nKeep.")
+    _new_spec("Old design", "## Goal\n\nGone.", status="superseded")
+
+    default = runner.invoke(app, ["search", "q", "--specs", *_FLAGS])
+    everything = runner.invoke(app, ["search", "q", "--specs", "--include-retired", *_FLAGS])
+
+    assert "Current design" in default.stdout
+    assert "Old design" not in default.stdout
+    assert "Current design" in everything.stdout
+    assert "  Old design (superseded)" in everything.stdout
+
+
+def test_search_specs_json_carries_status(workspace):
+    """Verify every spec entry in the JSON payload includes its status."""
+    _new_spec("One", "## Goal\n\nA.")
+    _new_spec("Two", "## Goal\n\nB.", status="shipped")
+
+    payload = json.loads(runner.invoke(app, ["search", "q", "--specs", "--json", *_FLAGS]).stdout)
+
+    assert payload
+    for entry in payload:
+        assert set(entry) == {"path", "title", "summary", "distance", "status"}
+
+
+def test_search_specs_read_prints_the_whole_spec(workspace):
+    """Verify --read prints text from deep in the spec body."""
+    _new_spec("Deep", "## Goal\n\nShort.\n\n## Problem\n\nA line only found deep inside.")
+
+    result = runner.invoke(app, ["search", "q", "--specs", "--read", *_FLAGS])
+
+    assert result.exit_code == 0, result.output
+    assert "A line only found deep inside." in result.stdout
+
+
+def test_search_specs_read_json_carries_content_and_status(workspace):
+    """Verify --specs --read --json entries carry the whole file and the spec's status."""
+    path = _new_spec("Deep", "## Goal\n\nShort.", status="shipped")
+
+    result = runner.invoke(app, ["search", "q", "--specs", "--read", "--json", *_FLAGS])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert set(payload[0]) == {"path", "title", "summary", "distance", "status", "content"}
+    assert payload[0]["content"] == path.read_text(encoding="utf-8")
+    assert payload[0]["status"] == "shipped"
+
+
+def test_search_refuses_include_retired_without_specs(workspace):
+    """Verify --include-retired alone is a usage error, since only specs are retired."""
+    result = runner.invoke(app, ["search", "q", "--include-retired"])
+
+    assert result.exit_code != 0
+    assert "--include-retired needs --specs" in result.output
+
+
+def test_search_learning_with_a_retired_status_prints_no_suffix(workspace):
+    """Verify a learning carrying `status: superseded` is not marked as a retired spec."""
+    vault, _ = workspace
+    runner.invoke(app, ["new", "learning", "--title", "Kept", "--summary", "s"])
+    page = vault / "projects" / "demo" / "learnings" / "kept.md"
+    page.write_text(
+        page.read_text(encoding="utf-8").replace("---\n", "---\nstatus: superseded\n", 1)
+    )
+
+    result = runner.invoke(app, ["search", "q", *_FLAGS])
+
+    assert result.exit_code == 0, result.output
+    assert "  Kept\n" in result.stdout
+    assert "(superseded)" not in result.stdout
+
+
+def test_search_refuses_specs_with_logs(workspace):
+    """Verify --specs and --logs together is a usage error."""
+    result = runner.invoke(app, ["search", "q", "--specs", "--logs"])
+
+    assert result.exit_code != 0
+    assert "mutually exclusive" in result.output
+
+
+def test_search_empty_learnings_names_specs_and_logs(workspace):
+    """Verify an empty learnings search points at the other fields."""
+    result = runner.invoke(app, ["search", "q"])
+
+    assert "--specs" in result.output
+    assert "--logs" in result.output
+
+
+def test_search_learnings_json_has_no_status_key(workspace):
+    """Verify the learnings payload shape is unchanged."""
+    runner.invoke(app, ["new", "learning", "--title", "A", "--summary", "s"])
+
+    payload = json.loads(runner.invoke(app, ["search", "q", "--json", *_FLAGS]).stdout)
+
+    assert set(payload[0]) == {"path", "title", "summary", "distance"}
+
+
+@pytest.mark.parametrize(
+    ("flags", "expected"),
+    [
+        (["--specs"], ("SPECS_MAX_DISTANCE", "SPECS_MIN_MARGIN")),
+        ([], ("DEFAULT_MAX_DISTANCE", "DEFAULT_MIN_MARGIN")),
+        (["--logs"], ("DEFAULT_MAX_DISTANCE", "DEFAULT_MIN_MARGIN")),
+    ],
+)
+def test_search_default_cutoff_follows_the_field(workspace, mocker, flags, expected):
+    """Verify each field's search passes its own measured cutoff when none is named."""
+    search = mocker.patch.object(fieldindex, "search", autospec=True, return_value=[])
+
+    runner.invoke(app, ["search", "q", *flags])
+
+    kwargs = search.call_args.kwargs
+    assert kwargs["max_distance"] == getattr(fieldindex, expected[0])
+    assert kwargs["min_margin"] == getattr(fieldindex, expected[1])
+
+
+def test_search_specs_honors_an_explicit_cutoff(workspace, mocker):
+    """Verify a cutoff named on the command line wins over the spec defaults."""
+    search = mocker.patch.object(fieldindex, "search", autospec=True, return_value=[])
+
+    runner.invoke(app, ["search", "q", "--specs", "--max-distance", "0.5", "--min-margin", "0"])
+
+    assert search.call_args.kwargs["max_distance"] == 0.5
+    assert search.call_args.kwargs["min_margin"] == 0

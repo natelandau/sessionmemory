@@ -10,6 +10,7 @@ import pytest
 from typer.testing import CliRunner, Result
 
 from sessionmemory.cli import app
+from sessionmemory.lib import specs
 from sessionmemory.lib.config import today
 from sessionmemory.lib.frontmatter import parse
 
@@ -74,17 +75,152 @@ def test_new_learning_body_from_stdin(workspace):
     assert body == "Prose.\n"
 
 
-@pytest.mark.parametrize(("kind", "folder"), [("spec", "specs"), ("plan", "plans")])
-def test_new_document_writes_title_and_dates_only(workspace, kind, folder):
-    """Verify a spec or plan is a dated, titled file with no uuid or summary."""
+def test_new_plan_writes_title_and_dates_only(workspace):
+    """Verify a plan is a dated, titled file with no uuid, summary, or status."""
     vault, _ = workspace
 
-    result = runner.invoke(app, ["new", kind, "--title", "A Thing"])
+    result = runner.invoke(app, ["new", "plan", "--title", "A Thing"])
 
     assert result.exit_code == 0, result.output
-    path = vault / "projects" / "demo" / folder / f"{today()}-a-thing.md"
+    path = vault / "projects" / "demo" / "plans" / f"{today()}-a-thing.md"
     meta, _ = parse(path.read_text(encoding="utf-8"))
     assert list(meta) == ["title", "created", "updated"]
+
+
+def test_new_spec_writes_draft_status(workspace):
+    """Verify a new spec carries title, dates, and a draft status."""
+    vault, _ = workspace
+
+    result = runner.invoke(app, ["new", "spec", "--title", "A Thing"])
+
+    assert result.exit_code == 0, result.output
+    path = vault / "projects" / "demo" / "specs" / f"{today()}-a-thing.md"
+    meta, _ = parse(path.read_text(encoding="utf-8"))
+    assert list(meta) == ["title", "created", "updated", "status"]
+    assert meta["status"] == "draft"
+
+
+def _old_spec(vault) -> Path:
+    result = runner.invoke(app, ["new", "spec", "--title", "Old", "--body", "Old body.\n"])
+    assert result.exit_code == 0, result.output
+    return vault / "projects" / "demo" / "specs" / f"{today()}-old.md"
+
+
+def test_new_spec_supersedes_marks_the_old_spec(workspace):
+    """Verify --supersedes retires the named spec and links it to the new one."""
+    vault, _ = workspace
+    old = _old_spec(vault)
+    before_meta, before_body = parse(old.read_text(encoding="utf-8"))
+
+    result = runner.invoke(app, ["new", "spec", "--title", "New", "--supersedes", old.name])
+
+    assert result.exit_code == 0, result.output
+    meta, body = parse(old.read_text(encoding="utf-8"))
+    assert meta["status"] == "superseded"
+    assert meta["superseded_by"] == f"{today()}-new.md"
+    assert body == before_body
+    assert {k: v for k, v in meta.items() if k not in ("status", "superseded_by")} == {
+        k: v for k, v in before_meta.items() if k != "status"
+    }
+
+
+@pytest.mark.parametrize("form", ["{stem}", "{stem}.md", "specs/{stem}.md"])
+def test_new_spec_supersedes_accepts_a_name_without_md_or_a_path(workspace, form):
+    """Verify --supersedes takes a stem, a filename, or a path ending in the filename."""
+    vault, _ = workspace
+    old = _old_spec(vault)
+
+    result = runner.invoke(
+        app, ["new", "spec", "--title", "New", "--supersedes", form.format(stem=old.stem)]
+    )
+
+    assert result.exit_code == 0, result.output
+    meta, _ = parse(old.read_text(encoding="utf-8"))
+    assert meta["status"] == "superseded"
+
+
+def test_new_spec_supersedes_unknown_name_creates_nothing(workspace):
+    """Verify an unknown --supersedes name fails before a new spec is written."""
+    vault, _ = workspace
+    old = _old_spec(vault)
+    before = sorted(p.name for p in old.parent.iterdir())
+
+    result = runner.invoke(app, ["new", "spec", "--title", "New", "--supersedes", "nope"])
+
+    assert result.exit_code == 1
+    assert "no spec named" in result.output
+    assert sorted(p.name for p in old.parent.iterdir()) == before
+
+
+def test_new_spec_supersedes_refuses_an_unparsable_old_spec(workspace):
+    """Verify a spec whose frontmatter cannot be parsed blocks the command and stays untouched."""
+    vault, _ = workspace
+    old = _old_spec(vault)
+    old.write_text("---\ntitle: [x\n---\nbody\n", encoding="utf-8")
+    before = sorted(p.name for p in old.parent.iterdir())
+
+    result = runner.invoke(app, ["new", "spec", "--title", "New", "--supersedes", old.name])
+
+    assert result.exit_code == 1
+    assert sorted(p.name for p in old.parent.iterdir()) == before
+    assert old.read_text(encoding="utf-8") == "---\ntitle: [x\n---\nbody\n"
+
+
+def test_new_spec_supersedes_reports_only_after_marking_the_old_spec(workspace, mocker):
+    """Verify a failure marking the old spec removes the new one and reports no path."""
+    vault, _ = workspace
+    old = _old_spec(vault)
+    before = sorted(p.name for p in old.parent.iterdir())
+    mocker.patch.object(specs, "mark_superseded", autospec=True, side_effect=OSError("disk full"))
+
+    result = runner.invoke(app, ["new", "spec", "--title", "New", "--supersedes", old.name])
+
+    assert result.exit_code == 1
+    assert "disk full" in result.output
+    assert "new.md" not in result.stdout
+    assert sorted(p.name for p in old.parent.iterdir()) == before
+
+
+def test_new_spec_supersedes_an_already_superseded_spec(workspace):
+    """Verify superseding a spec again points superseded_by at the newest replacement."""
+    vault, _ = workspace
+    old = _old_spec(vault)
+    assert (
+        runner.invoke(app, ["new", "spec", "--title", "Mid", "--supersedes", old.name]).exit_code
+        == 0
+    )
+
+    result = runner.invoke(app, ["new", "spec", "--title", "Last", "--supersedes", old.name])
+
+    assert result.exit_code == 0, result.output
+    meta, _ = parse(old.read_text(encoding="utf-8"))
+    assert (meta["status"], meta["superseded_by"]) == ("superseded", f"{today()}-last.md")
+
+
+def test_new_spec_supersedes_resolves_a_parent_path_inside_specs(workspace):
+    """Verify a `../name.md` form resolves to the spec of that name in this project's specs/."""
+    vault, _ = workspace
+    old = _old_spec(vault)
+
+    result = runner.invoke(app, ["new", "spec", "--title", "New", "--supersedes", f"../{old.name}"])
+
+    assert result.exit_code == 0, result.output
+    meta, _ = parse(old.read_text(encoding="utf-8"))
+    assert meta["status"] == "superseded"
+
+
+def test_new_spec_supersedes_a_spec_without_frontmatter(workspace):
+    """Verify an old spec with no block gets one holding only status and superseded_by."""
+    vault, _ = workspace
+    old = _old_spec(vault)
+    old.write_text("# Old\n\nOld body.\n", encoding="utf-8")
+
+    result = runner.invoke(app, ["new", "spec", "--title", "New", "--supersedes", old.name])
+
+    assert result.exit_code == 0, result.output
+    meta, body = parse(old.read_text(encoding="utf-8"))
+    assert meta == {"status": "superseded", "superseded_by": f"{today()}-new.md"}
+    assert body == "# Old\n\nOld body.\n"
 
 
 LIVING = pytest.mark.parametrize(

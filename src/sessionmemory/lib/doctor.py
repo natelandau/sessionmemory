@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from sessionmemory.lib import field, fieldindex, paths, registry
+from sessionmemory.lib import field, fieldindex, paths, registry, specs
 from sessionmemory.lib.frontmatter import (
     FrontmatterError,
     MissingFrontmatterError,
@@ -38,10 +38,13 @@ class Finding:
 
 
 def nonconformant_names(vault: Path, _embedder: Embedder) -> list[Finding]:
-    """Report a markdown file in a field whose name breaks the spec's filename rule."""
+    """Report a markdown file in a field or `specs/` whose name breaks the filename rule.
+
+    Such a file is never indexed, so it is never searched, and a spec is never counted.
+    """
     return [
         Finding("filename", str(path), "not lowercase ascii letters, digits, and hyphens")
-        for directory in paths.iter_field_dirs(vault)
+        for directory in paths.iter_index_dirs(vault)
         for path in sorted(directory.glob("*.md"))
         if path.is_file() and not field.is_debris(path.name) and not field.is_page_name(path.name)
     ]
@@ -205,6 +208,34 @@ def dangling_references(vault: Path, _embedder: Embedder) -> list[Finding]:
     return findings
 
 
+def spec_statuses(vault: Path, _embedder: Embedder) -> list[Finding]:
+    """Report a spec whose status is unknown or unreadable, or superseded without a real successor.
+
+    A spec with no status, or with no frontmatter block at all, is current and reports
+    nothing. A block that cannot be parsed is reported here, since the frontmatter check
+    reads only fields and a broken block silently makes the spec current.
+    """
+    findings = []
+    for slug in paths.iter_project_slugs(vault):
+        directory = paths.specs_dir(vault, slug)
+        pages = field.iter_pages(directory) if directory.is_dir() else []
+        siblings = {path.name for path in pages}
+        for path in pages:
+            try:
+                meta, _body = parse(path.read_text(encoding="utf-8", errors="replace"))
+            except MissingFrontmatterError:
+                continue
+            except FrontmatterError:
+                message = "frontmatter cannot be parsed; status ignored"
+                findings.append(Finding("spec", str(path), message))
+                continue
+            findings.extend(
+                Finding("spec", str(path), problem)
+                for problem in specs.status_problems(meta, filename=path.name, siblings=siblings)
+            )
+    return findings
+
+
 def _is_stale(directory: Path, embedder: Embedder) -> str | None:
     index = fieldindex.index_path(directory, embedder)
     if not index.is_file():
@@ -218,8 +249,11 @@ def _is_stale(directory: Path, embedder: Embedder) -> str | None:
             row["filename"]: row["sha256_hash"]
             for row in conn.execute("SELECT filename, sha256_hash FROM pages")
         }
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
     finally:
         conn.close()
+    if directory.name == paths.SPECS_DIR and version != specs.INPUT_VERSION:
+        return "index is behind its pages; run: sessionmemory reindex"
     current = {
         path.name: hashlib.sha256(path.read_bytes()).digest()
         for path in field.iter_pages(directory)
@@ -228,9 +262,9 @@ def _is_stale(directory: Path, embedder: Embedder) -> str | None:
 
 
 def stale_indexes(vault: Path, embedder: Embedder) -> list[Finding]:
-    """Report a field whose index file is unreadable or behind its pages."""
+    """Report a field or specs directory whose index is unreadable or behind its pages."""
     findings = []
-    for directory in paths.iter_field_dirs(vault):
+    for directory in paths.iter_index_dirs(vault):
         message = _is_stale(directory, embedder)
         if message:
             findings.append(Finding("index", str(directory), message))
@@ -245,6 +279,7 @@ CHECKS: tuple[Callable[[Path, Embedder], list[Finding]], ...] = (
     dead_projects,
     ticked_backlog_lines,
     dangling_references,
+    spec_statuses,
     stale_indexes,
 )
 

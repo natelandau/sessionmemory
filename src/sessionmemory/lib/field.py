@@ -183,7 +183,9 @@ def new_page(directory: Path, *, title: str, summary: str, body: str, now: str) 
     return _create(directory, meta, body, stem=None)
 
 
-def new_document(directory: Path, *, title: str, body: str, now: str, day: str) -> Path:
+def new_document(
+    directory: Path, *, title: str, body: str, now: str, day: str, status: str | None = None
+) -> Path:
     """Create a spec or plan: a titled, dated file that is not a memory page.
 
     The filename leads with `day`, so a directory listing reads in the order the
@@ -194,6 +196,8 @@ def new_document(directory: Path, *, title: str, body: str, now: str, day: str) 
         PageError: If the title yields no slug or no name is free.
     """
     meta = {"title": title, "created": now, "updated": now}
+    if status is not None:
+        meta["status"] = status
     return _create(directory, meta, body, stem=dated_stem(title, day))
 
 

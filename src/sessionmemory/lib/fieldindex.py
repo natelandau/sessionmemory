@@ -6,6 +6,10 @@ read, and every read refreshes first so nobody has to remember `reindex`.
 
 There is no application lock. A page write is an atomic rename, SQLite serializes its
 own writers, and a corrupt file is discarded and rebuilt rather than reported.
+
+A field embeds the whole file. A `specs/` directory is indexed the same way, with the
+same table and file name, but embeds `specs.embedding_input`, a derived input of the
+title and headings, since a spec's body is too long and too uniform to embed whole.
 """
 
 from __future__ import annotations
@@ -16,13 +20,14 @@ import json
 import sqlite3
 import statistics
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import sqlite_vec
 
-from sessionmemory.lib import field
+from sessionmemory.lib import field, paths, specs
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
     from sessionmemory.lib.embed import Embedder
@@ -43,6 +48,12 @@ DEFAULT_MIN_MARGIN = 0.11
 MIN_BACKGROUND_PAGES = 8
 FALLBACK_BACKGROUND = 0.49
 
+# Measured with nomic-embed-text-v1.5 on 50 labeled keyword queries against 51 specs, where
+# the learnings defaults returned hits for 3 of 10 queries with no answer. Specs are
+# embedded from a derived input rather than the whole page, so they need their own numbers.
+SPECS_MAX_DISTANCE = 0.38
+SPECS_MIN_MARGIN = 0.07
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS pages (
     filename      TEXT PRIMARY KEY,
@@ -62,6 +73,7 @@ class Hit:
     title: str
     summary: str
     distance: float
+    status: str = ""
 
 
 @dataclass(frozen=True)
@@ -113,12 +125,36 @@ def embedding_input(text: str) -> str:
     return encoded[: field.PAGE_LIMIT].decode("utf-8", errors="ignore")
 
 
+def _is_specs(field_dir: Path) -> bool:
+    return field_dir.name == paths.SPECS_DIR
+
+
+def _embedding_text(field_dir: Path, path: Path, text: str) -> str:
+    if _is_specs(field_dir):
+        return specs.embedding_input(text, stem=path.stem)
+    return embedding_input(text)
+
+
 def _mtime_iso(path: Path) -> str:
     stamp = datetime.datetime.fromtimestamp(path.stat().st_mtime, tz=datetime.UTC)
     return stamp.replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def _drop_outdated_spec_vectors(conn: sqlite3.Connection, field_dir: Path) -> None:
+    """Empty a specs index built under another input rule, so every spec is re-embedded.
+
+    Freshness is by file hash, so a change to `specs.embedding_input` would otherwise
+    leave every unchanged spec on a vector derived by the old rule.
+    """
+    if not _is_specs(field_dir):
+        return
+    if conn.execute("PRAGMA user_version").fetchone()[0] != specs.INPUT_VERSION:
+        conn.execute("DELETE FROM pages")
+        conn.execute(f"PRAGMA user_version = {int(specs.INPUT_VERSION)}")
+
+
 def _refresh(conn: sqlite3.Connection, field_dir: Path, embedder: Embedder) -> Refresh:
+    _drop_outdated_spec_vectors(conn, field_dir)
     stored = {
         row["filename"]: row["sha256_hash"]
         for row in conn.execute("SELECT filename, sha256_hash FROM pages")
@@ -137,13 +173,20 @@ def _refresh(conn: sqlite3.Connection, field_dir: Path, embedder: Embedder) -> R
             unchanged += 1
             continue
         page = field.read_page(path)
-        pending.append((path.name, json.dumps(page.meta), _mtime_iso(path), digest, text))
+        pending.append(
+            (
+                path.name,
+                json.dumps(page.meta),
+                _mtime_iso(path),
+                digest,
+                _embedding_text(field_dir, path, text),
+            )
+        )
 
     gone = sorted(set(stored) - seen)
     conn.executemany("DELETE FROM pages WHERE filename = ?", [(name,) for name in gone])
 
-    # The spec's embedding input is the whole file, frontmatter included.
-    vectors = embedder.encode_documents([embedding_input(text) for *_rest, text in pending])
+    vectors = embedder.encode_documents([text for *_rest, text in pending])
     conn.executemany(
         "INSERT OR REPLACE INTO pages (filename, frontmatter, last_modified, sha256_hash, embedding)"
         " VALUES (?, ?, ?, ?, ?)",
@@ -178,13 +221,15 @@ def search(
     limit: int,
     max_distance: float = DEFAULT_MAX_DISTANCE,
     min_margin: float = DEFAULT_MIN_MARGIN,
+    exclude: Callable[[dict[str, Any]], bool] | None = None,
 ) -> list[Hit]:
     """Return the pages that stand out as nearest to `query`, nearest first, refreshing the index first.
 
     A hit sits within `max_distance` and at least `min_margin` nearer than the field's
     median page. A cutoff rather than a bare top-k, so a query nothing answers returns
     nothing instead of the nearest pages dressed up as hits. A `min_margin` of 0 leaves
-    only the absolute cutoff.
+    only the absolute cutoff. `exclude` drops a page by its frontmatter after the median
+    is measured, so a dropped page never uses up `limit`.
     """
     if not field_dir.is_dir():
         return []
@@ -212,14 +257,28 @@ def search(
         if float(row["distance"]) > ceiling or len(hits) == limit:
             break
         meta = json.loads(row["frontmatter"])
-        title = meta.get("title")
-        summary = meta.get("summary")
+        if exclude is not None and exclude(meta):
+            continue
+        status = meta.get("status")
+        path = field_dir / row["filename"]
+        if _is_specs(field_dir):
+            try:
+                text = path.read_bytes().decode("utf-8", errors="replace")
+            except OSError:
+                # The file went away after the refresh; a hit for it would point at nothing.
+                continue
+            title = specs.parse_spec(text, stem=path.stem).title
+            summary = specs.hit_summary(text)
+        else:
+            title = meta.get("title")
+            summary = meta.get("summary")
         hits.append(
             Hit(
-                path=field_dir / row["filename"],
+                path=path,
                 title=title if isinstance(title, str) else "",
                 summary=summary if isinstance(summary, str) else "",
                 distance=float(row["distance"]),
+                status=status if isinstance(status, str) else "",
             )
         )
     return hits

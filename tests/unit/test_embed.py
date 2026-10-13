@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+import numpy as np
 import pytest
 
 from sessionmemory.lib import embed
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+    from pytest_mock import MockerFixture
 
 
 def test_stub_embedder_returns_one_vector_per_document_of_length_dim():
@@ -54,7 +62,7 @@ def test_fast_embedder_prefixes_documents_and_queries(mocker):
     """Verify the nomic task prefixes are prepended, since fastembed does not."""
     fast = embed.FastEmbedder()
     model = mocker.Mock()
-    model.embed.side_effect = lambda texts: [
+    model.embed.side_effect = lambda texts, **_: [
         mocker.Mock(tolist=lambda: [0.0] * embed.DIM) for _ in texts
     ]
     mocker.patch.object(fast, "_load", return_value=model)
@@ -62,8 +70,8 @@ def test_fast_embedder_prefixes_documents_and_queries(mocker):
     fast.encode_documents(["page text"])
     fast.encode_query("q")
 
-    model.embed.assert_any_call(["search_document: page text"])
-    model.embed.assert_any_call(["search_query: q"])
+    model.embed.assert_any_call(["search_document: page text"], batch_size=embed.EMBED_BATCH_SIZE)
+    model.embed.assert_any_call(["search_query: q"], batch_size=embed.EMBED_BATCH_SIZE)
 
 
 def test_fast_embedder_encode_empty_batch_returns_empty_list_without_loading(mocker):
@@ -101,3 +109,22 @@ def test_default_embedder_uses_env_var_cache_directory_when_set(monkeypatch, tmp
     """Verify a configured cache directory overrides the default."""
     monkeypatch.setenv(embed.CACHE_ENV_VAR, str(tmp_path / "models"))
     assert embed.default_embedder().cache_dir == tmp_path / "models"
+
+
+def test_fast_embedder_embeds_in_small_batches(mocker: MockerFixture):
+    """Verify the real embedder passes EMBED_BATCH_SIZE to the model and keeps order."""
+    calls: list[dict] = []
+
+    class FakeModel:
+        def embed(self, texts: list[str], **kwargs: int) -> Iterator[np.ndarray]:
+            calls.append(kwargs)
+            for index, _ in enumerate(texts):
+                yield np.full(embed.DIM, float(index))
+
+    embedder = embed.FastEmbedder()
+    mocker.patch.object(embedder, "_load", autospec=True, return_value=FakeModel())
+
+    vectors = embedder.encode_documents(["a", "b", "c"])
+
+    assert calls == [{"batch_size": embed.EMBED_BATCH_SIZE}]
+    assert [vector[0] for vector in vectors] == [0.0, 1.0, 2.0]

@@ -312,3 +312,19 @@ def test_render_carries_no_summaries_or_bodies(tmp_path):
     assert "SUMMARY-SENTINEL-beta" not in text
     assert "BODY-SENTINEL-alpha" not in text
     assert "BODY-SENTINEL-beta" not in text
+
+
+def test_guidance_teaches_spec_search_summary_and_status():
+    """Verify the guidance teaches spec search, the opening paragraph, the statuses, and supersession."""
+    flat = " ".join(inject.GUIDANCE.format(command="sessionmemory").split())
+
+    assert 'sessionmemory search "<words>" --specs' in flat
+    assert "directly under the" in flat
+    assert (
+        "A search shows the frontmatter `summary`, else a goal or purpose section's first"
+        " paragraph, else that opening one." in flat
+    )
+    assert "a spec with no frontmatter block gets one holding only `status`" in flat
+    for status in ("draft", "shipped", "superseded", "abandoned"):
+        assert status in flat
+    assert 'new spec --title "..." --supersedes <old filename>' in flat

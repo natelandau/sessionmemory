@@ -246,16 +246,19 @@ one, so two pages with the same title never collide.
 
 ## `sessionmemory new spec`
 
-Create a spec for this project. A spec is a plain file: it is never embedded and never
-searched.
+Create a spec for this project. A spec is a plain file, not a page: it has no summary
+field and no size limit. `sessionmemory search --specs` finds it by an embedding of its
+title, its opening paragraph, its headings, and its goal and decision sections, never by
+the whole body.
 
-| Option        | What it does                                 |
-| ------------- | -------------------------------------------- |
-| `--title`     | The title. Required.                         |
-| `--body`      | Markdown body.                               |
-| `--body-file` | Read the body from a file, or stdin for `-`. |
-| `--cwd`       | Directory to resolve the project from.       |
-| `--json`      | Emit JSON instead of prose.                  |
+| Option         | What it does                                                                  |
+| -------------- | ----------------------------------------------------------------------------- |
+| `--title`      | The title. Required.                                                          |
+| `--body`       | Markdown body.                                                                |
+| `--body-file`  | Read the body from a file, or stdin for `-`.                                  |
+| `--supersedes` | The spec this one replaces, by filename. The old spec is marked superseded.   |
+| `--cwd`        | Directory to resolve the project from.                                        |
+| `--json`       | Emit JSON instead of prose.                                                   |
 
 ```bash
 sessionmemory new spec --title "Export invoices as UBL 2.1 XML" --cwd .
@@ -266,8 +269,42 @@ sessionmemory new spec --title "Export invoices as UBL 2.1 XML" --cwd .
 ```
 
 The filename leads with the local creation date, so a listing of `specs/` reads in the
-order the specs were written. Only `title`, `created`, and `updated` are written. After
-that the file is yours to edit.
+order the specs were written. The command writes `title`, `created`, `updated`, and
+`status: draft`. After that the file is yours to edit.
+
+A spec carries a `status` because it outlives the work it describes. The values are
+`draft` (designed and not, or not fully, built), `shipped`, `superseded`, and
+`abandoned`. A spec with no `status` is current. Set `status: shipped` in the file when
+the work ships.
+
+Open the body with a short paragraph directly under the `# ` title that says what the
+spec is for. A search result shows the frontmatter `summary` when there is one, else the
+first paragraph of a goal or purpose section, else that opening paragraph, so the opening
+paragraph is the summary of any spec without either.
+
+`--supersedes` replaces a spec. It sets the old spec's `status` to `superseded` and its
+`superseded_by` to the new filename, and it leaves the old spec's body alone:
+
+```bash
+sessionmemory new spec --title "Render invoice PDFs in a worker pool" \
+  --supersedes 2026-10-13-move-pdf-rendering-to-a-worker-queue --cwd .
+```
+
+```
+~/repos/my-vault/projects/invoice-api/specs/2026-10-13-render-invoice-pdfs-in-a-worker-pool.md
+```
+
+The old spec's frontmatter now reads:
+
+```yaml
+status: superseded
+superseded_by: 2026-10-13-render-invoice-pdfs-in-a-worker-pool.md
+```
+
+The name is the old spec's filename, with or without `.md`. A name that matches no spec
+exits 1 and creates nothing. The new path is printed only after the old spec is marked;
+if marking fails, the new spec is removed and the command exits 1. An old spec with no
+frontmatter block gets one holding only `status` and `superseded_by`.
 
 ## `sessionmemory new plan`
 
@@ -483,16 +520,18 @@ that omits one never clears it.
 Find the pages nearest in meaning to the query, nearest first. This is the one read an
 agent cannot do with its own tools.
 
-| Option           | What it does                                                                    |
-| ---------------- | ------------------------------------------------------------------------------- |
-| `{query}`        | What to look for: a few distinctive words. Required.                            |
-| `--logs`         | Search past session logs instead of learnings.                                  |
-| `--limit`        | Maximum number of results. Default 10.                                          |
-| `--max-distance` | Farthest cosine distance that still counts as a hit. Default 0.45.              |
-| `--min-margin`   | How much nearer than the field's median page a hit must sit. Default 0.11.      |
-| `--read`         | Print each hit's whole file under its path.                                     |
-| `--cwd`          | Directory to resolve the project from.                                          |
-| `--json`         | Emit JSON instead of prose.                                                     |
+| Option              | What it does                                                                                       |
+| ------------------- | -------------------------------------------------------------------------------------------------- |
+| `{query}`           | What to look for: a few distinctive words. Required.                                               |
+| `--logs`            | Search past session logs instead of learnings.                                                     |
+| `--specs`           | Search specs instead of learnings. Cannot be combined with `--logs`.                               |
+| `--include-retired` | With `--specs`, also return superseded and abandoned specs. Without `--specs` it is an error.      |
+| `--limit`           | Maximum number of results. Default 10.                                                             |
+| `--max-distance`    | Farthest cosine distance that still counts as a hit. Default 0.45, or 0.38 with `--specs`.         |
+| `--min-margin`      | How much nearer than the field's median page a hit must sit. Default 0.11, or 0.07 with `--specs`. |
+| `--read`            | Print each hit's whole file under its path.                                                        |
+| `--cwd`             | Directory to resolve the project from.                                                             |
+| `--json`            | Emit JSON instead of prose.                                                                        |
 
 Search with a few distinctive words, such as names, identifiers, or error text, rather
 than a sentence. A paraphrase still matches, but keywords separate the page that answers
@@ -540,8 +579,11 @@ sessionmemory search "kubernetes ingress"
 ```
 
 ```
-no results: nothing recorded matches this query
+no results: nothing in learnings matches; try --specs for designs and decisions, or --logs for what a past session did
 ```
+
+The message names the other two places to look. A `--specs` or `--logs` search that finds
+nothing names only itself, as `no results: no spec matches this query`.
 
 A page counts as a hit when it sits within `--max-distance` of the query and at least
 `--min-margin` nearer than the median page in the field. A field with fewer than 8 pages
@@ -583,6 +625,72 @@ sessionmemory search "webhook handler work" --logs --limit 2
   2026-09-02 09:41
   Made the Stripe webhook handler idempotent.
 ```
+
+`--specs` searches the project's specs instead, to find a decision already made before a
+feature is designed again:
+
+```bash
+sessionmemory search "UBL XML export for EU customers" --specs
+```
+
+```
+~/repos/my-vault/projects/invoice-api/specs/2026-10-13-export-invoices-as-ubl-2-1-xml.md
+  Export invoices as UBL 2.1 XML
+  Customers in the EU need each invoice as a UBL 2.1 XML file so their accounting software can import it without retyping.
+```
+
+A spec hit takes its title from the spec: the frontmatter `title`, else the first `# `
+heading, else the filename. Its summary is the frontmatter `summary` when the spec has
+one, else the first prose paragraph of its goal, purpose, intent, summary, or overview
+sections, else the text directly under the title, else the first prose paragraph of any
+section other than `Status`. The summary is cut at 300 characters on a word boundary.
+
+A spec is searched through an embedding of its title, the text under its title, its
+`summary`, its goal and purpose sections, its `## ` headings, and its decision sections,
+never its whole body, and capped at 8192 bytes. A word that appears only deep in a
+section can therefore not be found. Search by the topic the spec names.
+
+A superseded or abandoned spec is left out, because the spec that replaced it is the
+answer. `--include-retired` brings it back, marked `(superseded)` or `(abandoned)` after
+its title:
+
+```bash
+sessionmemory search "queue for rendering PDFs" --specs --include-retired
+```
+
+```
+~/repos/my-vault/projects/invoice-api/specs/2026-10-13-move-pdf-rendering-to-a-worker-queue.md
+  Move PDF rendering to a worker queue (superseded)
+  Rendering a large invoice PDF blocks the request thread for seconds. Move the render to a background worker queue.
+
+~/repos/my-vault/projects/invoice-api/specs/2026-10-13-render-invoice-pdfs-in-a-worker-pool.md
+  Render invoice PDFs in a worker pool
+  Rendering a large invoice PDF blocks the request thread. Render in a pool of worker processes instead of a queue.
+```
+
+With `--json`, a spec hit adds its `status`, which is `draft`, `shipped`, `superseded`,
+`abandoned`, or an empty string for a spec with none:
+
+```json
+[
+  {
+    "path": "~/repos/my-vault/projects/invoice-api/specs/2026-10-13-export-invoices-as-ubl-2-1-xml.md",
+    "title": "Export invoices as UBL 2.1 XML",
+    "summary": "Customers in the EU need each invoice as a UBL 2.1 XML file so their accounting software can import it without retyping.",
+    "distance": 0.22222331166267395,
+    "status": "draft"
+  }
+]
+```
+
+Specs have their own defaults, `--max-distance 0.38` and `--min-margin 0.07`, because
+specs spread wide: the median distance from a query to a project's specs measured 0.53 to
+0.56, so the margin below the median alone let unrelated specs through at 0.42 to 0.44,
+and the absolute ceiling had to be tighter. At the learnings defaults, 3 of 10 queries
+with no answer returned a spec. At 0.38 and 0.07, 0 of
+10 did and none of 40 queries with an answer was missed. Both numbers were measured on 50
+queries against one project's 51 specs, so they are a starting point. An explicit
+`--max-distance` or `--min-margin` overrides either one.
 
 ## `sessionmemory inject`
 
@@ -628,10 +736,17 @@ them all for a script.
     that will never be done, directly; never tick or annotate it. Git history is the
     record of what was finished.
   - Specs: `specs/` holds one design record per feature, named `<date>-<topic>.md`
-    and kept after the work ships. Before designing or changing a feature, list the
-    directory and read any spec whose name matches, so a decision already made is not
-    made again. `sessionmemory new spec --title "..." --cwd .` creates one and prints its
-    path. Edit it directly after that.
+    and kept after the work ships. Before designing or changing a feature, search
+    them: `sessionmemory search "<words>" --specs` (listing the directory works too), so a
+    decision already made is not made again. `sessionmemory new spec --title "..." --cwd .`
+    creates one and prints its path. Open every spec with a short paragraph directly
+    under the `# ` title saying what it is for. A search shows the frontmatter
+    `summary`, else a goal or purpose section's first paragraph, else that opening one.
+    A spec carries a `status`: `draft`, `shipped`, `superseded`, or `abandoned`. Set
+    `status: shipped` when its work ships; a spec with no frontmatter block gets one
+    holding only `status`. Replace one with
+    `sessionmemory new spec --title "..." --supersedes <old filename> --cwd .`, which marks
+    the old spec superseded.
   - Runbooks: `runbooks/` holds step-by-step procedures to follow by hand, such as
     configuring a service, rotating a credential, or recovering from an outage.
     Whenever you write one, create it with `sessionmemory new runbook --title "..." --cwd .`,
@@ -652,7 +767,7 @@ them all for a script.
 
 ## What this project knows
 
-  - Stripe retries a webhook for 72 hours
+  - Stripe retries a webhook for 72 hours, so the handler must be idempotent
 
 ## Reference docs
 
@@ -665,7 +780,7 @@ them all for a script.
 ## Open work
 
   4 open backlog items
-  1 spec in specs/
+  3 specs in specs/
 ```
 
 No page body enters the block, and the index is never read. `--command` changes the
@@ -691,8 +806,8 @@ than 30 days ago, gets one more line under its titles:
 
 ## `sessionmemory reindex`
 
-Bring this project's learnings and logs indexes up to date with the pages beside them,
-or every project's with `--all`.
+Bring this project's learnings, logs, and specs indexes up to date with the files beside
+them, or every project's with `--all`.
 
 | Option   | What it does                            |
 | -------- | --------------------------------------- |
@@ -706,8 +821,9 @@ sessionmemory reindex --cwd .
 
 ```
 ✓ reindexing
-  ├─ learnings: 4 added, 0 updated, 0 removed, 0 unchanged
-  └─ logs: 0 added, 0 updated, 0 removed, 1 unchanged
+  ├─ learnings: 1 added, 0 updated, 0 removed, 0 unchanged
+  ├─ logs: 0 added, 0 updated, 0 removed, 0 unchanged
+  └─ specs: 3 added, 0 updated, 0 removed, 0 unchanged
 ```
 
 `sessionmemory search` does the same refresh on every call, so this command is for doing
@@ -719,13 +835,19 @@ that work up front, or for rebuilding an index file you deleted.
     "added": 0,
     "updated": 0,
     "removed": 0,
-    "unchanged": 4
+    "unchanged": 1
   },
   "logs": {
     "added": 0,
     "updated": 0,
     "removed": 0,
-    "unchanged": 1
+    "unchanged": 0
+  },
+  "specs": {
+    "added": 0,
+    "updated": 0,
+    "removed": 0,
+    "unchanged": 3
   }
 }
 ```
@@ -742,10 +864,9 @@ sessionmemory reindex --all
 
 ```
 ✓ reindexing
-  ├─ billing-worker/learnings: 2 added, 0 updated, 0 removed, 0 unchanged
-  ├─ billing-worker/logs: 0 added, 0 updated, 0 removed, 0 unchanged
-  ├─ invoice-api/learnings: 0 added, 0 updated, 0 removed, 4 unchanged
-  └─ invoice-api/logs: 0 added, 0 updated, 0 removed, 1 unchanged
+  ├─ invoice-api/learnings: 0 added, 0 updated, 0 removed, 1 unchanged
+  ├─ invoice-api/logs: 0 added, 0 updated, 0 removed, 0 unchanged
+  └─ invoice-api/specs: 0 added, 0 updated, 0 removed, 3 unchanged
 ```
 
 A page whose bytes have not changed is skipped, so a run over a healthy vault costs
@@ -756,32 +877,24 @@ With `--json`, the payload nests each field's counts under its project:
 
 ```json
 {
-  "billing-worker": {
+  "invoice-api": {
     "learnings": {
       "added": 0,
       "updated": 0,
       "removed": 0,
-      "unchanged": 2
+      "unchanged": 1
     },
     "logs": {
       "added": 0,
       "updated": 0,
       "removed": 0,
       "unchanged": 0
-    }
-  },
-  "invoice-api": {
-    "learnings": {
-      "added": 0,
-      "updated": 0,
-      "removed": 0,
-      "unchanged": 4
     },
-    "logs": {
+    "specs": {
       "added": 0,
       "updated": 0,
       "removed": 0,
-      "unchanged": 1
+      "unchanged": 3
     }
   }
 }
@@ -840,7 +953,7 @@ sessionmemory doctor
 ]
 ```
 
-See [Vault health](vault-health.md) for the eight checks and what to do about each one.
+See [Vault health](vault-health.md) for the nine checks and what to do about each one.
 
 ## `sessionmemory export`
 

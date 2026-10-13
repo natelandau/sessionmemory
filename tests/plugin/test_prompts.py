@@ -84,3 +84,23 @@ def test_sweep_prompt_routes_open_questions_to_decide():
 
     assert "## decide" in text
     assert "ci, decide" in text
+
+
+def test_the_prompt_keeps_spec_status_current():
+    """Verify the sweep prompt maintains spec status and never edits a spec's body."""
+    text = " ".join(_rendered_prompt().split())
+
+    assert "status: shipped" in text
+    assert "superseded_by" in text
+    assert "never change a spec's body" in text.lower()
+    assert "When the spec has no frontmatter block, add one holding only the keys you set." in text
+    assert "four jobs" in text
+
+
+def test_the_prompt_limits_spec_edits_in_its_hard_rules():
+    """Verify the hard rules confine spec edits to the status, superseded_by, and summary keys."""
+    text = " ".join(_rendered_prompt().split())
+    hard_rules = text.split("## Hard rules", 1)[1].split("## First decide", 1)[0]
+
+    assert "Never change a spec's body" in hard_rules
+    assert "`status`, `superseded_by`, and `summary`" in hard_rules

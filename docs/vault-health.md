@@ -8,13 +8,14 @@ sessionmemory doctor
 ```
 
 ```
-7 suggestions
+8 suggestions
   ├─ filename: ~/repos/my-vault/projects/invoice-api/learnings/Bad Name.md: not lowercase ascii letters, digits, and hyphens
   ├─ size: ~/repos/my-vault/projects/invoice-api/learnings/an-oversized-page.md: 10044 bytes; split it, the limit is 8192
   ├─ datetime: ~/repos/my-vault/projects/invoice-api/learnings/an-undated-page.md: created, updated: unquoted; quote the value
   ├─ project: old-service: root ~/repos/old-service does not exist
   ├─ backlog: ~/repos/my-vault/projects/invoice-api/backlog.md: line 15: ticked; finished work is deleted, not ticked
   ├─ reference: ~/repos/my-vault/projects/invoice-api/specs/2026-10-13-move-pdf-rendering-to-a-worker-queue.md: line 8: names runbooks/deploy-the-worker.md, which does not exist
+  ├─ spec: ~/repos/my-vault/projects/invoice-api/specs/2026-10-13-export-invoices-as-ubl-2-1-xml.md: status 'wip' is not one of draft, shipped, superseded, abandoned
   └─ index: ~/repos/my-vault/projects/invoice-api/learnings: index is behind its pages; run: sessionmemory reindex
 ```
 
@@ -38,17 +39,19 @@ A clean vault says so:
 ]
 ```
 
-## The eight checks
+## The nine checks
 
 Each finding names the check that produced it.
 
 ### `filename`
 
-A markdown file in a field carries a name outside the format's alphabet: lowercase ASCII
-letters, digits, and hyphens, starting and ending with a letter or a digit.
+A markdown file in a field or in `specs/` carries a name outside the format's alphabet:
+lowercase ASCII letters, digits, and hyphens, starting and ending with a letter or a
+digit.
 
 Rename the file. Until then it is not a page: it is never indexed, never searched, and
-never listed at session start.
+never listed at session start. A spec with such a name is never searched by
+`sessionmemory search --specs` and never counted at session start.
 
 ### `size`
 
@@ -133,14 +136,45 @@ Either the file was renamed or deleted, or it was never written. Correct the men
 the real name, write the missing page, or delete the sentence that points at it. A mention
 of a plan is never reported, since plans are scratch and may be gone by design.
 
+### `spec`
+
+A spec's `status` or `superseded_by` is not usable, or its frontmatter cannot be read.
+This run covers a vault holding one spec of each kind and one healthy spec:
+
+```
+5 suggestions
+  ├─ spec: ~/repos/my-vault/projects/invoice-api/specs/2026-10-13-cache-tax-rates-per-region.md: superseded_by '2026-10-13-no-such-spec.md' names no spec in specs/
+  ├─ spec: ~/repos/my-vault/projects/invoice-api/specs/2026-10-13-export-invoices-as-ubl-2-1-xml.md: status 'wip' is not one of draft, shipped, superseded, abandoned
+  ├─ spec: ~/repos/my-vault/projects/invoice-api/specs/2026-10-13-move-pdf-rendering-to-a-worker-queue.md: superseded without superseded_by
+  ├─ spec: ~/repos/my-vault/projects/invoice-api/specs/2026-10-13-retry-failed-pdf-renders.md: superseded_by names this spec
+  └─ spec: ~/repos/my-vault/projects/invoice-api/specs/2026-10-13-send-payment-reminders.md: frontmatter cannot be parsed; status ignored
+```
+
+- **`status 'wip' is not one of ...`**: the status is not `draft`, `shipped`,
+  `superseded`, or `abandoned`. Change it to the one that fits, or delete the key, since a
+  spec with no status counts as current.
+- **`superseded without superseded_by`**: the spec says a newer spec replaced it and does
+  not name which. Add `superseded_by: <filename>`, or run
+  `sessionmemory new spec --supersedes <old>` next time, which writes both keys.
+- **`superseded_by '...' names no spec in specs/`**: the named file was renamed, deleted,
+  or mistyped. Correct the name to the real file.
+- **`superseded_by names this spec`**: the spec names itself as its replacement. Name the
+  spec that replaced it.
+- **`frontmatter cannot be parsed; status ignored`**: the frontmatter block is not valid
+  YAML, so its `status` is never read and the spec counts as current. Fix the block. The
+  spec is still searched from its title and headings.
+
+A spec with `superseded_by` set and no `status: superseded` is not reported. A spec with
+no frontmatter block at all is current and is not reported.
+
 ### `index`
 
-A field's index file cannot be opened as a database, or it disagrees with the pages
-beside it.
+A field's index file, or the one in `specs/`, cannot be opened as a database, or it
+disagrees with the files beside it.
 
 Run `sessionmemory reindex --cwd <your repo>`, or `sessionmemory reindex --all` when more
-than one field is reported. The index is derived and disposable, so deleting the
-`*.sqlite3` file in the field and reindexing has the same effect.
+than one index is reported. The index is derived and disposable, so deleting the
+`*.sqlite3` file in the folder and reindexing has the same effect.
 `sessionmemory search` refreshes the index it queries, so this finding usually means a
 field nobody has searched since its pages changed.
 

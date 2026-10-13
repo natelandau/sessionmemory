@@ -81,6 +81,7 @@ def colored(tmp_path):
             id="new-backlog",
         ),
         pytest.param(["search", "anything", "--json"], id="search"),
+        pytest.param(["search", "anything", "--specs", "--json"], id="search-specs"),
         pytest.param(["inject", "--json"], id="inject"),
         pytest.param(["reindex", "--json"], id="reindex"),
         pytest.param(["log", "--session-id", "s", "--title", "t", "--json"], id="log"),

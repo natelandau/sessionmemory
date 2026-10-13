@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from sessionmemory.lib import field, fieldindex
+from sessionmemory.lib import field, fieldindex, specs
 from sessionmemory.lib.embed import StubEmbedder
 
 if TYPE_CHECKING:
@@ -223,6 +223,12 @@ def test_search_default_cutoff_is_the_measured_one(tmp_path):
     assert fieldindex.DEFAULT_MIN_MARGIN == 0.11
 
 
+def test_search_specs_cutoff_is_the_one_measured_on_specs():
+    """Verify the spec cutoff constants hold the values measured on real specs."""
+    assert fieldindex.SPECS_MAX_DISTANCE == 0.38
+    assert fieldindex.SPECS_MIN_MARGIN == 0.07
+
+
 def _field_of(directory: Path, count: int) -> str:
     """Write `count` pages and return the text of the first, which the stub embeds as itself."""
     for index in range(count):
@@ -259,3 +265,156 @@ def test_search_margin_in_a_small_field_measures_against_the_fallback_background
     hits = fieldindex.search(tmp_path, StubEmbedder(), matching_text, limit=10, max_distance=2.0)
 
     assert [hit.path.name for hit in hits] == ["page-0.md"]
+
+
+def _spec(directory: Path, name: str, text: str) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / name
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_refresh_embeds_a_spec_by_its_derived_input(tmp_path, monkeypatch):
+    """Verify a specs directory embeds specs.embedding_input, not the whole file."""
+    directory = tmp_path / "specs"
+    _spec(directory, "2026-10-03-pricing.md", "# Pricing\n\n## Problem\n\nSECRET-BODY\n")
+    seen: list[str] = []
+    embedder = StubEmbedder()
+    original = embedder.encode_documents
+    monkeypatch.setattr(
+        embedder, "encode_documents", lambda texts: seen.extend(texts) or original(texts)
+    )
+    fieldindex.refresh(directory, embedder)
+    assert seen == ["Pricing\n\nProblem"]
+
+
+def test_search_in_specs_shows_the_derived_summary_and_status(tmp_path):
+    """Verify a spec hit carries the hit summary and its status."""
+    directory = tmp_path / "specs"
+    _spec(directory, "a.md", "---\ntitle: A\nstatus: shipped\n---\n# A\n\n## Goal\n\nThe goal.\n")
+    hits = fieldindex.search(
+        directory, StubEmbedder(), "A", limit=5, max_distance=2.0, min_margin=0
+    )
+    assert (hits[0].summary, hits[0].status) == ("The goal.", "shipped")
+
+
+def test_search_exclude_does_not_use_up_the_limit(tmp_path):
+    """Verify a retired nearest spec is skipped and the next current one still returns."""
+    directory = tmp_path / "specs"
+    for name, status in (("a.md", "superseded"), ("b.md", "draft"), ("c.md", "abandoned")):
+        _spec(directory, name, f"---\ntitle: {name}\nstatus: {status}\n---\n# {name}\n")
+    hits = fieldindex.search(
+        directory,
+        StubEmbedder(),
+        "x",
+        limit=1,
+        max_distance=2.0,
+        min_margin=0,
+        exclude=specs.is_retired,
+    )
+    assert [h.path.name for h in hits] == ["b.md"]
+
+
+def test_refresh_indexes_a_spec_with_unparsable_frontmatter(tmp_path):
+    """Verify a broken frontmatter block does not keep a spec out of the index."""
+    directory = tmp_path / "specs"
+    _spec(directory, "broken.md", "---\ntitle: [oops\n---\n# Broken\n")
+    assert fieldindex.refresh(directory, StubEmbedder()).added == 1
+
+
+def test_learning_hits_keep_their_frontmatter_summary(tmp_path):
+    """Verify fields outside specs are unchanged: summary from frontmatter, status empty."""
+    directory = tmp_path / "learnings"
+    directory.mkdir()
+    _page(directory, "T", summary="from meta")
+    hits = fieldindex.search(
+        directory, StubEmbedder(), "T", limit=1, max_distance=2.0, min_margin=0
+    )
+    assert (hits[0].summary, hits[0].status) == ("from meta", "")
+
+
+def test_search_in_specs_titles_a_hit_from_its_h1(tmp_path):
+    """Verify a spec without a frontmatter title shows its first heading."""
+    directory = tmp_path / "specs"
+    _spec(directory, "a.md", "# The Heading\n\n## Goal\n\nText.\n")
+    hits = fieldindex.search(
+        directory, StubEmbedder(), "x", limit=5, max_distance=2.0, min_margin=0
+    )
+    assert hits[0].title == "The Heading"
+
+
+def test_search_skips_a_spec_whose_file_cannot_be_read(tmp_path):
+    """Verify a spec deleted between the query and its hit read is skipped and the other hit returns."""
+    directory = tmp_path / "specs"
+    gone = _spec(directory, "a.md", "# A\n")
+    _spec(directory, "b.md", "# B\n")
+
+    def delete_a(_meta: dict) -> bool:
+        # `exclude` runs for each row before its file is read, after the refresh.
+        gone.unlink(missing_ok=True)
+        return False
+
+    hits = fieldindex.search(
+        directory, StubEmbedder(), "x", limit=5, max_distance=2.0, min_margin=0, exclude=delete_a
+    )
+    assert [h.path.name for h in hits] == ["b.md"]
+
+
+def _user_version(index: Path) -> int:
+    conn = sqlite3.connect(index)
+    try:
+        return conn.execute("PRAGMA user_version").fetchone()[0]
+    finally:
+        conn.close()
+
+
+def _set_user_version(index: Path, version: int) -> None:
+    conn = sqlite3.connect(index)
+    try:
+        conn.execute(f"PRAGMA user_version = {version}")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_refresh_stamps_a_specs_index_with_the_input_version(tmp_path):
+    """Verify a new specs index records the version of the input rule that filled it."""
+    directory = tmp_path / "specs"
+    _spec(directory, "a.md", "# A\n")
+    embedder = StubEmbedder()
+
+    fieldindex.refresh(directory, embedder)
+
+    assert _user_version(fieldindex.index_path(directory, embedder)) == specs.INPUT_VERSION
+
+
+def test_refresh_reembeds_every_spec_when_the_input_version_differs(tmp_path, monkeypatch):
+    """Verify an index stamped with another input version is cleared and every spec re-embedded."""
+    directory = tmp_path / "specs"
+    _spec(directory, "a.md", "# A\n")
+    _spec(directory, "b.md", "# B\n")
+    embedder = StubEmbedder()
+    fieldindex.refresh(directory, embedder)
+    index = fieldindex.index_path(directory, embedder)
+    _set_user_version(index, specs.INPUT_VERSION + 1)
+
+    result = fieldindex.refresh(directory, embedder)
+
+    assert (result.added, result.unchanged) == (2, 0)
+    assert _user_version(index) == specs.INPUT_VERSION
+    assert fieldindex.refresh(directory, embedder).unchanged == 2
+
+
+def test_refresh_leaves_a_field_index_version_alone(tmp_path):
+    """Verify a field's index is neither stamped nor cleared by the specs input version."""
+    directory = tmp_path / "learnings"
+    directory.mkdir()
+    _page(directory, "T")
+    embedder = StubEmbedder()
+    fieldindex.refresh(directory, embedder)
+    index = fieldindex.index_path(directory, embedder)
+
+    result = fieldindex.refresh(directory, embedder)
+
+    assert (result.added, result.unchanged) == (0, 1)
+    assert _user_version(index) == 0

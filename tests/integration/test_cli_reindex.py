@@ -104,3 +104,24 @@ def test_reindex_all_rejects_cwd(vault, tmp_path):
 
     assert result.exit_code == 1
     assert "mutually exclusive" in result.output
+
+
+def test_reindex_reports_specs_beside_the_fields(workspace):
+    """Verify reindex refreshes the specs directory and writes its index there."""
+    vault, _ = workspace
+    runner.invoke(app, ["new", "spec", "--title", "A"])
+
+    result = runner.invoke(app, ["reindex", "--json"])
+
+    payload = json.loads(result.stdout)
+    assert payload["specs"]["added"] == 1
+    assert (vault / "projects" / "demo" / "specs" / "stub.sqlite3").is_file()
+
+
+def test_reindex_all_includes_specs(workspace):
+    """Verify --all nests specs under each project beside learnings and logs."""
+    runner.invoke(app, ["new", "spec", "--title", "A"])
+
+    result = runner.invoke(app, ["reindex", "--all", "--json"])
+
+    assert "specs" in json.loads(result.stdout)["demo"]
