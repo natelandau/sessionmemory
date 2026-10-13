@@ -190,10 +190,10 @@ half-resolved state into history. A detached `HEAD` is skipped, because such a c
 reachable from nothing once a branch is checked out again. A commit is skipped while any
 project's sweep is running, because a commit stages the whole vault and would record that
 sweep's writes before the sweep checks them. A worker that finishes while another
-project's sweep still runs logs `commit skipped: another sweep in progress`, and the last
-worker to finish commits everything. Two hooks reaching git at the same moment race on
-git's own `index.lock`, and the loser skips. In every case the next hook commits what was
-left behind.
+project's sweep still runs logs `commit skipped: another sweep in progress`, so when two
+sweeps finish at the same moment both may skip, and the next hook commits what they left.
+Two hooks reaching git at the same moment race on git's own `index.lock`, and the loser
+skips. In every case the next hook commits what was left behind.
 
 ## The sweep's four jobs
 
@@ -236,14 +236,16 @@ floors keep trivial sessions out of the vault, and below any one of them the who
 is skipped. Two of the three are measured on your messages alone, so a long agent reply
 to one short instruction never clears them.
 
-Only one sweep runs at a time for each project. When a second session in the same
-project ends while a sweep is still running, its worker waits for the first to finish and
-then runs, rather than being dropped. It checks every 5 seconds and waits up to one hour.
-The hooks log records each step: `sweep queued: another sweep holds the lock` when the
-worker starts to wait, `sweep dequeued after about Ns` when it gets its turn, and the
-warning `sweep skipped: lock still held after 3600s` when it gives up. The lock is
-released when the worker exits for any reason, so a crashed sweep never blocks the next
-one. A lock file that cannot be opened at all ends the wait at once, with the warning
+Only one sweep runs at a time for each project. When a second session in the same project
+ends while a sweep is still running, its worker waits for the first to finish and then
+runs, rather than being dropped. It checks every 5 seconds and waits for four times
+`sweep.timeout` plus 120 seconds, or one hour, whichever is longer: one hour at the
+default timeout of 600 seconds, enough for several queued sweeps at any setting. The
+hooks log records each step: `sweep queued: another sweep holds the lock` when the worker
+starts to wait, `sweep dequeued after about Ns` when it gets its turn, and the warning
+`sweep skipped: lock still held after Ns` when it gives up. The lock is released when the
+worker exits for any reason, so a crashed sweep never blocks the next one. A lock file
+that cannot be opened at all ends the wait at once, with the warning
 `sweep skipped: lock unavailable: <error>`.
 
 ### What the sweep may write
@@ -252,22 +254,25 @@ The pass may create and edit any file inside its own project's folder, which is 
 later pass strengthening a memory means. It is told never to delete a page, because
 retiring one is a decision a person makes in review.
 
-Two backstops run after the model finishes. A write the model reported outside the
-project folder is restored from the vault's git history, and a file git cannot restore is
-moved into a quarantine directory rather than deleted. Every file under the project
-folder whose content changed during the run is then scanned for secret-shaped content and
-redacted in place, which catches a write made through Bash that no tool call reported.
+Two backstops run after the model finishes, or after its timeout stops it. A write the
+model reported outside the project folder, including one reported before a timeout, is
+restored from the vault's git history, and a file git cannot restore is moved into a
+quarantine directory rather than deleted. Every file under the project folder whose
+content changed during the run is then scanned for secret-shaped content and redacted in
+place, which catches a write made through Bash that no tool call reported.
 
 A third check enforces the shape of what the pass wrote. A new file in `learnings/` must
-have a conformant name and frontmatter holding only `title`, `uuid`, `summary`, `created`,
-and `updated`, with a non-blank `title` and `summary`. A new file in `logs/` must have a
-conformant name. A new file in a sub-directory of either folder is nested, since nothing
-reads a page there. A new file directly in the project folder, other than `backlog.md`, is
-stray. Any of these is moved into the quarantine directory. An existing learning the pass
-rewrote into another shape, such as another tool's frontmatter, is restored from the
-vault's git history instead, or quarantined when git has no copy of it. Files a sync
-tool, an editor, or the operating system leaves behind, such as `.DS_Store`, a Syncthing
-conflict copy, or a name ending in `~`, are left alone.
+have a conformant name and frontmatter holding only `title`, `uuid`, `summary`,
+`created`, and `updated`, with a non-blank `title` and `summary`. A new file in `logs/`
+must have a conformant name. A new file in a sub-directory of either folder is nested,
+since nothing reads a page there. A new file directly in the project folder, other than
+`backlog.md`, is stray. Any of these is moved into the quarantine directory. An existing
+learning the pass rewrote into another shape, such as another tool's frontmatter, is
+restored from the vault's git history instead, or quarantined when git has no copy of it.
+A learning the pass created or changed that cannot be read is quarantined whether it is
+new or not, since its content is unknown and a file git cannot read would stop the next
+commit. Files a sync tool, an editor, or the operating system leaves behind, such as
+`.DS_Store`, a Syncthing conflict copy, or a name ending in `~`, are left alone.
 
 A Bash write elsewhere in the vault, a sibling project's folder foremost, is caught by
 neither backstop, and the next commit records it. This is a real control against a

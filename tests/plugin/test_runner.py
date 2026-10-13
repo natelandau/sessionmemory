@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from typing import TYPE_CHECKING
 
 import pytest
 from sessionhooks import runner as runner_mod  # ty: ignore[unresolved-import]
@@ -20,6 +21,9 @@ from sessionhooks.runner import (  # ty: ignore[unresolved-import]
     changed_files,
     parse_stream_json,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 # ---------------------------------------------------------------------------
 # build_env (recursion guard + parent-process isolation)
@@ -478,3 +482,83 @@ def test_run_names_a_missing_working_directory_rather_than_the_binary(monkeypatc
     assert result.exit_code == -4
     assert "/vault/projects/gone" in result.stderr
     assert "claude" not in result.stderr
+
+
+def _raise_timeout_with(output: bytes | str | None) -> Callable[..., None]:
+    """Build a fake subprocess.run that times out after printing `output`."""
+
+    def _raise(*_args, **_kwargs) -> None:
+        raise subprocess.TimeoutExpired(cmd=["claude"], timeout=180, output=output)
+
+    return _raise
+
+
+@pytest.mark.parametrize("encode", [False, True])
+def test_run_timeout_reports_writes_from_partial_output(monkeypatch, encode: bool) -> None:
+    """Verify a timed-out run still names the files its partial stream-json wrote."""
+    # Given a run that wrote outside the project and then timed out, as bytes or str
+    partial = _stream("/elsewhere/escaped.md") + "\n"
+    output = partial.encode() if encode else partial
+    monkeypatch.setattr(runner_mod.subprocess, "run", _raise_timeout_with(output))
+
+    # When running the prompt
+    result = ClaudeRunner(timeout=180).run("prompt", cwd="/repo")
+
+    # Then the write is reported so containment can revert it
+    assert result.exit_code == -2
+    assert result.success is False
+    assert result.changed_files == ["/elsewhere/escaped.md"]
+
+
+@pytest.mark.parametrize("output", [None, b"", ""])
+def test_run_timeout_without_output_reports_no_writes(monkeypatch, output) -> None:
+    """Verify a timed-out run with no captured output reports no changed files."""
+    # Given a run that timed out before printing anything
+    monkeypatch.setattr(runner_mod.subprocess, "run", _raise_timeout_with(output))
+
+    # When running the prompt
+    result = ClaudeRunner(timeout=180).run("prompt", cwd="/repo")
+
+    # Then nothing is reported and nothing raises
+    assert result.exit_code == -2
+    assert result.changed_files == []
+
+
+def test_run_timeout_ignores_a_truncated_final_line(monkeypatch) -> None:
+    """Verify a final stream-json line cut off mid-write is ignored, not misread."""
+    # Given a complete Write line followed by a second line cut off mid-object
+    complete = json.dumps(
+        {
+            "type": "assistant",
+            "message": {
+                "content": [{"type": "tool_use", "name": "Write", "input": {"file_path": "/a.md"}}]
+            },
+        }
+    )
+    cut = json.dumps(
+        {
+            "type": "assistant",
+            "message": {
+                "content": [{"type": "tool_use", "name": "Edit", "input": {"file_path": "/b.md"}}]
+            },
+        }
+    )[:-3]
+    monkeypatch.setattr(runner_mod.subprocess, "run", _raise_timeout_with(f"{complete}\n{cut}"))
+
+    # When running the prompt
+    result = ClaudeRunner(timeout=180).run("prompt", cwd="/repo")
+
+    # Then only the complete line's write is reported
+    assert result.changed_files == ["/a.md"]
+
+
+def test_partial_stream_drops_an_unterminated_last_line() -> None:
+    """Verify partial output that does not end in a newline loses its last line."""
+    # Given a complete line, then a final line that happens to parse but has no newline
+    text = '{"type": "result", "result": "one"}\n{"type": "result", "result": "two"}'
+
+    # When reducing it to whole lines
+    whole = runner_mod.partial_stream(text)
+
+    # Then the unterminated line is gone
+    assert whole == '{"type": "result", "result": "one"}\n'

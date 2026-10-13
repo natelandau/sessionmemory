@@ -18,6 +18,10 @@ PAGE_NAME = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.md$")
 DEBRIS_NAMES = frozenset({".DS_Store", "desktop.ini", "Thumbs.db"})
 PAGE_FIELDS = frozenset({"title", "uuid", "summary", "created", "updated"})
 
+# What `learning_problem` reports for a page it cannot read, which the sweep sets aside
+# rather than judging, since its content is unknown.
+UNREADABLE = "unreadable"
+
 _KEY = re.compile(r"^([A-Za-z_][\w-]*):(.*)$")
 _FENCE = "---"
 _BACKLOG = "backlog.md"
@@ -54,7 +58,7 @@ def learning_problem(path: Path) -> str | None:
         # utf-8-sig drops a byte order mark an editor put ahead of the opening fence.
         text = path.read_text(encoding="utf-8-sig", errors="replace")
     except OSError:
-        return None  # nothing to judge; a later sweep sees the page again
+        return UNREADABLE
     keys = _frontmatter(text.split("\n"))
     if keys is None:
         return "no frontmatter"

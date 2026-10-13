@@ -133,18 +133,32 @@ def is_safe_to_commit(root: Path, *, env: Mapping[str, str], timeout: int = 10) 
     return _unsafe_reason(root, env=env, timeout=timeout) is None
 
 
-def _locate(path: str) -> tuple[str, str]:
+def _at_segment(parts: list[str]) -> tuple[str, str] | None:
+    """Read a group from path segments that start at the vault's top, or None when they do not."""
+    if parts[0] == "projects" and len(parts) > 1:
+        return parts[1], "/".join(parts[2:])
+    if parts[0] == "_system":
+        return _VAULT_GROUP, "/".join(parts[1:])
+    return None
+
+
+def _locate(path: str, prefix: str | None = None) -> tuple[str, str]:
     """Split a repo-relative path into its group and the part below the group.
 
-    A vault nested in a larger repository has a prefix before `projects/` or
-    `_system/`, so the segment is located rather than assumed to be first.
+    `prefix` is the vault's own path inside the repository, as `--show-prefix` reports
+    it, and the group is read from the segment right after it, since an outer folder
+    may itself be named `projects`. A path outside the prefix belongs to no project.
+    Without a prefix the first `projects/` or `_system/` segment is located instead.
     """
+    if prefix is not None:
+        if not path.startswith(prefix):
+            return _VAULT_GROUP, path
+        return _at_segment(path[len(prefix) :].split("/")) or (_VAULT_GROUP, path)
     parts = path.split("/")
-    for index, part in enumerate(parts):
-        if part == "projects" and index + 1 < len(parts):
-            return parts[index + 1], "/".join(parts[index + 2 :])
-        if part == "_system":
-            return _VAULT_GROUP, "/".join(parts[index + 1 :])
+    for index in range(len(parts)):
+        located = _at_segment(parts[index:])
+        if located is not None:
+            return located
     return _VAULT_GROUP, path
 
 
@@ -178,13 +192,18 @@ def _clause(verb: str, rests: list[str]) -> str:
     return f"{verb} {', '.join(items)}"
 
 
-def message(changes: list[tuple[str, str]], *, note: str = "") -> tuple[str, str]:
+def message(
+    changes: list[tuple[str, str]], *, note: str = "", prefix: str | None = None
+) -> tuple[str, str]:
     """Build a commit's `(subject, body)` from `(status, path)` pairs.
 
     The subject names the project and counts what changed. When several groups
-    changed it only counts files, since a per-kind breakdown would not fit.
+    changed it only counts files, since a per-kind breakdown would not fit. `prefix`
+    is the vault's path inside the repository, which anchors the project segment.
     """
-    verbed = [(_VERBS.get(status, "edit"), *_locate(path), path) for status, path in changes]
+    verbed = [
+        (_VERBS.get(status, "edit"), *_locate(path, prefix), path) for status, path in changes
+    ]
     groups = sorted({group for _, group, _, _ in verbed})
     # `vault` is not a project: beside a real project its paths live only in the body.
     projects = [group for group in groups if group != _VAULT_GROUP] or groups
@@ -262,7 +281,7 @@ def commit_vault(  # noqa: PLR0911 - each early return names a distinct reason n
         return CommitOutcome(reason="git unavailable")
     if not staged:
         return CommitOutcome(reason="clean")
-    subject, body = message(staged, note=note)
+    subject, body = message(staged, note=note, prefix=prefix)
     # Via stdin: a large first commit's body would exceed the per-argument limit.
     committed = _git(
         root, "commit", "-q", "-F", "-", env=env, timeout=timeout, stdin=f"{subject}\n\n{body}\n"

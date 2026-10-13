@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 from sessionhooks.shape import (  # ty: ignore[unresolved-import]
+    UNREADABLE,
     is_debris,
     learning_problem,
     log_problem,
@@ -96,10 +97,10 @@ def test_learning_problem_accepts_a_page_with_a_byte_order_mark(tmp_path: Path) 
     assert learning_problem(page) is None
 
 
-def test_learning_problem_does_not_judge_an_unreadable_page(
+def test_learning_problem_reports_an_unreadable_page(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Verify a page that cannot be read is left alone rather than called malformed."""
+    """Verify a page that cannot be read is reported as unreadable."""
     page = _write(tmp_path / "learnings" / "page.md", GOOD)
 
     def _deny(*_args: object, **_kwargs: object) -> str:
@@ -107,7 +108,7 @@ def test_learning_problem_does_not_judge_an_unreadable_page(
         raise PermissionError(message)
 
     monkeypatch.setattr(type(page), "read_text", _deny)
-    assert learning_problem(page) is None
+    assert learning_problem(page) == UNREADABLE
 
 
 @pytest.mark.parametrize(
