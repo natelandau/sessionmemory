@@ -108,3 +108,15 @@ def test_readme_explains_the_files_a_reader_finds_beside_the_pages(tmp_path):
     assert "`sessionmemory new learning`" in text
     assert "`sessionmemory new backlog`" in text
     assert "`backlog.md` is the list of open items" in text
+    flat = " ".join(text.split())
+    assert "every top-level bullet is an open item" in flat
+    assert "`## decide`" in flat
+    assert "`plans/` is scratch and is never committed" in flat
+    assert "grouped by commit type" not in flat
+
+
+def test_initialize_ignores_plans(tmp_path):
+    """Verify a fresh vault's gitignore keeps every project's plans out of git."""
+    initialize(tmp_path)
+    lines = (tmp_path / ".gitignore").read_text(encoding="utf-8").splitlines()
+    assert "projects/*/plans/" in lines

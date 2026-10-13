@@ -86,6 +86,18 @@ then opens with the slug the repository was filed under:
 This repository was registered with the vault as project 'invoice-api'.
 ```
 
+The block ends with a review nudge when the project holds at least 10 learnings and was
+never reviewed or was last reviewed more than 30 days ago:
+
+```
+  Learnings last reviewed: never. At a natural stopping point, suggest /sessionmemory:review to the user.
+```
+
+`/sessionmemory:review` records the date as its last step with
+`sessionmemory project --mark-reviewed`, which stores `reviewed = "YYYY-MM-DD"` on the
+project's entry in `_system/registry.toml`. The nudge stops until the date is more than
+30 days old. The thresholds are fixed and are not settings.
+
 A directory outside git is never registered by the hook. A slug is permanent once pages
 carry it. A session opened in a home directory or a scratch folder must not leave a
 project named after it in the vault. Such a directory, and a repository the CLI refuses
@@ -136,10 +148,14 @@ Nothing is committed here, and the timeout is 10 seconds.
 
 ### Committing the vault
 
-A commit stages everything under the vault except the derived index files, and writes one
-message that says what changed. The subject names the project and counts the changes by
-kind. The body lists every path, and opens with the summary of the session's log when a
-sweep wrote the commit:
+A commit stages everything under the vault except the derived index files and each
+project's `plans/` folder, and writes one message that says what changed. Plans are
+scratch for the session that writes them, so they stay out of history even when the
+vault's `.gitignore` predates that rule. A plan already tracked stays tracked, but the
+hooks never commit an edit to it. Commit the plan by hand to keep an edit in history.
+
+The subject names the project and counts the changes by kind. The body lists every path,
+and opens with the summary of the session's log when a sweep wrote the commit:
 
 ```text
 invoice-api: add 1 log, 2 learnings; edit backlog, 1 spec
