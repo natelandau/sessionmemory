@@ -110,8 +110,23 @@ def test_a_file_unreadable_after_the_run_is_not_deleted(
     # When the second snapshot cannot read it
     _unreadable(monkeypatch, "page.md")
     changes = snapshot.diff(before, snapshot.take(tmp_path))
-    # Then it is a modification rather than a deletion
-    assert changes == Changes(modified=(page.resolve(),))
+    # Then it is a modification rather than a deletion, and named as unreadable
+    assert changes == Changes(modified=(page.resolve(),), unreadable=(page.resolve(),))
+
+
+def test_diff_names_a_created_file_it_could_not_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify a file created unreadable is named as unreadable as well as created."""
+    # Given an empty folder, then a new file the second snapshot cannot read
+    before = snapshot.take(tmp_path)
+    page = tmp_path / "page.md"
+    page.write_text("text", encoding="utf-8")
+    _unreadable(monkeypatch, "page.md")
+    # When diffing
+    changes = snapshot.diff(before, snapshot.take(tmp_path))
+    # Then it is created and unreadable
+    assert changes == Changes(created=(page.resolve(),), unreadable=(page.resolve(),))
 
 
 def test_describe_counts_each_kind() -> None:

@@ -63,10 +63,11 @@ def test_the_prompt_searches_the_repo_docs_before_a_learning():
     text = _rendered_prompt()
     command = text.index("new learning")
 
+    grep_lines = [line for line in text.splitlines() if "grep -rnis" in line]
+    assert len(grep_lines) == 1
     for doc in ("CLAUDE.md", "AGENTS.md", "README.md", "docs/"):
-        assert doc in text
+        assert f"{{{{repo}}}}/{doc}" in grep_lines[0]
     assert text.index("grep -rnis") < command
-    assert text.rindex("AGENTS.md", 0, command) > 0
 
 
 def test_the_prompt_does_not_count_a_commit_message_as_a_record():

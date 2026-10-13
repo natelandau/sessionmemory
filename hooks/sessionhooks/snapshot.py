@@ -22,11 +22,13 @@ UNREADABLE = "unreadable"
 
 @dataclass(frozen=True, slots=True)
 class Changes:
-    """The files a run created, modified, and deleted."""
+    """The files a run created, modified, and deleted, and which of them could not be read."""
 
     created: tuple[Path, ...] = ()
     modified: tuple[Path, ...] = ()
     deleted: tuple[Path, ...] = ()
+    # Created or modified files the after-snapshot recorded as `UNREADABLE`.
+    unreadable: tuple[Path, ...] = ()
 
     def touched(self) -> tuple[Path, ...]:
         """Return every file that exists after the run with content the run produced."""
@@ -73,8 +75,11 @@ def take(root: Path) -> dict[Path, str]:
 
 def diff(before: Mapping[Path, str], after: Mapping[Path, str]) -> Changes:
     """Classify each path whose hash differs between two snapshots."""
+    created = tuple(sorted(p for p in after if p not in before))
+    modified = tuple(sorted(p for p in after if p in before and after[p] != before[p]))
     return Changes(
-        created=tuple(sorted(p for p in after if p not in before)),
-        modified=tuple(sorted(p for p in after if p in before and after[p] != before[p])),
+        created=created,
+        modified=modified,
         deleted=tuple(sorted(p for p in before if p not in after)),
+        unreadable=tuple(sorted(p for p in (*created, *modified) if after[p] == UNREADABLE)),
     )

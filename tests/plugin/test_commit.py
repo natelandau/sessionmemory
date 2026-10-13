@@ -555,3 +555,110 @@ def test_commit_vault_leaves_an_already_tracked_plan_tracked(tmp_path):
         ["git", "status", "--porcelain"], cwd=root, capture_output=True, text=True, check=True
     ).stdout
     assert " M projects/p/plans/x.md" in status.splitlines()
+
+
+def test_message_groups_by_the_segment_after_the_vault_prefix():
+    """Verify a vault nested under an outer `projects/` folder groups by its own project."""
+    changes = [("A", "projects/notes/projects/a/logs/x.md")]
+
+    subject, body = message(changes, prefix="projects/notes/")
+
+    assert subject == "a: add 1 log"
+    assert "add: projects/notes/projects/a/logs/x.md" in body
+
+
+def test_message_groups_the_vault_system_folder_under_a_prefix():
+    """Verify `_system` under a nested vault prefix is grouped as the vault."""
+    subject, _ = message([("M", "projects/notes/_system/registry.toml")], prefix="projects/notes/")
+
+    assert subject == "vault: edit 1 file"
+
+
+def test_message_with_an_empty_prefix_groups_a_top_level_vault():
+    """Verify a vault at the top of its repository groups by project as before."""
+    changes = [("A", "projects/crosstune/logs/a.md"), ("M", "_system/registry.toml")]
+
+    subject, _ = message(changes, prefix="")
+
+    assert subject == "crosstune: add 1 log"
+
+
+def test_message_with_a_simple_prefix_groups_a_nested_vault():
+    """Verify a vault nested under an ordinary folder groups by project."""
+    subject, _ = message([("A", "notes/vault/projects/crosstune/logs/a.md")], prefix="notes/vault/")
+
+    assert subject == "crosstune: add 1 log"
+
+
+def test_message_reads_a_path_outside_the_vault_prefix_as_the_vault():
+    """Verify an outer repository's own `projects/` path is not taken for a vault project."""
+    changes = [("A", "notes/projects/a/logs/x.md"), ("M", "projects/app/readme.md")]
+
+    subject, body = message(changes, prefix="notes/")
+
+    assert subject == "a: add 1 log"
+    assert "edit: projects/app/readme.md" in body
+
+
+def test_commit_vault_groups_a_vault_under_an_outer_projects_dir(tmp_path):
+    """Verify the commit subject names the vault's project, not the outer folder's name."""
+    outer = _repo(tmp_path)
+    vault = outer / "projects" / "notes"
+    page = vault / "projects" / "a" / "logs" / "x.md"
+    page.parent.mkdir(parents=True)
+    page.write_text("x", encoding="utf-8")
+
+    commit_vault(vault, env=clean_environ())
+
+    log = subprocess.run(
+        ["git", "log", "-1", "--format=%s"], cwd=outer, capture_output=True, text=True, check=True
+    )
+    assert log.stdout.strip() == "a: add 1 log"
+
+
+def test_message_groups_paths_with_spaces_and_non_ascii_characters():
+    """Verify a project or page name holding spaces or non-ASCII text groups and lists intact."""
+    changes = [
+        ("A", "projects/café app/learnings/naïve page.md"),
+        ("A", "projects/café app/logs/a b.md"),
+    ]
+
+    subject, body = message(changes, prefix="")
+
+    assert subject == "café app: add 1 log, 1 learning"
+    assert "add: projects/café app/learnings/naïve page.md" in body
+    assert "add: projects/café app/logs/a b.md" in body
+
+
+def test_commit_vault_stages_paths_with_spaces_and_non_ascii_characters(tmp_path):
+    """Verify such paths are staged, committed, and named in the message unquoted."""
+    outer = _repo(tmp_path)
+    vault = outer / "my vault ü"
+    page = vault / "projects" / "café app" / "learnings" / "naïve page.md"
+    page.parent.mkdir(parents=True)
+    page.write_text("x", encoding="utf-8")
+    plan = vault / "projects" / "café app" / "plans" / "plan ü.md"
+    plan.parent.mkdir(parents=True)
+    plan.write_text("x", encoding="utf-8")
+
+    outcome = commit_vault(vault, env=clean_environ())
+
+    assert outcome.sha
+    tracked = subprocess.run(
+        ["git", "-c", "core.quotepath=false", "ls-files"],
+        cwd=outer,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.splitlines()
+    assert "my vault ü/projects/café app/learnings/naïve page.md" in tracked
+    assert not any("plans" in path for path in tracked)
+    log = subprocess.run(
+        ["git", "log", "-1", "--format=%s%n%b"],
+        cwd=outer,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert log.splitlines()[0] == "café app: add 1 learning"
+    assert "add: my vault ü/projects/café app/learnings/naïve page.md" in log

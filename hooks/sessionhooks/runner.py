@@ -179,6 +179,19 @@ def parse_stream_json(stdout: str) -> tuple[list[dict[str, str]], str]:
     return tools_used, result_text
 
 
+def partial_stream(output: bytes | str | None) -> str:
+    """Reduce a killed run's captured stdout to its complete lines.
+
+    A run cut off by its timeout may stop mid-line, and only a line followed by its
+    newline is known to be whole, so the unterminated tail is dropped rather than
+    risk misreading a fragment.
+    """
+    if not output:
+        return ""
+    text = output.decode("utf-8", errors="replace") if isinstance(output, bytes) else output
+    return text[: text.rfind("\n") + 1]
+
+
 class ClaudeRunner:
     """Runs `claude -p` for the sweep and returns a structured, never-raising result."""
 
@@ -207,7 +220,9 @@ class ClaudeRunner:
         `extra_env` is merged over the runner's own `extra_env` for this run only.
 
         Failures map to negative exit codes: timeout -2, claude-not-found -3,
-        cwd-not-found -4, OSError -5. On any failure `changed_files` is empty and `success` is False.
+        cwd-not-found -4, OSError -5, and `success` is False on each. A timed-out run
+        still reports the files its partial output names, since a write it made before
+        the kill must be checked like any other; every other failure reports none.
         """
         args = self._build_args()
         env = build_env(base=os.environ, extra={**self.extra_env, **(extra_env or {})})
@@ -222,11 +237,12 @@ class ClaudeRunner:
                 env=env,
                 check=False,
             )
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as exc:
+            tools, _ = parse_stream_json(partial_stream(exc.stdout))
             return RunResult(
                 success=False,
                 exit_code=-2,
-                changed_files=[],
+                changed_files=changed_files(tools),
                 text="",
                 stderr=f"timed out after {self.timeout}s",
             )

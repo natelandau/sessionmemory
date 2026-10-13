@@ -5,7 +5,7 @@ windows it since the last compaction, drops system/hook noise, and yields a Swee
 only when the session clears every floor in `_shortfall`. The heavy `claude -p` pass
 runs in a double-forked daemon that outlives session teardown. The daemon takes a
 per-project `flock` before it runs, so a second sweep for the same project queues
-behind the first rather than being dropped, and gives up after `QUEUE_WAIT`.
+behind the first rather than being dropped, and gives up after `queue_wait`.
 
 The agent may write anywhere inside this project's vault folder and nowhere else. A
 tool-reported write outside it is reverted or quarantined. The agent keeps Bash for
@@ -48,10 +48,14 @@ if TYPE_CHECKING:
 
 _log = log.logger("sweep")
 
-# A sweep queued behind another polls this often and gives up after QUEUE_WAIT, so
+# A sweep queued behind another polls this often and gives up after `queue_wait`, so
 # a worker wedged past its own timeout cannot hold a queue of sweeps forever.
 QUEUE_POLL = 5.0
-QUEUE_WAIT = 3600.0
+QUEUE_WAIT_FLOOR = 3600.0
+# How many sweeps ahead of this one the wait covers, each allowed its timeout plus
+# this much for the work around the model run.
+QUEUED_SWEEPS = 4
+SWEEP_OVERHEAD = 120
 _GIT_TIMEOUT = 10
 # How much of a failed run's stderr the log keeps; enough to name the error, short
 # enough that a runaway traceback never dominates the file.
@@ -193,6 +197,15 @@ def any_in_progress(env: Mapping[str, str], *, except_path: Path | None = None) 
     return any(_held(path) for path in locks if path.resolve() != excluded)
 
 
+def queue_wait(config: SessionMemoryConfig) -> float:
+    """How long a queued worker waits for the lock before giving up, in seconds.
+
+    Long enough for several sweeps ahead of it to each run to their configured
+    timeout, so raising the timeout cannot turn a queued sweep into a dropped one.
+    """
+    return max(QUEUE_WAIT_FLOOR, float(QUEUED_SWEEPS * (config.sweep_timeout + SWEEP_OVERHEAD)))
+
+
 def _transcript_text(window: list[dict[str, Any]]) -> str:
     """Serialize the window's real conversation (role + text only) for the prompt.
 
@@ -256,32 +269,94 @@ def _strip_frontmatter(text: str) -> str:
     return _FRONTMATTER_RE.sub("", text, count=1).lstrip("\n")
 
 
-_DOUBLE_QUOTED_ESCAPES = {'"': '"', "\\": "\\", " ": " ", "/": "/", "t": "\t", "n": "\n"}
-_ESCAPE_RE = re.compile(r"\\(.)")
+# YAML 1.1's double-quoted escapes, the full set PyYAML's emitter and reader know.
+_DOUBLE_QUOTED_ESCAPES = {
+    "0": "\x00",
+    "a": "\x07",
+    "b": "\x08",
+    "t": "\t",
+    "\t": "\t",
+    "n": "\n",
+    "v": "\x0b",
+    "f": "\x0c",
+    "r": "\r",
+    "e": "\x1b",
+    " ": " ",
+    '"': '"',
+    "/": "/",
+    "\\": "\\",
+    "N": "\x85",
+    "_": "\xa0",
+    "L": "\u2028",
+    "P": "\u2029",
+}
+_ESCAPE_RE = re.compile(r"\\(x[0-9A-Fa-f]{2}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|.)", re.DOTALL)
+# Characters a one-line commit body cannot show: every control character, the two
+# Unicode line separators, and the byte-order mark.
+_UNSHOWABLE_RE = re.compile("[\x00-\x1f\x7f-\x9f\u2028\u2029\ufeff]")
+
+
+def _decode_escape(match: re.Match[str]) -> str:
+    """Decode one double-quoted escape, leaving an unknown or out-of-range one as written."""
+    code = match[1]
+    if code[0] in "xuU" and len(code) > 1:
+        try:
+            return chr(int(code[1:], 16))
+        except ValueError:
+            return match[0]
+    return _DOUBLE_QUOTED_ESCAPES.get(code, match[0])
+
+
+def _decode_double_quoted(value: str) -> str:
+    """Decode the escapes in a double-quoted scalar's text, already folded and unquoted."""
+    return _ESCAPE_RE.sub(_decode_escape, value)
+
+
+def _escaped_break(line: str) -> bool:
+    """Report whether a double-quoted line ends in an escaped line break: an odd backslash run."""
+    return (len(line) - len(line.rstrip("\\"))) % 2 == 1
+
+
+def _fold_lines(parts: list[str], *, double_quoted: bool) -> str:
+    """Join a flow scalar's physical lines by YAML's line folding.
+
+    A break between two lines reads as one space, and each empty line between them as
+    one newline. In a double-quoted scalar a line ending in an escaped break joins the
+    next with nothing, and an escaped space is what carries a space across it.
+    """
+    joined = ""
+    blanks = 0
+    escaped = False
+    for index, raw in enumerate(parts):
+        line = raw if index == 0 else raw.lstrip(" \t")
+        if not line and index not in {0, len(parts) - 1}:
+            blanks += 1
+            continue
+        if index:
+            joined += "" if escaped else ("\n" * blanks or " ")
+        blanks = 0
+        escaped = double_quoted and _escaped_break(line)
+        joined += line[:-1] if escaped else line.rstrip(" \t")
+    return joined
 
 
 def _fold_scalar(parts: list[str]) -> str:
-    """Join a YAML scalar's physical lines into its value, unquoting a quoted one.
+    """Read a YAML scalar's physical lines as the one-line text a commit body shows.
 
-    Only the three styles `yaml.safe_dump` emits for a one-line string are handled: plain
-    and single-quoted lines fold with a space, and a double-quoted line ending in an escaped
-    line break joins with nothing, its next line's leading escaped space carrying the break.
+    Handles the three styles `yaml.safe_dump` emits for a string: plain, single-quoted,
+    and double-quoted with every escape. The decoded value then has each control
+    character, line separator, and byte-order mark turned into a space and its
+    whitespace collapsed, since the summary must stay on one line.
     """
     first = parts[0]
     if first.startswith('"'):
-        joined = ""
-        for part in parts:
-            stripped = part.removesuffix("\\")
-            # An odd run of trailing backslashes is an escaped line break.
-            escaped = (len(part) - len(part.rstrip("\\"))) % 2 == 1
-            joined += stripped if escaped else f"{part} "
-        value = joined.rstrip().removeprefix('"').removesuffix('"')
-        value = _ESCAPE_RE.sub(lambda m: _DOUBLE_QUOTED_ESCAPES.get(m[1], m[0]), value)
+        value = _fold_lines(parts, double_quoted=True)
+        value = _decode_double_quoted(value.removeprefix('"').removesuffix('"'))
     else:
-        value = " ".join(parts)
+        value = _fold_lines(parts, double_quoted=False)
         if first.startswith("'"):
             value = value.removeprefix("'").removesuffix("'").replace("''", "'")
-    return " ".join(value.split())
+    return " ".join(_UNSHOWABLE_RE.sub(" ", value).split())
 
 
 def _log_summary(path: Path) -> str:
@@ -297,15 +372,19 @@ def _log_summary(path: Path) -> str:
     block = _FRONTMATTER_RE.match(text)
     if not block:
         return ""
-    lines = block.group(0).splitlines()[1:]
+    # Only a newline ends a line here: a quoted scalar may hold a raw U+2028 or U+0085,
+    # which `str.splitlines` would also split on.
+    lines = block.group(0).split("\n")[1:]
     for index, line in enumerate(lines):
         if not line.startswith("summary:"):
             continue
         parts = [line.removeprefix("summary:").strip()]
         for continuation in lines[index + 1 :]:
-            if not continuation[:1].isspace():
+            if continuation and not continuation[:1].isspace():
                 break
-            parts.append(continuation.strip())
+            parts.append(continuation.strip(" \t"))
+        while len(parts) > 1 and not parts[-1]:
+            parts.pop()
         return _fold_scalar(parts) if parts[0] else ""
     return ""
 
@@ -402,7 +481,7 @@ class Sweep:
             return None
 
     def _await_lock(self, lock: Lock) -> bool:
-        """Wait for the project's lock, returning False once QUEUE_WAIT has passed.
+        """Wait for the project's lock, returning False once `queue_wait` has passed.
 
         A lock that fails for any reason but contention ends the wait at once, since
         polling cannot fix a lock file that cannot be opened.
@@ -417,7 +496,8 @@ class Sweep:
             return False
         _log.info("sweep queued: another sweep holds the lock")
         polls = 0
-        while polls * QUEUE_POLL < QUEUE_WAIT:
+        limit = queue_wait(self.config)
+        while polls * QUEUE_POLL < limit:
             self.sleep(QUEUE_POLL)
             polls += 1
             if lock.acquire():
@@ -597,8 +677,8 @@ class Sweep:
     def _commit(self, note: str, *, own_lock: Path) -> str:
         """Commit the vault unless another sweep is still writing; the outcome for the log.
 
-        The worker still running commits everything when it finishes, so skipping here
-        loses nothing.
+        Skipping loses nothing: when two workers finish at once both may skip, and the
+        next hook commits what they left.
         """
         if self.vault is None:
             return "commit skipped: no vault"
@@ -687,8 +767,10 @@ class Sweep:
         A new file that fails is quarantined. A modified learning that fails is
         restored from HEAD, so a good page the model rewrote into another format is
         not lost; only learnings are checked on edit, since a log or backlog edit
-        keeps its name and has no frontmatter to break. Debris a sync tool, editor, or
-        OS drops is left alone, as the CLI ignores it too.
+        keeps its name and has no frontmatter to break. A learning that cannot be
+        read is quarantined whether new or modified: its content is unknown, so
+        HEAD is no safer a guess, and left in place it would fail `git add`. Debris
+        a sync tool, editor, or OS drops is left alone, as the CLI ignores it too.
         """
         notes: list[str] = []
         learnings = target.learnings_dir.resolve()
@@ -701,6 +783,9 @@ class Sweep:
             parent = path.parent
             if parent == learnings:
                 problem = shape.learning_problem(path)
+                if path in changes.unreadable or problem == shape.UNREADABLE:
+                    notes.append(self._quarantine_unreadable(path))
+                    continue
             elif parent == logs and is_new:
                 problem = shape.log_problem(path)
             elif is_new:
@@ -722,6 +807,14 @@ class Sweep:
                 continue
             notes.append(f"malformed-{outcome}: {path} ({problem})")
         return notes
+
+    def _quarantine_unreadable(self, path: Path) -> str:
+        """Move an unreadable page aside and phrase the outcome as a note; never raises."""
+        try:
+            self._quarantine(path)
+        except OSError as exc:
+            return f"unreadable-unremovable: {path} ({exc})"
+        return f"unreadable-quarantined: {path}"
 
     def _revert_and_note(self, path: Path, raw: str) -> str:
         """Revert one out-of-root write and phrase the outcome as a note; never raises."""

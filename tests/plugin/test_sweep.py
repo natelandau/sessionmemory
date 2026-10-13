@@ -1432,6 +1432,72 @@ def test_log_summary_matches_the_cli_serializer(tmp_path: Path) -> None:
         assert sweep_mod._log_summary(path) == summary
 
 
+# (summary as written, summary as a commit body shows it). Each needs an escape or a
+# line break the serializer emits only for a character outside printable ASCII.
+_ESCAPED_SUMMARIES = [
+    ("ship it \U0001f600 now\a", "ship it \U0001f600 now"),
+    ("\ufeffbom at the start", "bom at the start"),
+    ("ring the \a bell", "ring the bell"),
+    ("line\u2028separated", "line separated"),
+    ("para\u2029graph", "para graph"),
+    (
+        "a long one " * 8 + "\u2028 then more " * 5,
+        "a long one " * 7 + "a long one" + " then more" * 5,
+    ),
+    (
+        "x" * 80 + " \U0001f600 \a and more words to wrap past the width",
+        "x" * 80 + " \U0001f600 and more words to wrap past the width",
+    ),
+    ("nul \x00 esc \x1b del \x7f nel \x85 nbsp \xa0 ok", "nul esc del nel nbsp ok"),
+    ("two\n\nparagraphs\ttabbed", "two paragraphs tabbed"),
+]
+
+
+@pytest.mark.parametrize(("summary", "expected"), _ESCAPED_SUMMARIES)
+def test_log_summary_decodes_every_yaml_escape(tmp_path: Path, summary: str, expected: str) -> None:
+    """Verify a summary the CLI escaped reads back decoded, on one line, with no raw escape."""
+    # Given a log written by the CLI's own serializer
+    path = tmp_path / "log.md"
+    path.write_text(serialize({"summary": summary, "session_id": "s"}, "body"), encoding="utf-8")
+    # When reading the summary
+    folded = sweep_mod._log_summary(path)
+    # Then every escape is decoded and every control character is gone
+    assert folded == expected
+    assert "\\" not in folded
+    assert all(ch == " " or ch.isprintable() for ch in folded)
+
+
+@pytest.mark.parametrize(
+    ("escape", "char"),
+    [
+        ("\\0", "\x00"),
+        ("\\a", "\a"),
+        ("\\b", "\b"),
+        ("\\t", "\t"),
+        ("\\n", "\n"),
+        ("\\v", "\v"),
+        ("\\f", "\f"),
+        ("\\r", "\r"),
+        ("\\e", "\x1b"),
+        ("\\ ", " "),
+        ('\\"', '"'),
+        ("\\/", "/"),
+        ("\\\\", "\\"),
+        ("\\N", "\x85"),
+        ("\\_", "\xa0"),
+        ("\\L", "\u2028"),
+        ("\\P", "\u2029"),
+        ("\\x41", "A"),
+        ("\\u00e9", "\u00e9"),
+        ("\\U0001F600", "\U0001f600"),
+    ],
+)
+def test_decode_double_quoted_handles_each_escape(escape: str, char: str) -> None:
+    """Verify each YAML double-quoted escape decodes to its character."""
+    # When decoding a value holding the escape / Then it becomes the character
+    assert sweep_mod._decode_double_quoted(f"a{escape}b") == f"a{char}b"
+
+
 def test_run_job_clean_write_logs_and_releases_lock(tmp_path: Path) -> None:
     """Verify run_job validates writes, commits, logs, and releases the lock on a clean run."""
     # Given a store with a clean target file
@@ -1618,12 +1684,51 @@ def test_run_job_waits_for_a_held_lock_then_runs(tmp_path: Path) -> None:
     assert "sweep dequeued after about 5s" in text
 
 
+@pytest.mark.parametrize(
+    ("config", "expected"),
+    [
+        (SessionMemoryConfig(), 3600.0),
+        (SessionMemoryConfig(sweep_timeout=3000), 12480.0),
+    ],
+)
+def test_queue_wait_scales_with_the_sweep_timeout(
+    config: SessionMemoryConfig, expected: float
+) -> None:
+    """Verify the queue wait covers several queued sweeps and never drops below an hour."""
+    # When computing the wait / Then it is the floor or four sweeps' worth, whichever is longer
+    assert sweep_mod.queue_wait(config) == expected
+
+
+def test_run_job_queue_wait_follows_the_configured_timeout(tmp_path: Path) -> None:
+    """Verify a queued worker keeps polling for as long as its configured timeout allows."""
+    # Given a lock held for the whole run and a sweep timeout of 3000 seconds
+    store = _job_store(tmp_path)
+    held = Lock(store.lock_path)
+    assert held.acquire() is True
+    waits: list[float] = []
+    sweep = Sweep(
+        store,
+        SessionMemoryConfig(sweep_timeout=3000),
+        _RecordingRunner(),
+        _FakeVault(_target_at(tmp_path / "vault")),
+        sleep=waits.append,
+    )
+    try:
+        # When running the job
+        sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id=""))
+    finally:
+        held.release()
+    # Then it polled every 5 seconds for 12480 seconds
+    assert sum(waits) == 12480.0
+    assert set(waits) == {sweep_mod.QUEUE_POLL}
+
+
 def test_run_job_gives_up_after_the_queue_wait(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Verify a sweep whose lock never frees gives up after the queue wait and never runs."""
     # Given a lock held for the whole run and a short queue wait
-    monkeypatch.setattr(sweep_mod, "QUEUE_WAIT", 10.0)
+    monkeypatch.setattr(sweep_mod, "queue_wait", lambda _config: 10.0)
     hooks_log = _capture_log(tmp_path)
     store = _job_store(tmp_path)
     held = Lock(store.lock_path)
@@ -2374,8 +2479,9 @@ def test_run_job_log_command_carries_no_title(tmp_path):
     sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="abc"))
 
     assert runner.prompt is not None
-    assert "--title" not in runner.prompt.split("--session-id abc")[1].splitlines()[0]
-    assert "--title '" not in runner.prompt
+    command_lines = [line for line in runner.prompt.splitlines() if " log --session-id abc" in line]
+    assert len(command_lines) == 1
+    assert "--title" not in command_lines[0]
 
 
 def test_changes_are_empty_without_a_base_commit(sweep_factory, tmp_path):
@@ -2712,6 +2818,95 @@ def test_run_job_restores_a_learning_rewritten_into_auto_memory_shape(tmp_path: 
 
     assert page.read_text(encoding="utf-8") == _GOOD_LEARNING
     assert f"malformed-restored: {page.resolve()} (unexpected keys: name, metadata)" in notes
+
+
+def _seed_git(root: Path) -> None:
+    """Commit everything under `root` into a fresh repository."""
+    git_env = clean_environ()
+    for args in (
+        ["init", "-q"],
+        ["config", "user.email", "t@e.com"],
+        ["config", "user.name", "T"],
+        ["add", "-A"],
+        ["commit", "-qm", "seed"],
+    ):
+        subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, env=git_env)
+
+
+def _write_unreadable(path: Path, text: str) -> None:
+    """Write `text` to `path`, then take away every permission so no read succeeds."""
+    path.write_text(text, encoding="utf-8")
+    path.chmod(0)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a file whatever its mode")
+def test_run_job_quarantines_an_unreadable_new_learning(tmp_path: Path) -> None:
+    """Verify a learning the run created that cannot be read is set aside, not left to block git."""
+    # Given a run that writes a learning nobody can read
+    store = _job_store(tmp_path)
+    target = _target_at(tmp_path / "vault")
+    page = target.learnings_dir / "locked-page.md"
+    sweep = Sweep(
+        store,
+        SessionMemoryConfig(),
+        _WritingRunner(lambda: _write_unreadable(page, _GOOD_LEARNING)),
+        _FakeVault(target),
+    )
+
+    # When running the job
+    notes = sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="sess-locked"))
+
+    # Then the page is quarantined and noted as unreadable
+    assert not page.exists()
+    assert f"unreadable-quarantined: {page.resolve()}" in notes
+    assert len(list((store.state_dir / "quarantine").glob("*-locked-page.md"))) == 1
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a file whatever its mode")
+def test_run_job_quarantines_an_unreadable_modified_learning(tmp_path: Path) -> None:
+    """Verify a committed learning the run left unreadable is quarantined rather than restored."""
+    # Given a committed learning that the run rewrites and leaves unreadable
+    vault_root = tmp_path / "vault"
+    store = _job_store(tmp_path)
+    target = _target_at(vault_root)
+    page = target.learnings_dir / "good-page.md"
+    page.write_text(_GOOD_LEARNING, encoding="utf-8")
+    _seed_git(vault_root)
+    sweep = Sweep(
+        store,
+        SessionMemoryConfig(),
+        _WritingRunner(lambda: _write_unreadable(page, _GOOD_LEARNING + "More\n")),
+        _FakeVault(target, root=vault_root),
+    )
+
+    # When running the job
+    notes = sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="sess-locked"))
+
+    # Then the unknown content is moved aside, not overwritten from HEAD
+    assert not page.exists()
+    assert f"unreadable-quarantined: {page.resolve()}" in notes
+    assert not any(n.startswith("malformed-restored") for n in notes)
+    assert len(list((store.state_dir / "quarantine").glob("*-good-page.md"))) == 1
+
+
+def test_enforce_shapes_quarantines_a_learning_the_snapshot_could_not_read(
+    tmp_path: Path,
+) -> None:
+    """Verify a learning the after-snapshot recorded as unreadable is quarantined."""
+    # Given a learning the snapshot could not read, though it reads now
+    store = _job_store(tmp_path)
+    target = _target_at(tmp_path / "vault")
+    page = target.learnings_dir / "flaky-page.md"
+    page.write_text(_GOOD_LEARNING, encoding="utf-8")
+    resolved = page.resolve()
+    sweep = Sweep(store, SessionMemoryConfig(), _RecordingRunner(), _FakeVault(target))
+
+    # When enforcing shapes
+    notes = sweep._enforce_shapes(Changes(created=(resolved,), unreadable=(resolved,)), target)
+
+    # Then it is quarantined as unreadable
+    assert notes == [f"unreadable-quarantined: {resolved}"]
+    assert not page.exists()
 
 
 def test_run_job_quarantines_a_stray_top_level_file(tmp_path: Path) -> None:

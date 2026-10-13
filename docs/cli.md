@@ -465,7 +465,7 @@ Record this session's work in the one page that belongs to it.
 | `--transcript` | Path to this session's transcript on disk.                                     |
 | `--url`        | Where this session can be opened online.                                       |
 | `--cwd`        | Directory to resolve the project from.                                         |
-| `--json`       | Emit JSON instead of prose.                                                    |
+| `--json`       | Emit JSON naming the path and whether the page was created or updated.         |
 
 ```bash
 sessionmemory log --session-id 0f6c1f9a-4c1e-4a1b-9d2f-6f4b2a7c5e10 \
@@ -479,8 +479,7 @@ EOF
 ```
 
 ```
-✓ created 2026-09-02-09-41.md
-  └─ ~/repos/my-vault/projects/invoice-api/logs/2026-09-02-09-41.md
+~/repos/my-vault/projects/invoice-api/logs/2026-09-02-09-41.md
 ```
 
 The plugin's sweep sets `SESSIONMEMORY_LOG_TITLE` instead of passing `--title`, so the title
@@ -496,16 +495,32 @@ EOF
 ```
 
 ```
-✓ created 2026-09-02-09-41.md
-  └─ ~/repos/my-vault/projects/invoice-api/logs/2026-09-02-09-41.md
+~/repos/my-vault/projects/invoice-api/logs/2026-09-02-09-41.md
 ```
 
-The page is keyed on `--session-id`. A second call for the same session updates the page
-it already wrote:
+The command prints the page's path and nothing else, as every `new` command does, so
+`path=$(sessionmemory log ...)` captures it. The page is keyed on `--session-id`. A second
+call for the same session updates the page it already wrote and prints the same path.
+Every call replaces the summary and the whole body, so send both in full each time.
+`--json` also says which of the two happened:
 
+```bash
+sessionmemory log --session-id 0f6c1f9a-4c1e-4a1b-9d2f-6f4b2a7c5e10 \
+  --title "2026-09-02 09:41" \
+  --summary "Made the Stripe webhook handler idempotent and documented the retry window." \
+  --body-file - --json --cwd . <<'EOF'
+## Summary
+
+Added the webhook_events table and the duplicate check in the handler, then documented
+how long Stripe keeps retrying.
+EOF
 ```
-✓ updated 2026-09-02-09-41.md
-  └─ ~/repos/my-vault/projects/invoice-api/logs/2026-09-02-09-41.md
+
+```json
+{
+  "path": "~/repos/my-vault/projects/invoice-api/logs/2026-09-02-09-41.md",
+  "action": "updated"
+}
 ```
 
 CAUTION: The body replaces the page's whole body. Send the complete text every time,
@@ -687,10 +702,10 @@ Specs have their own defaults, `--max-distance 0.38` and `--min-margin 0.07`, be
 specs spread wide: the median distance from a query to a project's specs measured 0.53 to
 0.56, so the margin below the median alone let unrelated specs through at 0.42 to 0.44,
 and the absolute ceiling had to be tighter. At the learnings defaults, 3 of 10 queries
-with no answer returned a spec. At 0.38 and 0.07, 0 of
-10 did and none of 40 queries with an answer was missed. Both numbers were measured on 50
-queries against one project's 51 specs, so they are a starting point. An explicit
-`--max-distance` or `--min-margin` overrides either one.
+with no answer returned a spec. At 0.38 and 0.07, 0 of 10 did and none of 40 queries with
+an answer was missed. Both numbers were measured on 50 queries against one project's 51
+specs, so they are a starting point. An explicit `--max-distance` or `--min-margin`
+overrides either one.
 
 ## `sessionmemory inject`
 

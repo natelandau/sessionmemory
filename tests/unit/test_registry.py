@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import fcntl
+import os
+from typing import TYPE_CHECKING
+
 import pytest
 
 from sessionmemory.lib import registry
@@ -17,6 +21,9 @@ from sessionmemory.lib.registry import (
     normalize_remote,
     save,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def _write_raw_registry(tmp_path, toml_text: str) -> None:
@@ -333,3 +340,60 @@ def test_mark_reviewed_rejects_an_unregistered_slug(tmp_path):
     """Verify an unknown slug raises rather than creating an entry."""
     with pytest.raises(RegistryError, match="nope"):
         registry.mark_reviewed(tmp_path, "nope", "2026-10-13")
+
+
+def _try_lock(directory: Path) -> bool:
+    """Report whether a second, non-blocking exclusive flock on `directory` succeeds."""
+    fd = os.open(directory, os.O_RDONLY)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return False
+    finally:
+        os.close(fd)
+    return True
+
+
+def test_locked_holds_an_exclusive_lock_on_the_system_directory(tmp_path):
+    """Verify a second lock on `_system/` is refused inside the context and granted after."""
+    # Given a vault with its system directory
+    system = tmp_path / SYSTEM_DIR
+    system.mkdir()
+    before = sorted(system.iterdir())
+    # When inside the context / Then another writer cannot take the lock
+    with registry.locked(tmp_path):
+        assert _try_lock(system) is False
+    # Then the lock is released and no lock file was left behind
+    assert _try_lock(system) is True
+    assert sorted(system.iterdir()) == before
+
+
+def test_mark_reviewed_saves_under_the_lock(tmp_path, monkeypatch):
+    """Verify mark_reviewed writes the registry only while it holds the lock."""
+    # Given a registered project and a save that records whether the lock was held
+    registry.save(tmp_path, {"a": Project(slug="a", remotes=(), root="/a")})
+    held: list[bool] = []
+    real_save = registry.save
+
+    def _probing_save(vault, projects) -> None:
+        held.append(not _try_lock(vault / SYSTEM_DIR))
+        real_save(vault, projects)
+
+    monkeypatch.setattr(registry, "save", _probing_save)
+    # When marking it reviewed
+    registry.mark_reviewed(tmp_path, "a", "2026-10-13")
+    # Then the save ran under the lock
+    assert held == [True]
+    assert registry.load(tmp_path)["a"].reviewed == "2026-10-13"
+
+
+def test_two_locked_writers_in_sequence_keep_both_entries(tmp_path):
+    """Verify each load-modify-save under the lock sees the entry the one before it wrote."""
+    # When two writers each add their own project under the lock
+    for slug in ("a", "b"):
+        with registry.locked(tmp_path):
+            projects = registry.load(tmp_path)
+            projects[slug] = Project(slug=slug, remotes=(), root=f"/{slug}")
+            registry.save(tmp_path, projects)
+    # Then both entries survive
+    assert sorted(registry.load(tmp_path)) == ["a", "b"]

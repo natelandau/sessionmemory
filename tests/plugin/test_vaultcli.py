@@ -530,6 +530,31 @@ def test_project_lookup_returns_paths_from_a_registered_payload_on_exit_1(
     assert _lookup(tmp_path) == Lookup({"slug": "demo", "logs": "/v/logs"})
 
 
+def test_project_lookup_and_run_share_one_spawn_helper(tmp_path: Path, mocker) -> None:
+    """Verify both entry points launch the CLI through `_spawn`, so neither wires its own."""
+    # Given the shared helper replaced with one returning a registered payload
+    spawn = mocker.patch.object(
+        VaultCLI,
+        "_spawn",
+        autospec=True,
+        return_value=_completed(0, '{"slug": "demo", "registered": true}'),
+    )
+    cli = VaultCLI(root=tmp_path / "vault", cli=tmp_path / "sessionmemory")
+
+    # When looking up the project and running a command
+    lookup = cli.project_lookup(cwd=tmp_path, env={}, timeout=120)
+    cli.run(["inject"], cwd=tmp_path, env={}, timeout=7)
+
+    # Then both calls went through the helper with their own arguments
+    assert lookup == Lookup({"slug": "demo"})
+    assert spawn.call_args_list == [
+        mocker.call(
+            cli, ["project", "--cwd", str(tmp_path), "--json"], cwd=tmp_path, env={}, timeout=120
+        ),
+        mocker.call(cli, ["inject"], cwd=tmp_path, env={}, timeout=7),
+    ]
+
+
 def test_project_lookup_reports_a_timeout(tmp_path: Path, mocker) -> None:
     """Verify a CLI that outruns the timeout is reported with the seconds it was given."""
     mocker.patch(

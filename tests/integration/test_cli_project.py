@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
+import os
 import subprocess
+import sys
 
 import pytest
 from typer.testing import CliRunner
@@ -648,3 +651,74 @@ def test_project_mark_reviewed_with_slug_fails(vault, repo):
     assert result.exit_code == 1
     assert registry.load(vault) == before
     assert before["demo"].reviewed == ""
+
+
+def _lock_is_free(directory) -> bool:
+    """Report whether a non-blocking exclusive flock on `directory` succeeds right now."""
+    fd = os.open(directory, os.O_RDONLY)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return False
+    finally:
+        os.close(fd)
+    return True
+
+
+def test_register_saves_the_registry_under_the_lock(vault, tmp_path, monkeypatch):
+    """Verify registration writes the registry only while it holds the `_system/` lock."""
+    # Given a save that records whether another writer could take the lock
+    held: list[bool] = []
+    real_save = registry.save
+
+    def _probing_save(root, projects) -> None:
+        held.append(not _lock_is_free(root / paths_lib.SYSTEM_DIR))
+        real_save(root, projects)
+
+    monkeypatch.setattr(registry, "save", _probing_save)
+    project = tmp_path / "plain-dir"
+    project.mkdir()
+    # When registering a directory
+    result = runner.invoke(app, ["project", "--register", "--cwd", str(project)])
+    # Then the registry was written under the lock
+    assert result.exit_code == 0, result.output
+    assert held == [True]
+
+
+# Registers one directory with `registry.save` slowed down, so two of these started
+# together overlap inside the read-modify-write unless the lock serializes them.
+_SLOW_REGISTER = """
+import sys, time
+from sessionmemory.lib import registry
+real_save = registry.save
+def slow_save(vault, projects):
+    time.sleep(0.5)
+    real_save(vault, projects)
+registry.save = slow_save
+from sessionmemory.cli import app
+app(["project", "--register", "--cwd", sys.argv[1]])
+"""
+
+
+def test_concurrent_registrations_keep_both_entries(vault, tmp_path):
+    """Verify two processes registering different projects at once lose neither entry."""
+    # Given two plain directories and an environment pointing at the vault
+    dirs = [tmp_path / "first-project", tmp_path / "second-project"]
+    for directory in dirs:
+        directory.mkdir()
+    env = {**os.environ, "SESSIONMEMORY_VAULT": str(vault)}
+    # When both register at the same moment
+    procs = [
+        subprocess.Popen(
+            [sys.executable, "-c", _SLOW_REGISTER, str(directory)],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        for directory in dirs
+    ]
+    for proc in procs:
+        _, stderr = proc.communicate(timeout=60)
+        assert proc.returncode == 0, stderr.decode()
+    # Then the registry holds both
+    assert sorted(registry.load(vault)) == ["first-project", "second-project"]
