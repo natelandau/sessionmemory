@@ -56,6 +56,7 @@ _GIT_TIMEOUT = 10
 # How much of a failed run's stderr the log keeps; enough to name the error, short
 # enough that a runaway traceback never dominates the file.
 STDERR_TAIL_CHARS = 500
+# The head of the result text names the error claude reports; the stderr tail names a crash.
 RESULT_TEXT_CHARS = 300
 # The model emits this when it judges the session worth no memory at all. It is
 # a diagnostic only: nothing reads it back, and a model that forgets it simply
@@ -494,8 +495,8 @@ class Sweep:
             suffix = f" (notes: {'; '.join(notes)})" if notes else ""
             _log.info("sweep finished: ok, %s, %s%s", changes.describe(), commit, suffix)
             return
-        cause = (result.text or "").strip()[:RESULT_TEXT_CHARS]
-        tail = (result.stderr or "").strip()[-STDERR_TAIL_CHARS:]
+        cause = " ".join((result.text or "").split())[:RESULT_TEXT_CHARS]
+        tail = " ".join((result.stderr or "").split())[-STDERR_TAIL_CHARS:]
         parts = [part for part in (cause, f"stderr: {tail}" if tail else "") if part]
         _log.error(
             "sweep failed: claude exited %s (%s)", result.exit_code, "; ".join(parts) or "no output"

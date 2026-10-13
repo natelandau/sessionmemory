@@ -1466,6 +1466,42 @@ def test_run_job_logs_the_result_text_of_a_failed_run(tmp_path: Path) -> None:
     assert "stderr: ⚠ claude.ai connectors are disabled" in text
 
 
+def _failed_run_log(tmp_path: Path, *, text: str, stderr: str, session: str) -> str:
+    class _FailingRunner:
+        def run(
+            self, prompt: str, *, cwd: str, extra_env: Mapping[str, str] | None = None
+        ) -> RunResult:
+            return RunResult(success=False, exit_code=1, changed_files=[], text=text, stderr=stderr)
+
+    hooks_log = _capture_log(tmp_path)
+    sweep = Sweep(
+        store_at(tmp_path),
+        SessionMemoryConfig(),
+        _FailingRunner(),
+        _FakeVault(_target_at(tmp_path / "vault")),
+    )
+    sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id=session))
+    return hooks_log_text(hooks_log)
+
+
+def test_run_job_logs_only_the_result_text_when_stderr_is_empty(tmp_path: Path) -> None:
+    """Verify a failed run with no stderr logs the result text without a stderr label."""
+    text = _failed_run_log(tmp_path, text="Invalid API key", stderr="", session="f-3")
+    assert "claude exited 1 (Invalid API key) (session=f-3)" in text
+
+
+def test_run_job_logs_no_output_when_a_failed_run_says_nothing(tmp_path: Path) -> None:
+    """Verify a failed run with neither result text nor stderr still names the gap."""
+    text = _failed_run_log(tmp_path, text="", stderr="", session="f-4")
+    assert "claude exited 1 (no output) (session=f-4)" in text
+
+
+def test_run_job_logs_a_multiline_failure_on_one_line(tmp_path: Path) -> None:
+    """Verify newlines in the result text and stderr never split the log line."""
+    text = _failed_run_log(tmp_path, text="bad\nkey\n", stderr="a\nb", session="f-5")
+    assert "claude exited 1 (bad key; stderr: a b) (session=f-5)" in text
+
+
 def test_run_job_without_a_vault_logs_the_skip(tmp_path: Path) -> None:
     """Verify an unreachable vault leaves a trace rather than a session vanishing silently."""
     hooks_log = _capture_log(tmp_path)

@@ -319,7 +319,8 @@ prints and which defaults to `~/.local/state/sessionmemory/hooks.log`. Every hoo
 one line per decision, so a short session shows as `sweep skipped: below threshold` with
 each measure against its floor, and a session the worker swept shows as `sweep finished`
 with the files it changed and the commit it made. A `sweep failed` line carries the exit
-code and the tail of stderr, which is what tells a missing `claude` binary from a timeout.
+code, the start of the result text, and the tail of stderr, which is what tells a missing
+`claude` binary from a timeout or a rejected key.
 The log rotates at 1 MB with two backups kept, so it holds weeks of ordinary use. Set
 `log.level` to `debug` to see the version handshake and each git call.
 
