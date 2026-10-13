@@ -379,6 +379,51 @@ def test_sessionstart_commits_the_vault(tmp_path: Path) -> None:
     assert "proj: add 1 learning" in log.stdout
 
 
+def _git_vault(tmp_path: Path, proj: Path) -> Path:
+    """A registered vault under git with one commit and one uncommitted learning."""
+    vault = _fake_vault(tmp_path, proj)
+    subprocess.run(["git", "init", "-q", "."], cwd=vault, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "t@example.org"], cwd=vault, check=True, capture_output=True
+    )
+    subprocess.run(["git", "config", "user.name", "t"], cwd=vault, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-q", "--allow-empty", "-m", "init"],
+        cwd=vault,
+        check=True,
+        capture_output=True,
+    )
+    return vault
+
+
+@pytest.mark.parametrize("stage", ["sessionstart", "sessionend"])
+def test_a_hook_skips_the_commit_while_another_projects_sweep_runs(
+    stage: str, tmp_path: Path
+) -> None:
+    """Verify a vault commit waits for any project's sweep, since it stages the whole vault."""
+    # Given a dirty vault and a sweep lock held by a different project on this machine
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    other = tmp_path / "other"
+    other.mkdir()
+    vault = _git_vault(tmp_path, proj)
+    held = Lock(_store(tmp_path, other).lock_path)
+    assert held.acquire()
+    env = _isolated_env(tmp_path, proj, vault=vault)
+    try:
+        # When this project's hook runs
+        proc = _run(stage, {"cwd": str(proj), "source": "startup", "transcript_path": ""}, env)
+    finally:
+        held.release()
+    # Then it skips the commit rather than staging the other sweep's unchecked writes
+    assert proc.returncode == 0, proc.stderr
+    assert "commit skipped: sweep in progress" in _hooks_log(tmp_path)
+    log = subprocess.run(
+        ["git", "log", "--oneline"], cwd=vault, capture_output=True, text=True, check=True
+    )
+    assert len(log.stdout.strip().splitlines()) == 1
+
+
 def test_sessionstart_disabled_inject_exits_silently(tmp_path: Path) -> None:
     """Verify a config with inject disabled suppresses injection even on a seeded store."""
     # Given a seeded store and a project config turning inject off

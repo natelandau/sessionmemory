@@ -34,11 +34,14 @@ def _isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     SessionMemoryConfig.load reads ~/.claude/sessionmemory.toml through
     Path.home(), which resolves from the process environment regardless of any
     env mapping a test hands to a hook function directly; a developer's real
-    file must never steer a test.
+    file, or real sweep state, must never steer a test.
     """
     home = tmp_path / "home"
     home.mkdir(exist_ok=True)
     monkeypatch.setenv("HOME", str(home))
+    # The sweep probes every lock under the state root, which would otherwise be the
+    # developer's real one.
+    monkeypatch.delenv("XDG_STATE_HOME", raising=False)
 
 
 def hooks_log_text(state_home: Path) -> str:

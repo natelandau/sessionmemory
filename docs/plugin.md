@@ -171,10 +171,11 @@ characters is cut at a separator and ends with `...`.
 Four situations are skipped rather than committed. A merge, rebase, cherry-pick, or
 revert in progress is skipped, because a commit landing in the middle of one bakes
 half-resolved state into history. A detached `HEAD` is skipped, because such a commit is
-reachable from nothing once a branch is checked out again. A sweep worker that still
-holds the lock is skipped, because the worker commits its own writes when it
-finishes. Two hooks reaching git at the same moment race on git's own `index.lock`, and
-the loser skips. In every case the next hook commits what was left behind.
+reachable from nothing once a branch is checked out again. A commit is skipped while any
+project's sweep is running, because a commit stages the whole vault and would record that
+sweep's writes before the sweep checks them. The worker commits when it finishes. Two
+hooks reaching git at the same moment race on git's own `index.lock`, and the loser
+skips. In every case the next hook commits what was left behind.
 
 ## The sweep's three jobs
 

@@ -426,9 +426,12 @@ and starts no subprocess, commits with git alone, and hands the sweep worker a r
 rather than a `VaultCLI`, so the version handshake runs in the worker after it detaches.
 A commit cut short costs nothing, since the next `SessionStart` commits what it left.
 
-Both start and end hooks skip their commit while a sweep worker holds the lock, since
-the worker commits its own writes when it finishes. `sessionend.py` commits whether or not
-the sweep is enabled, so a session that wrote a page by hand still lands it.
+Both start and end hooks skip their commit while any project's sweep is running, since
+the commit stages the whole vault and would capture a worker's writes before it scrubs and
+shape-checks them. `sweep.any_in_progress` probes every project's lock under the state
+root. A worker skips its own commit the same way while another project's sweep runs, and
+the last worker to finish commits everything. `sessionend.py` commits whether or not the
+sweep is enabled, so a session that wrote a page by hand still lands it.
 
 ### Committing
 

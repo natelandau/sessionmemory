@@ -18,11 +18,13 @@ from sessionhooks.commit import CommitOutcome  # ty: ignore[unresolved-import]
 from sessionhooks.config import SessionMemoryConfig  # ty: ignore[unresolved-import]
 from sessionhooks.runner import LOG_TITLE_ENV, RunResult  # ty: ignore[unresolved-import]
 from sessionhooks.snapshot import Changes  # ty: ignore[unresolved-import]
+from sessionhooks.store import LOCK_NAME, Store, state_root  # ty: ignore[unresolved-import]
 from sessionhooks.sweep import (  # ty: ignore[unresolved-import]
     Lock,
     Sweep,
     SweepJob,
     Target,
+    any_in_progress,
     in_progress,
 )
 from sessionhooks.vaultcli import WORKER_CLI_TIMEOUT, Lookup  # ty: ignore[unresolved-import]
@@ -35,7 +37,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
     from pytest_mock import MockerFixture
-    from sessionhooks.store import Store  # ty: ignore[unresolved-import]
 
 
 def _capture_log(tmp_path: Path) -> Path:
@@ -242,6 +243,53 @@ def test_in_progress_false_when_no_lock_exists(tmp_path: Path) -> None:
     # When checking / Then no worker is reported
     assert in_progress(store) is False
     assert not store.lock_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# any_in_progress
+# ---------------------------------------------------------------------------
+
+
+def _project_lock(env: dict[str, str], name: str) -> Path:
+    """The sweep lock path of a project's store under the state root `env` names."""
+    return state_root(env) / name / LOCK_NAME
+
+
+def test_any_in_progress_sees_another_projects_lock(tmp_path: Path) -> None:
+    """Verify a lock held by any project under the state root reads as a sweep running."""
+    # Given two project stores under one state root, one of them locked
+    env = {"XDG_STATE_HOME": str(tmp_path / "xdg")}
+    held = Lock(_project_lock(env, "aaaa"))
+    assert held.acquire() is True
+    idle = _project_lock(env, "bbbb")
+    idle.parent.mkdir(parents=True)
+    idle.touch()
+    try:
+        # When checking / Then a sweep is reported
+        assert any_in_progress(env) is True
+    finally:
+        held.release()
+    # And none once it is released
+    assert any_in_progress(env) is False
+
+
+def test_any_in_progress_false_with_no_state_root(tmp_path: Path) -> None:
+    """Verify a machine with no state root yet reads as no sweep running."""
+    assert any_in_progress({"XDG_STATE_HOME": str(tmp_path / "missing")}) is False
+
+
+def test_any_in_progress_skips_the_excepted_lock(tmp_path: Path) -> None:
+    """Verify a worker asking about other sweeps does not count its own lock."""
+    # Given a worker holding its own project's lock
+    env = {"XDG_STATE_HOME": str(tmp_path / "xdg")}
+    own = Lock(_project_lock(env, "aaaa"))
+    assert own.acquire() is True
+    try:
+        # When checking with its own lock excepted / Then no other sweep is reported
+        assert any_in_progress(env, except_path=own.path) is False
+        assert any_in_progress(env) is True
+    finally:
+        own.release()
 
 
 # ---------------------------------------------------------------------------
@@ -1234,6 +1282,37 @@ def test_run_job_notes_a_skipped_commit(tmp_path: Path) -> None:
 
     # Then the run notes the skip rather than a sha
     assert notes == ["commit skipped: clean"]
+
+
+def test_run_job_skips_its_commit_while_another_projects_sweep_runs(tmp_path: Path) -> None:
+    """Verify a worker leaves the vault commit to another sweep still writing."""
+    # Given another project's sweep lock held under this machine's state root
+    env = {"XDG_STATE_HOME": str(tmp_path / "xdg")}
+    other = Lock(_project_lock(env, "other"))
+    assert other.acquire() is True
+    vault = _FakeVault(_target_at(tmp_path / "vault"))
+    sweep = Sweep(_job_store(tmp_path), SessionMemoryConfig(), _FakeRunner([]), vault, env=env)
+    try:
+        # When this project's worker finishes
+        notes = sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id=""))
+    finally:
+        other.release()
+    # Then it does not commit, since the other worker commits the whole vault when it ends
+    assert vault.notes == []
+    assert notes == ["commit skipped: another sweep in progress"]
+
+
+def test_run_job_commits_when_only_its_own_lock_is_held(tmp_path: Path) -> None:
+    """Verify a worker's own lock under the state root never blocks its commit."""
+    # Given a store that lives under the state root the worker probes
+    env = {"XDG_STATE_HOME": str(tmp_path / "xdg")}
+    store = Store(key="k", state_dir=_project_lock(env, "self").parent)
+    vault = _FakeVault(_target_at(tmp_path / "vault"))
+    sweep = Sweep(store, SessionMemoryConfig(), _FakeRunner([]), vault, env=env)
+    # When the worker runs, holding its own lock throughout
+    notes = sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id=""))
+    # Then it commits
+    assert notes == ["committed abc1234"]
 
 
 def test_run_job_escaped_write_quarantined_and_lock_released(tmp_path: Path) -> None:

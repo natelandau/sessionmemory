@@ -37,7 +37,7 @@ from sessionhooks.config import SessionMemoryConfig
 from sessionhooks.paths import is_within_root
 from sessionhooks.runner import LOG_TITLE_ENV, ClaudeRunner
 from sessionhooks.safety import scrub
-from sessionhooks.store import Store, git_safe_env
+from sessionhooks.store import LOCK_NAME, Store, git_safe_env, state_root
 from sessionhooks.vaultcli import ROOT_ENV, WORKER_CLI_TIMEOUT, VaultCLI
 
 if TYPE_CHECKING:
@@ -146,15 +146,35 @@ class Lock:
                 os.close(fd)
 
 
-def in_progress(store: Store) -> bool:
-    """Report whether a sweep worker holds this project's lock right now."""
-    if not store.lock_path.exists():
+def _held(path: Path) -> bool:
+    """Report whether some process holds the lock at `path` right now."""
+    if not path.exists():
         return False
-    probe = Lock(store.lock_path)
+    probe = Lock(path)
     if probe.acquire():
         probe.release()
         return False
     return True
+
+
+def in_progress(store: Store) -> bool:
+    """Report whether a sweep worker holds this project's lock right now."""
+    return _held(store.lock_path)
+
+
+def any_in_progress(env: Mapping[str, str], *, except_path: Path | None = None) -> bool:
+    """Report whether any project's sweep worker on this machine holds its lock.
+
+    A vault commit stages the whole vault, so committing while any sweep runs would
+    capture that sweep's writes before it scrubs and shape-checks them. `except_path`
+    lets a worker ask about every sweep but its own.
+    """
+    try:
+        locks = sorted(state_root(env).glob(f"*/{LOCK_NAME}"))
+    except OSError:
+        return False
+    excluded = except_path.resolve() if except_path is not None else None
+    return any(_held(path) for path in locks if path.resolve() != excluded)
 
 
 def _transcript_text(window: list[dict[str, Any]]) -> str:
@@ -503,8 +523,7 @@ class Sweep:
                 notes.append("nothing to record")
             found = self._find_log(target, job.session_id)
             note = _log_summary(found[0]) if found else ""
-            outcome = self.vault.commit(env=self.env, note=note) if self.vault else None
-            commit_clause = outcome.describe() if outcome else "commit skipped: no vault"
+            commit_clause = self._commit(note, own_lock=lock.path)
             self._log_result(result, changes=changes, commit=commit_clause, notes=notes)
         except Exception:  # noqa: BLE001 - the detached worker must never raise
             _log.exception("sweep worker failed")
@@ -513,6 +532,18 @@ class Sweep:
             return [*notes, commit_clause]
         finally:
             lock.release()
+
+    def _commit(self, note: str, *, own_lock: Path) -> str:
+        """Commit the vault unless another sweep is still writing; the outcome for the log.
+
+        The worker still running commits everything when it finishes, so skipping here
+        loses nothing.
+        """
+        if self.vault is None:
+            return "commit skipped: no vault"
+        if any_in_progress(self.env, except_path=own_lock):
+            return "commit skipped: another sweep in progress"
+        return self.vault.commit(env=self.env, note=note).describe()
 
     def _log_result(
         self, result: RunResult, *, changes: Changes, commit: str, notes: list[str]

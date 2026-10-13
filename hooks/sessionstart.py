@@ -70,7 +70,7 @@ from sessionhooks.headless import is_headless  # noqa: E402
 from sessionhooks.hookmain import begin  # noqa: E402
 from sessionhooks.io import read_payload  # noqa: E402
 from sessionhooks.store import head_commit  # noqa: E402
-from sessionhooks.sweep import in_progress  # noqa: E402
+from sessionhooks.sweep import any_in_progress  # noqa: E402
 from sessionhooks.vaultcli import VaultCLI  # noqa: E402
 
 if TYPE_CHECKING:
@@ -189,14 +189,14 @@ def _run(  # pragma: no cover - runs only as a subprocess, where coverage cannot
 
     # Commit whatever the last session's sweep and any hand edits left behind, so
     # the vault's history is never more than one session behind its files, in
-    # every case SessionEnd does. Skipped while a sweep worker holds the
-    # lock: it commits its own writes when it finishes.
+    # every case SessionEnd does. Skipped while any project's sweep runs: the
+    # commit stages the whole vault, and the worker commits when it finishes.
     vault = VaultCLI.discover(env=os.environ, configured=cfg.vault_root)
     if vault is None:
         clauses.extend(["no vault", "commit skipped: no vault"])
     else:
         clauses.append("cli on PATH" if vault.on_path else "cli shim")
-        if in_progress(store):
+        if any_in_progress(os.environ):
             clauses.append("commit skipped: sweep in progress")
         else:
             clauses.append(vault.commit(env=os.environ).describe())
