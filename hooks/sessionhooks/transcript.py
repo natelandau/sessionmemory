@@ -8,6 +8,7 @@ skips system/hook injections that are not meaningful user/assistant turns.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,9 @@ NOISE_MARKERS: frozenset[str] = frozenset(
         "Base directory for this skill:",
     }
 )
+
+_COMMAND_NAME = re.compile(r"<command-name>(.*?)</command-name>", re.DOTALL)
+_COMMAND_ARGS = re.compile(r"<command-args>(.*?)</command-args>", re.DOTALL)
 
 
 def read_entries(transcript_path: str) -> list[dict[str, Any]]:
@@ -149,6 +153,41 @@ def _entry_text(entry: dict[str, Any]) -> str:
     return ""
 
 
+def _prompted_model(entries: list[dict[str, Any]], index: int) -> bool:
+    """Return whether the slash command at `index` sent the model a prompt.
+
+    A command that starts work (a skill, `/refactor`, `/security-review`) is
+    followed by a meta user entry carrying its expanded prompt. One that manages
+    Claude Code itself (`/plugin`, `/model`, `/clear`) runs locally and is
+    followed by its stdout or a `local_command` system entry instead.
+    """
+    for entry in entries[index + 1 :]:
+        entry_type = entry.get("type")
+        if entry_type == "system":
+            return False
+        if entry_type == "user":
+            message = entry.get("message")
+            content = message.get("content") if isinstance(message, dict) else None
+            return bool(entry.get("isMeta")) and isinstance(content, list)
+    return False
+
+
+def _typed_command(entry: dict[str, Any], text: str) -> dict[str, Any] | None:
+    """Return a copy of a slash-command entry holding the line the user typed.
+
+    The transcript records `/refactor site/*` as tagged markup, which the noise
+    filter would drop whole, so a session driven by slash commands would
+    measure as one where the user said nothing. Returns None when `text` is
+    not a command invocation.
+    """
+    name = _COMMAND_NAME.search(text)
+    if name is None:
+        return None
+    args = _COMMAND_ARGS.search(text)
+    typed = f"{name.group(1).strip()} {args.group(1).strip() if args else ''}".strip()
+    return {**entry, "message": {**entry["message"], "content": typed}}
+
+
 def _has_noise(text: str) -> bool:
     """Return True if the text contains any NOISE_MARKERS substring."""
     return any(marker in text for marker in NOISE_MARKERS)
@@ -160,15 +199,22 @@ def meaningful_messages(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     Drops tool_result user lines (content is a list), pure-thinking/tool_use
     assistant lines (no text block), and any entry whose text contains a
     NOISE_MARKERS substring, these are system injections, hook feedback, or
-    skill scaffolding, not real conversation.
+    skill scaffolding, not real conversation. A slash command that sent the
+    model a prompt is kept, rewritten as the line the user typed; one that only
+    managed Claude Code is dropped as noise.
     """
     result: list[dict[str, Any]] = []
-    for entry in entries:
+    for index, entry in enumerate(entries):
         if entry.get("type") not in {"user", "assistant"}:
             continue
         text = _entry_text(entry)
         if not text.strip():
             continue
+        if entry.get("type") == "user" and _prompted_model(entries, index):
+            command = _typed_command(entry, text)
+            if command is not None:
+                result.append(command)
+                continue
         if _has_noise(text):
             continue
         result.append(entry)

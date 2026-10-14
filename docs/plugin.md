@@ -234,7 +234,11 @@ is recorded as nothing at all. Then it does four jobs, in order:
 Most sessions produce nothing for jobs 1 to 3, and that is the correct outcome. Three
 floors keep trivial sessions out of the vault, and below any one of them the whole pass
 is skipped. Two of the three are measured on your messages alone, so a long agent reply
-to one short instruction never clears them.
+to one short instruction never clears them. A slash command that sends the agent a
+prompt, such as a skill or `/security-review`, counts as a message from you, measured by
+the line you typed, `/refactor site/*` for example. A command that manages Claude Code
+itself, such as `/plugin`, `/model`, `/context`, or `/clear`, runs without prompting the
+agent and does not count.
 
 Only one sweep runs at a time for each project. When a second session in the same project
 ends while a sweep is still running, its worker waits for the first to finish and then
