@@ -1,3 +1,10 @@
+## v0.11.0 (2026-10-13)
+
+### Feat
+
+- **sweep**: lower the default user character floor to 200
+- **sweep**: count work-starting slash commands as user messages (#14)
+
 ## v0.10.0 (2026-10-13)
 
 ### Feat
