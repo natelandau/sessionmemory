@@ -194,6 +194,98 @@ def test_meaningful_mixed_noise_and_clean() -> None:
     assert result == [clean_user, clean_assistant]
 
 
+def _command(name: str, args: str = "") -> dict:
+    return _user(
+        f"<command-message>{name.lstrip('/')}</command-message>\n"
+        f"<command-name>{name}</command-name>\n"
+        f"<command-args>{args}</command-args>"
+    )
+
+
+def _expanded_prompt() -> dict:
+    return {
+        "type": "user",
+        "isMeta": True,
+        "message": {"role": "user", "content": [{"type": "text", "text": "# skill body"}]},
+    }
+
+
+def _local_stdout() -> dict:
+    return _user("<local-command-stdout>Updated.</local-command-stdout>")
+
+
+def test_meaningful_text_restores_a_prompting_slash_command_as_typed() -> None:
+    """Verify a slash command that sent the model a prompt reads as the line the user typed."""
+    # Given two commands whose expanded prompts reached the model
+    entries = [
+        _command("/refactor", "site/* and add a check"),
+        {"type": "attachment"},
+        _expanded_prompt(),
+        _command("/pr"),
+        _expanded_prompt(),
+    ]
+    # When extracting the prompt-ready view
+    out = transcript.meaningful_text(entries)
+    # Then each is the typed command line and the skill bodies stay out
+    assert out == [
+        {"role": "user", "text": "/refactor site/* and add a check"},
+        {"role": "user", "text": "/pr"},
+    ]
+
+
+@pytest.mark.parametrize(
+    "follower",
+    [
+        _local_stdout(),
+        {"type": "system", "subtype": "local_command"},
+        _user("an ordinary message"),
+    ],
+)
+def test_meaningful_drops_a_slash_command_that_ran_locally(follower: dict) -> None:
+    """Verify a command that managed Claude Code rather than prompting the model stays noise."""
+    # Given a local command such as /plugin followed by anything but an expanded prompt
+    entries = [_command("/plugin", "update sessionmemory"), follower]
+    # When filtering meaningful messages
+    result = transcript.meaningful_messages(entries)
+    # Then the command itself is not kept
+    assert all("plugin" not in transcript._entry_text(e) for e in result)
+
+
+def test_meaningful_drops_a_slash_command_at_the_end_of_the_window() -> None:
+    """Verify a command with nothing after it is not counted."""
+    # Given a trailing command / When filtering
+    result = transcript.meaningful_messages([_command("/clear")])
+    # Then nothing is kept
+    assert result == []
+
+
+def test_user_substance_counts_a_prompting_slash_command_and_its_arguments() -> None:
+    """Verify a slash command that started work counts as a human message by its typed line."""
+    # Given a prompting command, a local one, and a plain message
+    entries = [
+        _command("/refactor", "site/*"),
+        _expanded_prompt(),
+        _command("/model"),
+        _local_stdout(),
+        _user("ship it"),
+    ]
+    # When measuring substance
+    result = transcript.user_substance(entries)
+    # Then only the prompting command and the plain message count
+    assert result.messages == 2
+    assert result.characters == len("/refactor site/*") + len("ship it")
+
+
+def test_meaningful_drops_command_args_without_a_command_name() -> None:
+    """Verify stray command markup with no command name stays noise."""
+    # Given command arguments followed by an expanded prompt but no command name
+    entries = [_user("<command-args>--flag</command-args>"), _expanded_prompt()]
+    # When filtering
+    result = transcript.meaningful_messages(entries)
+    # Then it is excluded
+    assert result == []
+
+
 # ---------------------------------------------------------------------------
 # meaningful_text (prompt-ready role + text view)
 # ---------------------------------------------------------------------------
