@@ -147,7 +147,7 @@ def test_substance_floors_have_defaults(tmp_path):
     """Verify the human-substance floors carry defaults when no config file exists."""
     cfg = SessionMemoryConfig.load(home=tmp_path)
     assert cfg.min_user_messages == 3
-    assert cfg.min_user_chars == 400
+    assert cfg.min_user_chars == 200
 
 
 def test_substance_floors_are_read_from_the_config(tmp_path):
@@ -171,7 +171,7 @@ def test_substance_floors_fall_back_on_a_bad_value(tmp_path):
     )
     cfg = SessionMemoryConfig.load(home=home)
     assert cfg.min_user_messages == 3
-    assert cfg.min_user_chars == 400
+    assert cfg.min_user_chars == 200
 
 
 def test_log_settings_have_defaults(tmp_path):

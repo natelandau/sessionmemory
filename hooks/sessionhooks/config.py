@@ -32,7 +32,7 @@ DEFAULT_MIN_EXCHANGES = 10
 # single instruction. Substance is deliberately not a proxy for committed work --
 # a long question that changed no code is exactly what the sweep exists to keep.
 DEFAULT_MIN_USER_MESSAGES = 3
-DEFAULT_MIN_USER_CHARS = 400
+DEFAULT_MIN_USER_CHARS = 200
 # A sweep reads the repo and commits before it writes, so one still running at
 # ten minutes is stuck rather than slow.
 DEFAULT_SWEEP_TIMEOUT = 600

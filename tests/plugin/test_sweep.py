@@ -472,7 +472,7 @@ def test_gate_logs_a_below_threshold_skip_with_every_count(tmp_path: Path) -> No
     sweep._gate({"cwd": str(tmp_path), "transcript_path": str(t_file)})
     text = hooks_log_text(hooks_log)
     assert (
-        "sweep skipped: below threshold (exchanges 2/5, user messages 1/3, user chars 2/400)"
+        "sweep skipped: below threshold (exchanges 2/5, user messages 1/3, user chars 2/200)"
         in text
     )
 

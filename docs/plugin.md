@@ -313,7 +313,7 @@ session.
 | `sweep.model`             | `claude-sonnet-4-6` | The model the pass runs on                                          |
 | `sweep.min_exchanges`     | `10`                | Skip the pass below this many real messages, yours and the agent's  |
 | `sweep.min_user_messages` | `3`                 | Skip the pass below this many messages from you                     |
-| `sweep.min_user_chars`    | `400`               | Skip the pass below this many characters from you, in total         |
+| `sweep.min_user_chars`    | `200`               | Skip the pass below this many characters from you, in total         |
 | `sweep.timeout`           | `600`               | Seconds the pass may run before it is killed                        |
 | `sweep.save_transcript`   | `true`              | Save the pass's own session, so its API usage is auditable          |
 | `log.path`                | `~/.local/state/sessionmemory/hooks.log` | Where every hook on this machine logs; `hooks/vault-path.py --log` prints it |
