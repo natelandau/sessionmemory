@@ -1,3 +1,9 @@
+## v0.12.0 (2026-10-24)
+
+### Feat
+
+- **local**: keep CLAUDE.local.md in the vault and link it
+
 ## v0.11.0 (2026-10-13)
 
 ### Feat
