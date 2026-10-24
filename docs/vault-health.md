@@ -39,7 +39,7 @@ A clean vault says so:
 ]
 ```
 
-## The nine checks
+## The ten checks
 
 Each finding names the check that produced it.
 
@@ -178,6 +178,77 @@ than one index is reported. The index is derived and disposable, so deleting the
 `*.sqlite3` file in the folder and reindexing has the same effect.
 `sessionmemory search` refreshes the index it queries, so this finding usually means a
 field nobody has searched since its pages changed.
+
+### `local`
+
+A project's `CLAUDE.local.md` in the vault has a problem. The check runs for each project
+whose vault copy exists.
+
+A relative `@` import in the vault copy cannot load, because Claude Code resolves it from
+the vault folder:
+
+```
+1 suggestion
+  └─ local: ~/repos/my-vault/projects/invoice-api/CLAUDE.local.md: @./sandbox-notes.md resolves from the vault folder and will not load
+```
+
+Write the content of the imported file into `CLAUDE.local.md`, or remove the import.
+
+When the registered root exists on this machine, the check also looks at the file there.
+It reports at most one finding for that file, with the remedy that fits its state.
+
+A file that git tracks is not private, and `sessionmemory local adopt` and
+`sessionmemory local link` both refuse it:
+
+```
+1 suggestion
+  └─ local: ~/repos/invoice-api/CLAUDE.local.md: tracked by git; run git rm --cached CLAUDE.local.md before adopting it
+```
+
+Run the command, commit the removal in the project, then run `sessionmemory local adopt`.
+The file stays in the project's earlier commits.
+
+A regular file whose bytes differ from the vault copy is `diverged`:
+
+```
+1 suggestion
+  └─ local: ~/repos/invoice-api/CLAUDE.local.md: differs from the vault copy; copy the newer one over the vault copy, delete the checkout file, and run local link
+```
+
+An editor that saves by renaming a temporary file over the link leaves this state behind.
+Run `sessionmemory local status` to compare both files. Then copy the newer content over
+the vault copy, delete the checkout file, and run `sessionmemory local link`.
+
+The other findings are for a file or link that git does not ignore, which shows up as an
+untracked file in the project. The remedy depends on what is there:
+
+```
+1 suggestion
+  └─ local: ~/repos/invoice-api/CLAUDE.local.md: not ignored by git; run local link to add it to info/exclude
+```
+
+The checkout links to the vault copy, or holds a link to nothing. Run
+`sessionmemory local link`, which adds `CLAUDE.local.md` to the file that
+`git rev-parse --git-path info/exclude` prints.
+
+```
+1 suggestion
+  └─ local: ~/repos/invoice-api/CLAUDE.local.md: not ignored by git; run local adopt to replace it with an ignored link
+```
+
+The checkout holds a regular file with the same bytes as the vault copy. Run
+`sessionmemory local adopt`, which replaces it with a link and adds the ignore entry.
+
+```
+1 suggestion
+  └─ local: ~/repos/invoice-api/CLAUDE.local.md: not ignored by git, and a symlink to ~/repos/notes/CLAUDE.local.md rather than the vault copy; remove it, then run local link
+```
+
+The checkout holds a link to another file. Remove the link, then run
+`sessionmemory local link`.
+
+The check covers the registered root only. `sessionmemory local status` covers each
+worktree.
 
 ## Why every finding is a suggestion
 

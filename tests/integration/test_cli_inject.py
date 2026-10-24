@@ -88,3 +88,14 @@ def test_inject_names_the_cli_by_its_own_command_by_default(workspace):
     assert result.exit_code == 0
     assert "`sessionmemory search" in result.stdout
     assert "`vault search" not in result.stdout
+
+
+def test_inject_json_flags_an_unadopted_local_file(workspace):
+    """Verify --json carries unadopted_local for a regular CLAUDE.local.md."""
+    _, repo = workspace
+    assert json.loads(runner.invoke(app, ["inject", "--json"]).stdout)["unadopted_local"] is False
+    (repo / "CLAUDE.local.md").write_text("# mine\n", encoding="utf-8")
+
+    result = runner.invoke(app, ["inject", "--json"])
+
+    assert json.loads(result.stdout)["unadopted_local"] is True

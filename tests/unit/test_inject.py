@@ -328,3 +328,78 @@ def test_guidance_teaches_spec_search_summary_and_status():
     for status in ("draft", "shipped", "superseded", "abandoned"):
         assert status in flat
     assert 'new spec --title "..." --supersedes <old filename>' in flat
+
+
+def _git_repo(path: Path) -> Path:
+    import subprocess
+
+    path.mkdir()
+    subprocess.run(["git", "init", "-q", "."], cwd=path, check=True, capture_output=True)
+    return path
+
+
+def test_build_flags_unadopted_local(tmp_path):
+    """Verify a regular CLAUDE.local.md with no vault copy is flagged and the hint names local adopt."""
+    vault = tmp_path / "vault"
+    repo = _git_repo(tmp_path / "repo")
+    (repo / "CLAUDE.local.md").write_text("# mine\n", encoding="utf-8")
+
+    result = inject.build(vault, "demo", cwd=repo)
+
+    assert result.unadopted_local is True
+    text = inject.render(result, command="sessionmemory")
+    assert "`sessionmemory local adopt --cwd .`" in text
+    assert text.endswith("moves it there")
+
+
+def test_build_ignores_linked_local(tmp_path):
+    """Verify a CLAUDE.local.md already linked into the vault is not flagged."""
+    from sessionmemory.lib import localmd
+
+    vault = tmp_path / "vault"
+    repo = _git_repo(tmp_path / "repo")
+    co = localmd.checkout(vault, "demo", repo)
+    co.target.parent.mkdir(parents=True)
+    co.target.write_text("# mine\n", encoding="utf-8")
+    localmd.link(co)
+
+    assert inject.build(vault, "demo", cwd=repo).unadopted_local is False
+
+
+def test_build_without_cwd_never_flags(tmp_path):
+    """Verify no cwd means no checkout is inspected."""
+    assert inject.build(tmp_path, "demo").unadopted_local is False
+
+
+def test_build_outside_a_work_tree_never_flags(tmp_path):
+    """Verify a directory outside git yields no hint rather than an error."""
+    plain = tmp_path / "plain"
+    plain.mkdir()
+
+    assert inject.build(tmp_path, "demo", cwd=plain).unadopted_local is False
+
+
+def test_build_ignores_a_tracked_local(tmp_path):
+    """Verify a CLAUDE.local.md git tracks is not pointed at adopt, which would refuse it."""
+    import subprocess
+
+    vault = tmp_path / "vault"
+    repo = _git_repo(tmp_path / "repo")
+    (repo / "CLAUDE.local.md").write_text("# committed\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", "-f", "CLAUDE.local.md"], cwd=repo, check=True, capture_output=True
+    )
+
+    assert inject.build(vault, "demo", cwd=repo).unadopted_local is False
+
+
+def test_build_ignores_a_diverged_local(tmp_path):
+    """Verify a regular file beside an existing vault copy is not flagged as unadopted."""
+    vault = tmp_path / "vault"
+    repo = _git_repo(tmp_path / "repo")
+    (repo / "CLAUDE.local.md").write_text("# mine\n", encoding="utf-8")
+    copy = vault / "projects" / "demo" / "CLAUDE.local.md"
+    copy.parent.mkdir(parents=True)
+    copy.write_text("# vault\n", encoding="utf-8")
+
+    assert inject.build(vault, "demo", cwd=repo).unadopted_local is False

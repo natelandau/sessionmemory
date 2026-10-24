@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import TYPE_CHECKING
 
-from sessionmemory.lib import backlog, config, field, paths, registry
+from sessionmemory.lib import backlog, config, field, localmd, paths, registry
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -33,6 +33,7 @@ class Injection:
     runbooks: tuple[str, ...] = ()
     reviewed: str = ""
     review_due: bool = False
+    unadopted_local: bool = False
 
 
 def _sort_key(title: str) -> str:
@@ -95,7 +96,24 @@ def _review_due(*, learnings: int, reviewed: str, today: str) -> bool:
     return elapsed > timedelta(days=REVIEW_INTERVAL_DAYS)
 
 
-def build(vault: Path, slug: str, *, today: str | None = None) -> Injection:
+def _unadopted_local(vault: Path, slug: str, cwd: Path | None) -> bool:
+    """Report whether `cwd` holds a plain CLAUDE.local.md the vault does not have yet.
+
+    A hint must never fail a session start, so any git or checkout failure reads as no hint.
+    `tracked` runs only for an unadopted file, so a project without one costs no extra git call.
+    """
+    if cwd is None:
+        return False
+    try:
+        co = localmd.checkout(vault, slug, cwd)
+        return localmd.state(co) is localmd.State.UNADOPTED and not co.tracked()
+    except localmd.LocalMdError:
+        return False
+
+
+def build(
+    vault: Path, slug: str, *, today: str | None = None, cwd: Path | None = None
+) -> Injection:
     """Read the project's pages and files; the index is never consulted here.
 
     Specs are counted rather than listed. A spec outlives the work it describes, so a
@@ -118,6 +136,7 @@ def build(vault: Path, slug: str, *, today: str | None = None) -> Injection:
         review_due=_review_due(
             learnings=len(titles), reviewed=reviewed, today=today or config.today()
         ),
+        unadopted_local=_unadopted_local(vault, slug, cwd),
     )
 
 
@@ -203,6 +222,10 @@ def render(injection: Injection, *, command: str = "sessionmemory") -> str:
     lines.append(f"  {injection.open_backlog} open backlog {item}")
     spec = "spec" if injection.specs == 1 else "specs"
     lines.append(f"  {injection.specs} {spec} in specs/")
+    if injection.unadopted_local:
+        lines.append(
+            f"  CLAUDE.local.md here is not in the vault yet; `{command} local adopt --cwd .` moves it there"
+        )
     return "\n".join(lines)
 
 
@@ -218,4 +241,5 @@ def payload(injection: Injection, *, command: str) -> dict[str, object]:
         "runbooks": list(injection.runbooks),
         "reviewed": injection.reviewed,
         "review_due": injection.review_due,
+        "unadopted_local": injection.unadopted_local,
     }
