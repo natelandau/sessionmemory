@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
+import subprocess
 from pathlib import Path
+
+import pytest
 
 from sessionmemory.lib import doctor, field, fieldindex, registry
 from sessionmemory.lib.embed import StubEmbedder
@@ -430,3 +434,196 @@ def test_stale_indexes_reports_a_specs_index_built_under_another_input_version(t
     assert [(f.path, f.message) for f in findings] == [
         (str(spec.parent), "index is behind its pages; run: sessionmemory reindex")
     ]
+
+
+def _local_project(vault: Path, root: Path, text: str = "# local\n") -> Path:
+    """Register `demo` at a git repository `root` and write its vault copy."""
+    root.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    copy = vault / "projects" / "demo" / "CLAUDE.local.md"
+    copy.parent.mkdir(parents=True)
+    copy.write_text(text, encoding="utf-8")
+    registry.save(vault, {"demo": registry.Project(slug="demo", remotes=(), root=str(root))})
+    return copy
+
+
+def test_local_reports_relative_import(tmp_path):
+    """Verify a relative @import in the vault copy is reported."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    copy = _local_project(vault, tmp_path / "repo", "see @docs/a.md and @/abs.md\n")
+
+    findings = doctor.local_instructions(vault, StubEmbedder())
+
+    assert [(f.check, f.path, f.message) for f in findings] == [
+        ("local", str(copy), "@docs/a.md resolves from the vault folder and will not load")
+    ]
+
+
+def test_local_reports_diverged_copy_at_root(tmp_path):
+    """Verify a regular file at the root that differs from the vault copy is reported."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    root = tmp_path / "repo"
+    _local_project(vault, root)
+    (root / "CLAUDE.local.md").write_text("other\n", encoding="utf-8")
+    (root / ".git" / "info" / "exclude").write_text("CLAUDE.local.md\n", encoding="utf-8")
+
+    findings = doctor.local_instructions(vault, StubEmbedder())
+
+    expected = (
+        "differs from the vault copy; copy the newer one over the vault copy, "
+        "delete the checkout file, and run local link"
+    )
+    assert [f.message for f in findings] == [expected]
+
+
+def test_local_reports_unignored_link(tmp_path):
+    """Verify a link git does not ignore is reported."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    root = tmp_path / "repo"
+    copy = _local_project(vault, root)
+    (root / "CLAUDE.local.md").symlink_to(copy)
+
+    findings = doctor.local_instructions(vault, StubEmbedder())
+
+    assert [f.message for f in findings] == [
+        "not ignored by git; run local link to add it to info/exclude"
+    ]
+
+
+def test_local_silent_when_linked_and_ignored(tmp_path):
+    """Verify an ignored link to the vault copy is not a finding."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    root = tmp_path / "repo"
+    copy = _local_project(vault, root)
+    (root / "CLAUDE.local.md").symlink_to(copy)
+    (root / ".git" / "info" / "exclude").write_text("CLAUDE.local.md\n", encoding="utf-8")
+
+    assert doctor.local_instructions(vault, StubEmbedder()) == []
+
+
+def test_local_silent_without_vault_copy(tmp_path):
+    """Verify a project with no vault copy is not a finding, whatever sits at its root."""
+    vault = tmp_path / "vault"
+    (vault / "projects" / "demo").mkdir(parents=True)
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "CLAUDE.local.md").write_text("x", encoding="utf-8")
+    registry.save(vault, {"demo": registry.Project(slug="demo", remotes=(), root=str(root))})
+
+    assert doctor.local_instructions(vault, StubEmbedder()) == []
+
+
+def test_run_includes_the_local_check():
+    """Verify the check runs as part of doctor."""
+    assert doctor.local_instructions in doctor.CHECKS
+
+
+def test_local_silent_when_root_is_not_a_git_repository(tmp_path):
+    """Verify a git failure outside a repository is not read as "not ignored"."""
+    vault = tmp_path / "vault"
+    copy = vault / "projects" / "demo" / "CLAUDE.local.md"
+    copy.parent.mkdir(parents=True)
+    copy.write_text("# local\n", encoding="utf-8")
+    root = tmp_path / "plain"
+    root.mkdir()
+    (root / "CLAUDE.local.md").symlink_to(copy)
+    registry.save(vault, {"demo": registry.Project(slug="demo", remotes=(), root=str(root))})
+
+    assert doctor.local_instructions(vault, StubEmbedder()) == []
+
+
+def test_local_reports_a_diverged_unignored_file_once(tmp_path):
+    """Verify a differing file git does not ignore gets the diverged advice alone."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    root = tmp_path / "repo"
+    _local_project(vault, root)
+    (root / "CLAUDE.local.md").write_text("other\n", encoding="utf-8")
+
+    findings = doctor.local_instructions(vault, StubEmbedder())
+
+    assert len(findings) == 1
+    assert findings[0].message.startswith("differs from the vault copy")
+
+
+def test_local_advises_adopt_for_an_identical_unignored_file(tmp_path):
+    """Verify a regular file equal to the vault copy and not ignored is pointed at adopt."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    root = tmp_path / "repo"
+    _local_project(vault, root)
+    (root / "CLAUDE.local.md").write_text("# local\n", encoding="utf-8")
+
+    findings = doctor.local_instructions(vault, StubEmbedder())
+
+    assert [f.message for f in findings] == [
+        "not ignored by git; run local adopt to replace it with an ignored link"
+    ]
+
+
+def test_local_reports_a_tracked_file(tmp_path):
+    """Verify a file git tracks is reported as tracked, not as merely unignored."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    root = tmp_path / "repo"
+    _local_project(vault, root)
+    (root / "CLAUDE.local.md").write_text("other\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-f", "CLAUDE.local.md"], cwd=root, check=True)
+
+    findings = doctor.local_instructions(vault, StubEmbedder())
+
+    assert [f.message for f in findings] == [
+        "tracked by git; run git rm --cached CLAUDE.local.md before adopting it"
+    ]
+
+
+def test_local_reports_an_unignored_foreign_link(tmp_path):
+    """Verify a link to some other file says where it points."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    root = tmp_path / "repo"
+    _local_project(vault, root)
+    other = tmp_path / "other.md"
+    other.write_text("x\n", encoding="utf-8")
+    (root / "CLAUDE.local.md").symlink_to(other)
+
+    findings = doctor.local_instructions(vault, StubEmbedder())
+
+    expected = (
+        f"not ignored by git, and a symlink to {other.resolve()} rather than the vault copy; "
+        "remove it, then run local link"
+    )
+    assert [f.message for f in findings] == [expected]
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a file whatever its mode")
+def test_local_skips_an_unreadable_vault_copy(tmp_path):
+    """Verify a vault copy that cannot be read is skipped rather than crashing doctor."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    copy = _local_project(vault, tmp_path / "repo", "see @docs/a.md\n")
+    copy.chmod(0)
+    try:
+        assert doctor.local_instructions(vault, StubEmbedder()) == []
+    finally:
+        copy.chmod(0o644)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a file whatever its mode")
+def test_local_skips_an_unreadable_checkout_file(tmp_path):
+    """Verify a checkout file that cannot be read is not judged as differing or equal."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    root = tmp_path / "repo"
+    _local_project(vault, root)
+    local = root / "CLAUDE.local.md"
+    local.write_text("other\n", encoding="utf-8")
+    local.chmod(0)
+    try:
+        assert doctor.local_instructions(vault, StubEmbedder()) == []
+    finally:
+        local.chmod(0o644)

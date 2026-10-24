@@ -24,6 +24,9 @@ min_user_chars = 200          # skip the sweep below this many characters from y
 timeout = 600                 # seconds the headless sweep may run before it is killed
 save_transcript = true        # save the sweep's own claude session (for API-usage auditing); false discards it
 
+[local]
+link = true                   # set false to stop linking CLAUDE.local.md from the vault
+
 [log]
 # One log for every hook on this machine, rotated at 1 MB with two backups kept.
 # Print the resolved path with: hooks/vault-path.py --log

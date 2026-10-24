@@ -247,3 +247,19 @@ def test_sweep_timeout_falls_back_on_a_value_that_cannot_be_a_timeout(tmp_path, 
     _write_global(tmp_path, f"[sweep]\ntimeout = {raw}\n")
     # When loading / Then the default applies
     assert SessionMemoryConfig.load(home=tmp_path).sweep_timeout == 600
+
+
+def test_config_reads_local_link(tmp_path: Path) -> None:
+    """Verify `[local] link` defaults on, turns off, and cascades from the project file."""
+    # Given no config
+    home = tmp_path / "home"
+    proj = tmp_path / "proj"
+    assert SessionMemoryConfig.load(home=home, project_dir=str(proj)).local_link is True
+    # And a global file turning it off
+    (home / ".claude").mkdir(parents=True)
+    (home / ".claude" / "sessionmemory.toml").write_text("[local]\nlink = false\n")
+    assert SessionMemoryConfig.load(home=home, project_dir=str(proj)).local_link is False
+    # And a project file turning it back on wins
+    (proj / ".claude").mkdir(parents=True)
+    (proj / ".claude" / "sessionmemory.toml").write_text("[local]\nlink = true\n")
+    assert SessionMemoryConfig.load(home=home, project_dir=str(proj)).local_link is True

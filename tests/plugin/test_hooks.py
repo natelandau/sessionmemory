@@ -9,6 +9,7 @@ real `claude` is ever spawned and no worker is ever forked.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import subprocess
@@ -1268,3 +1269,153 @@ def test_record_session_state_skips_the_base_commit_on_a_continuation(tmp_path: 
 
     # Then the original base commit is left untouched
     assert store.read_base_commit() == "original-commit"
+
+
+def _local_repo(tmp_path: Path, canary: str = "CANARY-LOCAL") -> tuple[Path, Path]:
+    """A git work tree registered in a vault that holds a CLAUDE.local.md copy."""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    git_env = clean_environ()
+    for args in (
+        ["init", "-q"],
+        ["config", "user.email", "t@example.org"],
+        ["config", "user.name", "t"],
+        ["commit", "-q", "--allow-empty", "-m", "init"],
+    ):
+        subprocess.run(["git", *args], cwd=proj, check=True, capture_output=True, env=git_env)
+    vault = _fake_vault(tmp_path, proj)
+    (vault / "projects" / proj.name / "CLAUDE.local.md").write_text(canary, encoding="utf-8")
+    return proj, vault
+
+
+def _start(tmp_path: Path, proj: Path, vault: Path) -> str:
+    payload = {"cwd": str(proj), "source": "startup"}
+    proc = _run("sessionstart", payload, _isolated_env(tmp_path, proj, vault=vault))
+    assert proc.returncode == 0, proc.stderr
+    if not proc.stdout.strip():
+        return ""
+    return json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
+
+
+def test_sessionstart_links_and_injects_local_md_once(tmp_path: Path) -> None:
+    """Verify the first start links the vault copy and injects it, and a later start does not."""
+    # Given a registered git project whose vault holds a CLAUDE.local.md
+    proj, vault = _local_repo(tmp_path)
+    # When the first session starts
+    context = _start(tmp_path, proj, vault)
+    # Then the checkout links to the vault copy and the session is given its content
+    assert (proj / "CLAUDE.local.md").is_symlink()
+    assert "CANARY-LOCAL" in context
+    assert "did not load it for this session" in context
+    # And a second start leaves the content to Claude Code
+    assert "CANARY-LOCAL" not in _start(tmp_path, proj, vault)
+
+
+def test_sessionstart_leaves_a_regular_local_md_alone(tmp_path: Path) -> None:
+    """Verify a regular CLAUDE.local.md in the checkout is never replaced."""
+    proj, vault = _local_repo(tmp_path)
+    (proj / "CLAUDE.local.md").write_text("mine", encoding="utf-8")
+    context = _start(tmp_path, proj, vault)
+    assert not (proj / "CLAUDE.local.md").is_symlink()
+    assert (proj / "CLAUDE.local.md").read_text(encoding="utf-8") == "mine"
+    assert "CANARY-LOCAL" not in context
+
+
+def test_sessionstart_local_link_disabled(tmp_path: Path) -> None:
+    """Verify `[local] link = false` stops the link."""
+    proj, vault = _local_repo(tmp_path)
+    (tmp_path / "home" / ".claude").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "home" / ".claude" / "sessionmemory.toml").write_text("[local]\nlink = false\n")
+    _start(tmp_path, proj, vault)
+    assert not (proj / "CLAUDE.local.md").exists()
+    assert not (proj / "CLAUDE.local.md").is_symlink()
+
+
+def test_sessionstart_logs_a_local_conflict(tmp_path: Path) -> None:
+    """Verify a regular file beside a vault copy is logged as a conflict naming the link."""
+    proj, vault = _local_repo(tmp_path)
+    (proj / "CLAUDE.local.md").write_text("mine", encoding="utf-8")
+    _start(tmp_path, proj, vault)
+    logged = _hooks_log(tmp_path)
+    assert f"local conflict: {proj.resolve() / 'CLAUDE.local.md'}" in logged
+    assert "local unavailable" not in logged
+
+
+def test_sessionstart_logs_a_local_refusal(tmp_path: Path) -> None:
+    """Verify a CLAUDE.local.md git tracks, which the CLI refuses, is logged as refused."""
+    proj, vault = _local_repo(tmp_path)
+    (proj / "CLAUDE.local.md").write_text("committed", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", "-f", "CLAUDE.local.md"],
+        cwd=proj,
+        check=True,
+        capture_output=True,
+        env=clean_environ(),
+    )
+    _start(tmp_path, proj, vault)
+    logged = _hooks_log(tmp_path)
+    assert "local refused" in logged
+    assert not (proj / "CLAUDE.local.md").is_symlink()
+
+
+def test_sessionstart_links_a_linked_worktree_at_its_own_top_level(tmp_path: Path) -> None:
+    """Verify a worktree gets its own link and the ignore entry lands in the shared exclude."""
+    proj, vault = _local_repo(tmp_path)
+    worktree = tmp_path / "wt"
+    subprocess.run(
+        ["git", "worktree", "add", "-q", str(worktree), "-b", "other"],
+        cwd=proj,
+        check=True,
+        capture_output=True,
+        env=clean_environ(),
+    )
+    sub = worktree / "sub"
+    sub.mkdir()
+    # A person's global gitignore may already name the file, which would skip the entry.
+    env = {**_isolated_env(tmp_path, sub, vault=vault), "XDG_CONFIG_HOME": str(tmp_path / "xdg")}
+
+    proc = _run("sessionstart", {"cwd": str(sub), "source": "startup"}, env)
+
+    assert proc.returncode == 0, proc.stderr
+
+    link = worktree / "CLAUDE.local.md"
+    assert link.is_symlink()
+    assert link.readlink() == vault / "projects" / proj.name / "CLAUDE.local.md"
+    assert not (sub / "CLAUDE.local.md").exists()
+    assert not (proj / "CLAUDE.local.md").is_symlink()
+    shared = proj / ".git" / "info" / "exclude"
+    assert "CLAUDE.local.md" in shared.read_text(encoding="utf-8").splitlines()
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a file whatever its mode")
+def test_sessionstart_logs_local_unreadable_and_injects_no_block(tmp_path: Path) -> None:
+    """Verify a linked copy the hook cannot read is logged and adds no block."""
+    proj, vault = _local_repo(tmp_path)
+    target = vault / "projects" / proj.name / "CLAUDE.local.md"
+    target.chmod(0)
+    try:
+        context = _start(tmp_path, proj, vault)
+    finally:
+        target.chmod(0o644)
+    assert "local unreadable" in _hooks_log(tmp_path)
+    assert "linked from the vault" not in context
+
+
+def test_local_block_treats_a_payload_without_a_status_as_unavailable(tmp_path: Path) -> None:
+    """Verify a successful payload lacking a string status logs `local unavailable`."""
+
+    class _Vault:
+        def link_local(self, **_kwargs: object) -> dict[str, object]:
+            return {"link": "x", "status": None}
+
+    clauses: list[str] = []
+    blocks = sessionstart._local_block(
+        _Vault(),
+        SessionMemoryConfig(),
+        cwd=tmp_path,
+        clauses=clauses,
+        log=logging.getLogger("test"),
+    )
+
+    assert blocks == []
+    assert clauses == ["local unavailable"]

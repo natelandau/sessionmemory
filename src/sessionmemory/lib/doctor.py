@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from sessionmemory.lib import field, fieldindex, paths, registry, specs
+from sessionmemory.lib import field, fieldindex, localmd, paths, registry, specs
 from sessionmemory.lib.frontmatter import (
     FrontmatterError,
     MissingFrontmatterError,
@@ -236,6 +236,91 @@ def spec_statuses(vault: Path, _embedder: Embedder) -> list[Finding]:
     return findings
 
 
+_DIVERGED = (
+    "differs from the vault copy; copy the newer one over the vault copy, "
+    "delete the checkout file, and run local link"
+)
+_TRACKED = "tracked by git; run git rm --cached CLAUDE.local.md before adopting it"
+_UNIGNORED_LINK = "not ignored by git; run local link to add it to info/exclude"
+_UNIGNORED_FILE = "not ignored by git; run local adopt to replace it with an ignored link"
+
+
+def _state_message(co: localmd.Checkout, *, ignored: bool) -> str | None:
+    """Name what is wrong with an untracked entry at the link path, given its state."""
+    current = localmd.state(co)
+    if current is localmd.State.DIVERGED:
+        try:
+            match = localmd.contents_match(co)
+        except OSError:
+            return None
+        if match is False:
+            return _DIVERGED
+        return None if match is None or ignored else _UNIGNORED_FILE
+    if ignored:
+        return None
+    if current is localmd.State.FOREIGN_LINK:
+        return (
+            f"not ignored by git, and a symlink to {co.link.resolve()} rather than the "
+            "vault copy; remove it, then run local link"
+        )
+    return _UNIGNORED_LINK
+
+
+def _checkout_message(co: localmd.Checkout) -> str | None:
+    """Name what is wrong at one checkout's link path, with advice that fits its state.
+
+    A tracked file and a diverged file each get one finding and no ignore advice, since
+    `local link` refuses both and the first remedy is a different command. An
+    unreadable file, or one git cannot inspect, is not judged.
+    """
+    if not (co.link.is_symlink() or co.link.exists()):
+        return None
+    try:
+        tracked = co.tracked()
+        ignored = co.ignored()
+    except localmd.LocalMdError:
+        return None
+    return _TRACKED if tracked else _state_message(co, ignored=ignored)
+
+
+def local_instructions(vault: Path, _embedder: Embedder) -> list[Finding]:
+    """Report problems with a project's vault copy of CLAUDE.local.md.
+
+    Covers a relative `@import` that cannot resolve from the vault folder, and at the
+    registered root a tracked file, a regular file that has drifted from the vault
+    copy, and a link or file that git does not ignore.
+    """
+    try:
+        projects = registry.load(vault)
+    except registry.RegistryError:
+        # dead_projects reports an unreadable registry.
+        projects = {}
+    findings = []
+    for slug in paths.iter_project_slugs(vault):
+        copy = paths.local_md_path(vault, slug)
+        if not copy.is_file():
+            continue
+        try:
+            text = copy.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        findings.extend(
+            Finding(
+                "local", str(copy), f"@{target} resolves from the vault folder and will not load"
+            )
+            for target in localmd.relative_imports(text)
+        )
+        project = projects.get(slug)
+        if not project or not project.root or not Path(project.root).is_dir():
+            continue
+        root = Path(project.root)
+        co = localmd.Checkout(worktree=root, link=root / paths.LOCAL_MD_FILE, target=copy)
+        message = _checkout_message(co)
+        if message is not None:
+            findings.append(Finding("local", str(co.link), message))
+    return findings
+
+
 def _is_stale(directory: Path, embedder: Embedder) -> str | None:
     index = fieldindex.index_path(directory, embedder)
     if not index.is_file():
@@ -280,6 +365,7 @@ CHECKS: tuple[Callable[[Path, Embedder], list[Finding]], ...] = (
     ticked_backlog_lines,
     dangling_references,
     spec_statuses,
+    local_instructions,
     stale_indexes,
 )
 

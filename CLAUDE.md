@@ -147,14 +147,17 @@ being wrapped mid-value.
 Prose for a person keeps its styling: `pp.success`, `pp.warning`, and `pp.error`.
 
 Every `--json` payload goes through `emit_json`, and every prose output a caller parses
-goes through `emit_value`. Six are worth naming. `search` prints a path, a title, and a
+goes through `emit_value`. Seven are worth naming. `search` prints a path, a title, and a
 summary per hit, all of which a caller copies or parses, and bracketed prose in a summary
 is exactly what Rich would eat as markup. `inject` prints a block a caller redirects or
 pipes whole. `new --json` prints the path a caller writes the body into. Without `--json`,
 every `new` command prints that same plain path and nothing else (`new backlog` prints the
 line, then the path), so `path=$(sessionmemory new spec ...)` works, and `log` prints the
 path of the page it wrote the same way. `path <kind>` prints one bare path the same way,
-and `project --json` prints every path the plugin's hooks read.
+and `project --json` prints every path the plugin's hooks read. `local adopt` prints the
+vault path and nothing else on stdout, `local link` prints the link path, `local status`
+prints one `key: value` line per fact, and `local link --json` is the payload the
+SessionStart hook parses.
 
 `CliRunner` is not a terminal and the console decides its color system at import, so an
 in-process test proves nothing here. `tests/integration/test_cli_machine_output.py` runs
@@ -248,6 +251,28 @@ reads, so the shape itself is what keeps a done item from lingering as `- [x]`. 
 command only appends: deleting needs no validation and stays a direct edit, and
 `add_item` never inserts the `# Backlog` heading into an existing file, since a file
 someone else structured is theirs.
+
+**`lib/localmd.py` is the one place a checkout's `CLAUDE.local.md` link is understood.** It
+knows the seven states (linked, not linked, unadopted, diverged, foreign link, dangling,
+none) and decides what `adopt` and `link` may do in each. The link is an absolute symlink
+at the git work tree's top level, never the registered root or the cwd, because the vault
+root differs per machine and worktrees sit at different depths. The ignore entry goes in
+the file `git rev-parse --git-path info/exclude` names, which a clone's worktrees share,
+and never in a committed `.gitignore`. `Checkout.ignored` raises on a git fatal error
+rather than reading it as "not ignored", since a wrongly "not ignored" answer would write
+an exclude entry the person did not need. `link` replaces only a missing file or a
+dangling link and reports `conflict` for anything holding content, and `adopt` refuses a
+vault copy that differs from the checkout's file, since which one wins is a person's call.
+Both write the exclude entry on an already linked checkout too, so a lost entry comes
+back. A missing link is created exclusively (`create_link`), which never overwrites a file
+written after the state was read and leaves no temporary name behind; only a dangling
+link or an adopted file is replaced by rename (`place_link`). The vault copy is never
+indexed, never listed by `inject`, and never read by `search`; `inject` only notices that
+the checkout holds a regular file and the vault holds none. Claude Code resolves a
+relative `@` import in a linked file from the vault folder, where it does not load, so
+`adopt` and `doctor` report each one and nothing rewrites it. Claude Code reads memory
+files before `SessionStart` runs, so the hook injects the file's content once, on the
+start that created the link.
 
 ### The index
 
@@ -507,15 +532,27 @@ unknown and an unreadable file would fail `git add`. Debris that `shape.is_debri
 mirroring `field.is_debris`, is left alone. A Bash write **outside** the project folder, a
 sibling project's folder foremost, is caught by nothing here and is committed by the next
 hook. Git history is the recovery. The prompt forbids deleting a page, and a page the
-model deletes through Bash is committed as a deletion.
+model deletes through Bash is committed as a deletion. The prompt never mentions
+`CLAUDE.local.md`, which belongs to the person, so `Sweep._protect_local_md` undoes any
+change to `<project>/CLAUDE.local.md` (`shape.local_md_problem`). `Sweep._capture_local_md`
+reads that one file's bytes before the run, and a modified or deleted copy is rewritten
+from them (temp file in the same directory, then rename) rather than from `HEAD`, since
+the person may not have committed their latest edit. A modified one is copied into
+quarantine first, since the edit may be the person's own made while the sweep ran, and
+the note names the copy. Only a copy with no pre-run bytes falls back to `HEAD`, and one
+`HEAD` does not hold yet is left in place rather than quarantined, since every checkout
+links to it. One the sweep creates is already a stray top-level
+file and is quarantined.
 
 `hooks.json` budgets each hook's own worst case. `SessionStart` runs `Store.for_cwd` (one
 git call, `_GIT_TIMEOUT` 5s), `head_commit` (5s), two `VaultCLI.discover` handshakes
-(`VERSION_TIMEOUT` 5s each), the vault commit (`COMMIT_GIT_TIMEOUT` 5s across up to eight
-git calls, so 40s), `VaultCLI.resolve` and `VaultCLI.register` (`RESOLVE_TIMEOUT` 5s
-each), and `VaultCLI.inject` (`TIMEOUT` 25s): a worst case of 95s under a timeout of
-100. `PreCompact` only gates and spawns, and its timeout is 10. Raising any of those
-constants means raising the timeout that covers them.
+(`VERSION_TIMEOUT` 5s each), the vault commit (`COMMIT_GIT_TIMEOUT` 5s across up to nine
+git calls, so 45s), `VaultCLI.resolve` and `VaultCLI.register` (`RESOLVE_TIMEOUT` 5s
+each), `VaultCLI.inject` (`TIMEOUT` 25s), and `VaultCLI.link_local` (`LINK_TIMEOUT`
+5s): a worst case of 105s under a timeout of 110. `tests/plugin/test_hooks_manifest.py`
+sums those constants, counting the commit's git calls on a real vault, and asserts the
+timeout exceeds the sum. `PreCompact` only gates and spawns, and its timeout is 10.
+Raising any of those constants means raising the timeout that covers them.
 
 `SessionEnd` is the exception: its 60 in `hooks.json` is not the limit that applies.
 Claude Code gives every SessionEnd hook one shared budget, 1.5s by default, and a
@@ -576,6 +613,20 @@ for the same reason. `_commit` checks `git add`'s exit status: `git add` stages 
 can reach and still exits non-zero on a path it could not read, and committing over that
 writes a commit silently missing the one file that needed attention.
 
+Every regular `projects/*/CLAUDE.local.md` is then staged with `git add -f`
+(`_local_md_paths`, `_force_add`). A global gitignore commonly lists that name, and it
+applies inside the vault repository too, so `add -A` would skip the file and a person's
+private instructions would never reach the remote. The same hiding is why the "clean"
+check cannot trust a plain `git status --porcelain`, which omits ignored files: the one
+status call passes `--ignored=matching`, and `_has_changes` reads the vault as clean when
+it lists nothing but ignored files other than those force-staged copies, so an unchanged,
+committed copy costs no `add`. A symlink is skipped, since a
+vault copy is a real file and a link at that path is not one. Each path is passed as a
+`:(literal)` pathspec, so a project folder named with `[` or `*` cannot match another.
+`sessionmemory init` writes `!projects/*/CLAUDE.local.md` into the vault's `.gitignore` to
+re-include the file over a global rule, and the force-add covers a vault whose ignore file
+predates it.
+
 A commit is skipped rather than forced for seven reasons: `not a repository`, `clean`, a
 merge or rebase or cherry-pick or revert `operation in progress`, a `detached HEAD`, a lost
 race on git's `index lock`, an `add failed`, or `git unavailable`. None of them is an error
@@ -613,30 +664,35 @@ it stays plaintext.
 
 ### Doctor
 
-`lib/doctor.py` holds nine checks and the `CHECKS` tuple that runs them. There are no
+`lib/doctor.py` holds ten checks and the `CHECKS` tuple that runs them. There are no
 tiers: every finding is a suggestion, `doctor_command` always exits 0, and nothing here
 can fail a build. Semantic retrieval never surfaces a page that does not match, so an
 imperfect page costs nothing, and a check that failed a build over one would fail it
 forever.
 
-The nine are a nonconformant filename in a field or `specs/`, a page over `PAGE_LIMIT`,
+The ten are a nonconformant filename in a field or `specs/`, a page over `PAGE_LIMIT`,
 frontmatter that cannot be parsed or a learnings page missing `title` or `summary`, a bare
 date or datetime in frontmatter, a registered project whose root no longer exists, a
 ticked `- [x]` or `- [X]` line in a `backlog.md` (any other top-level bullet is an open
 item, so nothing else there is reported), a reference to a vault file that does not exist,
-a spec with an unusable status, and an index that is unreadable or behind its pages, which
-covers the specs index too. The reference check scans specs, runbooks, reference docs, and
-learnings for a mention such as `runbooks/deploy-the-worker.md` and reports each one that
-names no file. Plans are never a target, since a plan is scratch and may be gone by
-design. The spec check reports a `status` outside `specs.STATUSES`, a superseded spec with
-no `superseded_by`, a `superseded_by` naming no spec in `specs/` or naming the spec
-itself, and a frontmatter block that cannot be parsed, since that silently makes the spec
-current; a spec with no block at all is current and silent, and a `superseded_by` without
-`status: superseded` is not reported. A file that is not valid UTF-8 is reported by the
-frontmatter check. A logs page with no frontmatter block at all is fine, since a log has
-nothing a search result would show. The datetime check has its own reader,
-`frontmatter.unquoted_datetime_keys`, because `frontmatter.parse` stringifies a date
-PyYAML typed and nothing downstream can then tell a quoted value from a bare one.
+a spec with an unusable status, a `CLAUDE.local.md` problem, and an index that is
+unreadable or behind its pages, which covers the specs index too. The reference check
+scans specs, runbooks, reference docs, and learnings for a mention such as
+`runbooks/deploy-the-worker.md` and reports each one that names no file. Plans are never a
+target, since a plan is scratch and may be gone by design. The spec check reports a
+`status` outside `specs.STATUSES`, a superseded spec with no `superseded_by`, a
+`superseded_by` naming no spec in `specs/` or naming the spec itself, and a frontmatter
+block that cannot be parsed, since that silently makes the spec current; a spec with no
+block at all is current and silent, and a `superseded_by` without `status: superseded` is
+not reported. The `local_instructions` check reports a relative `@` import in a vault
+copy, which cannot load, and at the registered root one finding chosen by state: a tracked
+file, a regular file that differs from the vault copy, or a file or link git does not
+ignore, advised toward `local adopt`, `local link`, or removal by what it is. It does not
+walk worktrees, since `local status` covers them one at a time. A file that is not valid
+UTF-8 is reported by the frontmatter check. A logs page with no frontmatter block at all
+is fine, since a log has nothing a search result would show. The datetime check has its
+own reader, `frontmatter.unquoted_datetime_keys`, because `frontmatter.parse` stringifies
+a date PyYAML typed and nothing downstream can then tell a quoted value from a bare one.
 
 **There is no `--fix`, and repair is not coming back.** Every finding above forks on a
 judgment the command cannot make: which name to rename a file to, where to split a page,
@@ -672,7 +728,7 @@ Four pages sit under `docs/`, and a change to behavior belongs in whichever ones
 - `cli.md`: every command, its options, and its real output.
 - `plugin.md`: the hooks, the sweep, every setting key and default, the slash commands,
   the review subagents.
-- `vault-health.md`: the nine `doctor` checks and what to do about each.
+- `vault-health.md`: the ten `doctor` checks and what to do about each.
 
 A new command, a new option, a new `doctor` check, a new settings key, or a changed
 default is a documentation change as much as a code change. The output in those pages is

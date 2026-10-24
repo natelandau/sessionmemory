@@ -16,7 +16,7 @@ import subprocess
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from sessionhooks import log
+from sessionhooks import log, shape
 from sessionhooks.store import git_safe_env
 
 if TYPE_CHECKING:
@@ -112,6 +112,50 @@ def _plans_exclusion(prefix: str | None) -> str:
         return ":(exclude,glob)**/projects/*/plans/**"
     escaped = re.sub(r"([*?\[\\])", r"\\\1", prefix)
     return f":(top,exclude,glob){escaped}projects/*/plans/**"
+
+
+def _local_md_paths(root: Path) -> list[str]:
+    """List each project's regular-file CLAUDE.local.md, relative to `root`.
+
+    A global gitignore commonly names the file, which hides it from `add -A` and from
+    `status --porcelain`, so these are force-staged. A symlink is skipped, since a vault
+    copy is a real file and a link at that path is not one.
+    """
+    return [
+        path.relative_to(root).as_posix()
+        for path in sorted((root / "projects").glob(f"*/{shape.LOCAL_MD}"))
+        if path.is_file() and not path.is_symlink()
+    ]
+
+
+def _has_changes(status: str, local_md: list[str], *, prefix: str | None) -> bool:
+    """Report whether a `status --porcelain -z --ignored` listing holds anything to commit.
+
+    An ignored entry counts only when it is a CLAUDE.local.md the commit force-stages;
+    every other ignored file stays out of history. Porcelain paths are relative to the
+    repository's top, hence the vault's prefix.
+    """
+    forced = {f"{prefix or ''}{path}" for path in local_md}
+    for entry in status.split("\0"):
+        if not entry:
+            continue
+        if not entry.startswith("!! ") or entry[3:] in forced:
+            return True
+    return False
+
+
+def _force_add(
+    root: Path, paths: list[str], *, env: Mapping[str, str], timeout: int
+) -> CommitOutcome | None:
+    """Force-stage `paths` past any ignore rule, returning the failure or None on success."""
+    if not paths:
+        return None
+    # `literal` keeps a project folder named with `[` or `*` from matching other paths.
+    literal = [f":(literal){path}" for path in paths]
+    proc = _git(root, "add", "-f", "--", *literal, env=env, timeout=timeout)
+    if proc is None or proc.returncode != 0:
+        return CommitOutcome(reason=_failure(proc, "add"))
+    return None
 
 
 def _unsafe_reason(root: Path, *, env: Mapping[str, str], timeout: int) -> str | None:
@@ -241,25 +285,10 @@ def _failure(proc: subprocess.CompletedProcess[str] | None, step: str) -> str:
     return f"{step} failed"
 
 
-def commit_vault(  # noqa: PLR0911 - each early return names a distinct reason nothing landed
-    root: Path, *, env: Mapping[str, str], timeout: int = 10, note: str = ""
-) -> CommitOutcome:
-    """Stage and commit everything under `root`, reporting the sha or why nothing landed.
-
-    A failed `git add` is not committed over: that would write a commit silently
-    missing the one file that needed attention. `note` opens the commit body.
-    """
-    inside, prefix = _work_tree_prefix(root, env=env, timeout=timeout)
-    if not inside:
-        return CommitOutcome(reason="not a repository")
-    unsafe = _unsafe_reason(root, env=env, timeout=timeout)
-    if unsafe is not None:
-        return CommitOutcome(reason=unsafe)
-    status = _git(root, "status", "--porcelain", env=env, timeout=timeout)
-    if status is None or status.returncode != 0:
-        return CommitOutcome(reason="git unavailable")
-    if not status.stdout.strip():
-        return CommitOutcome(reason="clean")
+def _stage_all(
+    root: Path, prefix: str | None, local_md: list[str], *, env: Mapping[str, str], timeout: int
+) -> CommitOutcome | None:
+    """Stage the vault's changes, returning the failure or None on success."""
     # The pathspec excludes the derived index and plans rather than trusting
     # .gitignore: a vault's ignore file may predate either rule, since
     # `sessionmemory init` never overwrites an existing one.
@@ -276,6 +305,36 @@ def commit_vault(  # noqa: PLR0911 - each early return names a distinct reason n
     )
     if added is None or added.returncode != 0:
         return CommitOutcome(reason=_failure(added, "add"))
+    return _force_add(root, local_md, env=env, timeout=timeout)
+
+
+def commit_vault(  # noqa: PLR0911 - each early return names a distinct reason nothing landed
+    root: Path, *, env: Mapping[str, str], timeout: int = 10, note: str = ""
+) -> CommitOutcome:
+    """Stage and commit everything under `root`, reporting the sha or why nothing landed.
+
+    A failed `git add` is not committed over: that would write a commit silently
+    missing the one file that needed attention. `note` opens the commit body.
+    """
+    inside, prefix = _work_tree_prefix(root, env=env, timeout=timeout)
+    if not inside:
+        return CommitOutcome(reason="not a repository")
+    unsafe = _unsafe_reason(root, env=env, timeout=timeout)
+    if unsafe is not None:
+        return CommitOutcome(reason=unsafe)
+    # `--ignored` because a global ignore rule hides an untracked CLAUDE.local.md from a
+    # plain status, and this one call keeps the commit's git-call budget unchanged.
+    status = _git(
+        root, "status", "--porcelain", "-z", "--ignored=matching", env=env, timeout=timeout
+    )
+    if status is None or status.returncode != 0:
+        return CommitOutcome(reason="git unavailable")
+    local_md = _local_md_paths(root)
+    if not _has_changes(status.stdout, local_md, prefix=prefix):
+        return CommitOutcome(reason="clean")
+    failure = _stage_all(root, prefix, local_md, env=env, timeout=timeout)
+    if failure is not None:
+        return failure
     staged = _staged(root, env=env, timeout=timeout)
     if staged is None:
         return CommitOutcome(reason="git unavailable")

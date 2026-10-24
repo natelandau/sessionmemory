@@ -36,6 +36,10 @@ GITIGNORE = """\
 # Plans are scratch for the session that writes them and never belong in history.
 projects/*/plans/
 
+# A project's CLAUDE.local.md is private to its person but belongs in the vault, so it is
+# re-included over a global ignore rule that names it.
+!projects/*/CLAUDE.local.md
+
 # Obsidian's per-machine window state, which conflicts on every sync.
 .obsidian/workspace*.json
 

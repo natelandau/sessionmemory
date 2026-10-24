@@ -25,6 +25,7 @@ UNREADABLE = "unreadable"
 _KEY = re.compile(r"^([A-Za-z_][\w-]*):(.*)$")
 _FENCE = "---"
 _BACKLOG = "backlog.md"
+LOCAL_MD = "CLAUDE.local.md"
 
 
 def is_debris(name: str) -> bool:
@@ -80,6 +81,13 @@ def stray_problem(path: Path, project_dir: Path) -> str | None:
     """Return a reason when `path` sits directly in the project folder and is not the backlog."""
     if path.parent.resolve() == project_dir.resolve() and path.name != _BACKLOG:
         return "stray top-level file"
+    return None
+
+
+def local_md_problem(path: Path, project_dir: Path) -> str | None:
+    """Return a reason when `path` is the person's CLAUDE.local.md, which the sweep never edits."""
+    if path.parent.resolve() == project_dir.resolve() and path.name == LOCAL_MD:
+        return "CLAUDE.local.md is the person's, not the sweep's"
     return None
 
 

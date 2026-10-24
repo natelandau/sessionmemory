@@ -627,3 +627,70 @@ def test_for_root_passes_the_version_timeout_to_the_handshake(tmp_path: Path, mo
     )
     VaultCLI.for_root(tmp_path, env={}, version_timeout=120)
     assert run.call_args.kwargs["timeout"] == 120
+
+
+def test_link_local_parses_json(marked_vault, stub_cli, tmp_path):
+    """Verify link_local() sends `local link --json --cwd` and returns the payload."""
+    stub_cli.write_text(
+        "#!/usr/bin/env python3\nimport json, sys, pathlib\n"
+        "pathlib.Path(__file__).with_name('args.txt').write_text(' '.join(sys.argv[1:]))\n"
+        "print(json.dumps({'status': 'created', 'link': '/p/CLAUDE.local.md', 'target': '/v/t'}))\n",
+        encoding="utf-8",
+    )
+    stub_cli.chmod(0o755)
+    cli = VaultCLI.discover(env=_env(**{ROOT_ENV: str(marked_vault)}), configured=None)
+
+    payload = cli.link_local(cwd=tmp_path, env=_env())
+
+    assert payload == {"status": "created", "link": "/p/CLAUDE.local.md", "target": "/v/t"}
+    sent = (stub_cli.parent / "args.txt").read_text(encoding="utf-8").split()
+    assert sent[:2] == ["local", "link"]
+    assert "--json" in sent
+    assert sent[sent.index("--cwd") + 1] == str(tmp_path)
+
+
+def _link_stub(stub_cli: Path, body: str) -> None:
+    stub_cli.write_text(f"#!/usr/bin/env python3\nimport json, sys\n{body}\n", encoding="utf-8")
+    stub_cli.chmod(0o755)
+
+
+def test_link_local_returns_a_conflict_payload(marked_vault, stub_cli, tmp_path):
+    """Verify a conflict, which exits 1 and still prints its payload, is returned."""
+    _link_stub(
+        stub_cli,
+        "print(json.dumps({'status': 'conflict', 'link': '/p/CLAUDE.local.md'}))\nsys.exit(1)",
+    )
+    cli = VaultCLI.discover(env=_env(**{ROOT_ENV: str(marked_vault)}), configured=None)
+
+    assert cli.link_local(cwd=tmp_path, env=_env()) == {
+        "status": "conflict",
+        "link": "/p/CLAUDE.local.md",
+    }
+
+
+def test_link_local_reads_a_bare_refusal_as_refused(marked_vault, stub_cli, tmp_path):
+    """Verify exit 1 with no payload, as a refusal gives, reads as refused."""
+    _link_stub(stub_cli, "sys.stderr.write('tracked by git\\n')\nsys.exit(1)")
+    cli = VaultCLI.discover(env=_env(**{ROOT_ENV: str(marked_vault)}), configured=None)
+
+    assert cli.link_local(cwd=tmp_path, env=_env()) == {"status": "refused"}
+
+
+def test_link_local_none_when_misconfigured(marked_vault, stub_cli, tmp_path):
+    """Verify an exit other than 0 or 1 reads as None, whatever it printed."""
+    _link_stub(stub_cli, "print(json.dumps({'status': 'conflict'}))\nsys.exit(2)")
+    cli = VaultCLI.discover(env=_env(**{ROOT_ENV: str(marked_vault)}), configured=None)
+
+    assert cli.link_local(cwd=tmp_path, env=_env()) is None
+
+
+def test_link_local_none_on_a_timeout(marked_vault, stub_cli, tmp_path, mocker):
+    """Verify a CLI that outruns its budget reads as None."""
+    cli = VaultCLI.discover(env=_env(**{ROOT_ENV: str(marked_vault)}), configured=None)
+    mocker.patch(
+        "sessionhooks.vaultcli.subprocess.run",
+        autospec=True,
+        side_effect=subprocess.TimeoutExpired(cmd="sessionmemory", timeout=5),
+    )
+
+    assert cli.link_local(cwd=tmp_path, env=_env()) is None

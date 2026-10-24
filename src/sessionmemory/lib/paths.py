@@ -2,8 +2,8 @@
 
 `learnings/` and `logs/` are fields: flat directories of pages, each with its own
 index. `specs/` is indexed too, with the same table but a derived embedding input, though
-it is not a field. `plans/`, `runbooks/`, `reference/`, and `backlog.md` sit beside them
-and are never indexed. A project's files are found by its slug and nothing else; there
+it is not a field. `plans/`, `runbooks/`, `reference/`, `backlog.md`, and `CLAUDE.local.md` sit
+beside them and are never indexed. A project's files are found by its slug and nothing else; there
 is no global scope.
 """
 
@@ -24,6 +24,7 @@ PLANS_DIR = "plans"
 RUNBOOKS_DIR = "runbooks"
 REFERENCE_DIR = "reference"
 BACKLOG_FILE = "backlog.md"
+LOCAL_MD_FILE = "CLAUDE.local.md"
 
 FIELD_DIRS: tuple[str, ...] = (LEARNINGS_DIR, LOGS_DIR)
 
@@ -68,6 +69,11 @@ def backlog_path(vault: Path, slug: str) -> Path:
     return project_dir(vault, slug) / BACKLOG_FILE
 
 
+def local_md_path(vault: Path, slug: str) -> Path:
+    """Return the vault copy of the project's CLAUDE.local.md."""
+    return project_dir(vault, slug) / LOCAL_MD_FILE
+
+
 def project_paths(vault: Path, slug: str) -> dict[str, str]:
     """Return every path a caller of `sessionmemory project --json` reads, by its payload key.
 
@@ -82,6 +88,7 @@ def project_paths(vault: Path, slug: str) -> dict[str, str]:
         "runbooks": str(runbooks_dir(vault, slug)),
         "reference": str(reference_dir(vault, slug)),
         "backlog": str(backlog_path(vault, slug)),
+        "local_md": str(local_md_path(vault, slug)),
     }
 
 

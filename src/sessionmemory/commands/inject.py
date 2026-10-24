@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pathlib import Path  # noqa: TC003
+from pathlib import Path
 
 import typer
 
@@ -18,7 +18,7 @@ def inject_command(cwd: Path | None = CWD, command: str = COMMAND, *, as_json: b
     """Print what this project's session should start with."""
     vault = require_vault()
     slug = require_project(vault, cwd)
-    injection = inject.build(vault, slug)
+    injection = inject.build(vault, slug, cwd=cwd if cwd is not None else Path.cwd())
     if as_json:
         emit_json(inject.payload(injection, command=command))
         return

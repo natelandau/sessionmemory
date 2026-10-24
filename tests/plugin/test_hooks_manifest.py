@@ -146,3 +146,59 @@ def test_agent_name_matches_filename(agent_path: Path) -> None:
     assert fields.get("name") == agent_path.stem, (
         f"{agent_path}: frontmatter name {fields.get('name')!r} != file stem {agent_path.stem!r}"
     )
+
+
+def _commit_git_calls(tmp_path: Path) -> int:
+    """Count the git calls a commit makes on its longest path: a change plus a force-add."""
+    import subprocess
+
+    from sessionhooks import commit as commit_module  # ty: ignore[unresolved-import]
+
+    from tests._env import clean_environ
+
+    root = tmp_path / "vault"
+    root.mkdir()
+    for args in (
+        ["init", "-q", "."],
+        ["config", "user.email", "t@example.org"],
+        ["config", "user.name", "t"],
+        ["commit", "-q", "--allow-empty", "-m", "init"],
+    ):
+        subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
+    project = root / "projects" / "demo"
+    project.mkdir(parents=True)
+    (project / "CLAUDE.local.md").write_text("private", encoding="utf-8")
+    (project / "backlog.md").write_text("- x\n", encoding="utf-8")
+
+    calls = 0
+    real_git = commit_module._git
+
+    def counting_git(*args, **kwargs) -> subprocess.CompletedProcess[str] | None:
+        nonlocal calls
+        calls += 1
+        return real_git(*args, **kwargs)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(commit_module, "_git", counting_git)
+        assert commit_module.commit_vault(root, env=clean_environ()).sha
+    return calls
+
+
+def test_sessionstart_timeout_covers_the_local_link_budget(tmp_path: Path) -> None:
+    """Verify SessionStart's timeout exceeds the sum of every timeout its worst case runs."""
+    from sessionhooks import store, vaultcli  # ty: ignore[unresolved-import]
+
+    manifest = json.loads((ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8"))
+    hook = manifest["hooks"]["SessionStart"][0]["hooks"][0]
+    commit_calls = _commit_git_calls(tmp_path)
+    worst_case = (
+        store._GIT_TIMEOUT  # Store.for_cwd
+        + store._GIT_TIMEOUT  # head_commit
+        + 2 * vaultcli.VERSION_TIMEOUT  # two discover handshakes
+        + commit_calls * vaultcli.COMMIT_GIT_TIMEOUT
+        + 2 * vaultcli.RESOLVE_TIMEOUT  # resolve and register
+        + vaultcli.TIMEOUT  # inject
+        + vaultcli.LINK_TIMEOUT
+    )
+    assert commit_calls == 9
+    assert hook["timeout"] > worst_case
