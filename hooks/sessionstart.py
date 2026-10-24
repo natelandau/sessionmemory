@@ -9,13 +9,13 @@
 # extra-paths = ["."]
 # ///
 
-"""SessionStart hook: commit the vault, inject this project's memory, and consume any pending handoff.
+"""SessionStart hook: commit the vault, inject memory, link CLAUDE.local.md, consume a handoff.
 
 Commits whatever the last session's sweep and any hand edits left behind, so the
 vault's history is never more than one session behind its files, in every case
 `SessionEnd` does; skipped only while any project's sweep is running, since the
-commit stages the whole vault and the worker commits when it finishes. Then asks the vault CLI to render this
-project's memory block and returns it as non-blocking `additionalContext`. It
+commit stages the whole vault and the worker commits when it finishes. Then asks the vault
+CLI to render this project's memory block and returns it as non-blocking `additionalContext`. It
 also records two things the end-of-session sweep cannot recover later: the
 transcript path, so the sweep finds it after a `/clear`, and the commit this
 repository was on, so the session log can report the whole span rather than only
@@ -39,14 +39,20 @@ The schema version is deliberately not checked here. This path only reads, and a
 block rendered by a vault one version ahead is still readable text; it is the
 writing paths that must refuse a schema they do not speak.
 
+After the memory block, and independently of `[inject] enabled`, it links this checkout's
+`CLAUDE.local.md` to the vault copy when `[local] link` is on. Claude Code reads that file
+before the hook runs, so a link made at this start is not loaded; the hook injects the
+content itself, once, on the start that created the link.
+
 No-ops when running inside the headless sweep agent. When no vault is reachable it
 injects a hint saying so, since every hook fails open and the session would otherwise
 learn nothing. Fail-open: any error exits 0 rather than wedging session start.
 
-The hook's timeout budgets its worst case: `Store.for_cwd` 5s, `head_commit` 5s,
-two `VaultCLI.discover` handshakes 10s, the vault commit 40s (eight git calls at 5s),
-`VaultCLI.resolve` 5s, `VaultCLI.register` 5s, `VaultCLI.inject` 25s, 95s in all; the
-timeout is 100 to stay ahead of that sum. Raising any of those numbers means raising it.
+The hook's timeout budgets its worst case: `Store.for_cwd` 5s, `head_commit` 5s, two
+`VaultCLI.discover` handshakes 10s, the vault commit 45s (nine git calls at 5s),
+`VaultCLI.resolve` 5s, `VaultCLI.register` 5s, `VaultCLI.inject` 25s, `VaultCLI.link_local`
+5s, 105s in all; the timeout is 110 to stay ahead of that sum. Raising any of those numbers
+means raising it.
 
 Every decision the hook makes is one line in the shared hooks log, and a crash is
 logged before the fail-open exit.
@@ -89,6 +95,12 @@ CONTINUATION_SOURCES = frozenset({"resume", "compact"})
 # that carries the rest is this layer's job: a CLI installed without this plugin has
 # no such skill, so a reference from there would point at nothing.
 SKILL_POINTER = "The `cli` skill carries the full command surface for this vault."
+
+LOCAL_LINKED_NOTE = (
+    "This checkout's CLAUDE.local.md was linked from the vault during this session start, "
+    "so Claude Code did not load it for this session. It loads on its own from the next "
+    "session. Its content follows."
+)
 
 # Every hook fails open, so a missing vault would otherwise mean session after session
 # with no memory and no error. Both ways to name a vault are spelled out because the
@@ -176,6 +188,38 @@ def _memory_block(
     return "\n\n".join(blocks) or None
 
 
+def _local_block(
+    vault: VaultCLI | None,
+    cfg: SessionMemoryConfig,
+    *,
+    cwd: Path,
+    clauses: list[str],
+    log: logging.Logger,
+) -> list[str]:
+    """Link CLAUDE.local.md; the block carrying its content when this start created the link."""
+    if vault is None or not cfg.local_link:
+        return []
+    result = vault.link_local(cwd=cwd, env=os.environ)
+    status = result.get("status") if result is not None else None
+    if not isinstance(status, str):
+        clauses.append("local unavailable")
+        return []
+    if status == "conflict":
+        clauses.append(f"local conflict: {result.get('link')}")
+        return []
+    clauses.append(f"local {status}")
+    target = result.get("target")
+    if status != "created" or not isinstance(target, str):
+        return []
+    try:
+        content = Path(target).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        log.exception("local copy unreadable")
+        clauses.append("local unreadable")
+        return []
+    return [f"{LOCAL_LINKED_NOTE}\n\n{content}"]
+
+
 def _run(  # pragma: no cover - runs only as a subprocess, where coverage cannot see it
     payload: dict[str, Any],
     cfg: SessionMemoryConfig,
@@ -207,7 +251,7 @@ def _run(  # pragma: no cover - runs only as a subprocess, where coverage cannot
     # an unknown or missing source.
     source = payload.get("source")
     consume_handoff = source != "resume"
-    if not (consume_handoff or cfg.inject_enabled or cfg.sweep_enabled):
+    if not (consume_handoff or cfg.inject_enabled or cfg.sweep_enabled or cfg.local_link):
         log.info("started (%s)", ", ".join([*clauses, "nothing to do"]))
         return  # resume with everything off: nothing left to do
 
@@ -228,6 +272,9 @@ def _run(  # pragma: no cover - runs only as a subprocess, where coverage cannot
     memory = _memory_block(cfg, cwd=cwd, notes=clauses)
     if memory:
         blocks.append(memory)
+
+    # After the memory block so a project registered at this start can link.
+    blocks.extend(_local_block(vault, cfg, cwd=cwd, clauses=clauses, log=log))
 
     log.info("started (%s)", ", ".join(clauses))
 

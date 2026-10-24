@@ -662,3 +662,144 @@ def test_commit_vault_stages_paths_with_spaces_and_non_ascii_characters(tmp_path
     ).stdout
     assert log.splitlines()[0] == "café app: add 1 learning"
     assert "add: my vault ü/projects/café app/learnings/naïve page.md" in log
+
+
+def _hide_local_md_globally(root: Path, tmp_path: Path) -> None:
+    """Point the repo at an excludes file naming CLAUDE.local.md, as a global gitignore does."""
+    excludes = tmp_path / "global-ignore"
+    excludes.write_text("CLAUDE.local.md\n", encoding="utf-8")
+    _git("config", "core.excludesFile", str(excludes), cwd=root)
+
+
+def test_commit_stages_local_md_hidden_by_a_global_ignore(tmp_path):
+    """Verify a CLAUDE.local.md a global ignore names is still committed."""
+    # Given a project holding a learning and a CLAUDE.local.md the global ignore hides
+    root = _repo(tmp_path)
+    _hide_local_md_globally(root, tmp_path)
+    project = root / "projects" / "demo"
+    (project / "learnings").mkdir(parents=True)
+    (project / "learnings" / "page.md").write_text("x", encoding="utf-8")
+    (project / "CLAUDE.local.md").write_text("private", encoding="utf-8")
+
+    # When committing the vault
+    outcome = commit_vault(root, env=clean_environ())
+
+    # Then the copy is tracked beside the learning
+    assert outcome.sha
+    tracked = _tracked(root)
+    assert "projects/demo/CLAUDE.local.md" in tracked
+    assert "projects/demo/learnings/page.md" in tracked
+
+
+def test_commit_with_only_a_hidden_local_md_is_not_clean(tmp_path):
+    """Verify a vault whose only change is a hidden CLAUDE.local.md still commits."""
+    root = _repo(tmp_path)
+    _hide_local_md_globally(root, tmp_path)
+    project = root / "projects" / "demo"
+    project.mkdir(parents=True)
+    (project / "CLAUDE.local.md").write_text("private", encoding="utf-8")
+
+    outcome = commit_vault(root, env=clean_environ())
+
+    assert outcome.sha
+    assert "projects/demo/CLAUDE.local.md" in _tracked(root)
+
+
+def test_commit_skips_a_symlinked_local_md(tmp_path):
+    """Verify a symlink at the CLAUDE.local.md path is never force-added."""
+    root = _repo(tmp_path)
+    _hide_local_md_globally(root, tmp_path)
+    project = root / "projects" / "demo"
+    project.mkdir(parents=True)
+    target = tmp_path / "elsewhere.md"
+    target.write_text("private", encoding="utf-8")
+    (project / "CLAUDE.local.md").symlink_to(target)
+
+    outcome = commit_vault(root, env=clean_environ())
+
+    assert outcome == CommitOutcome(reason="clean")
+    assert "CLAUDE.local.md" not in _tracked(root)
+
+
+def test_commit_stages_a_hidden_local_md_in_a_nested_vault(tmp_path):
+    """Verify the force-add reaches a CLAUDE.local.md in a vault inside an outer repository."""
+    outer = _repo(tmp_path)
+    _hide_local_md_globally(outer, tmp_path)
+    project = outer / "notes" / "vault" / "projects" / "demo"
+    project.mkdir(parents=True)
+    (project / "CLAUDE.local.md").write_text("private", encoding="utf-8")
+
+    outcome = commit_vault(outer / "notes" / "vault", env=clean_environ())
+
+    assert outcome.sha
+    assert "notes/vault/projects/demo/CLAUDE.local.md" in _tracked(outer).splitlines()
+
+
+def test_commit_reports_a_failed_force_add(tmp_path, monkeypatch):
+    """Verify a failed force-add of CLAUDE.local.md is not committed over."""
+    root = _repo(tmp_path)
+    _hide_local_md_globally(root, tmp_path)
+    project = root / "projects" / "demo"
+    project.mkdir(parents=True)
+    (project / "CLAUDE.local.md").write_text("private", encoding="utf-8")
+    (root / "page.md").write_text("x", encoding="utf-8")
+    real_git = commit_module._git
+
+    def _fake_git(root_, *args, env, timeout=10, **kwargs) -> subprocess.CompletedProcess | None:
+        if args[:2] == ("add", "-f"):
+            return subprocess.CompletedProcess(args, returncode=1, stdout="", stderr="boom")
+        return real_git(root_, *args, env=env, timeout=timeout, **kwargs)
+
+    monkeypatch.setattr(commit_module, "_git", _fake_git)
+
+    assert commit_vault(root, env=clean_environ()) == CommitOutcome(reason="add failed")
+    log = subprocess.run(
+        ["git", "log", "--oneline"], cwd=root, capture_output=True, text=True, check=True
+    )
+    assert len(log.stdout.strip().splitlines()) == 1
+
+
+def test_commit_force_adds_a_glob_named_project_literally(tmp_path):
+    """Verify a project folder named like a glob never force-adds another project's link."""
+    root = _repo(tmp_path)
+    _hide_local_md_globally(root, tmp_path)
+    globbed = root / "projects" / "[ab]"
+    globbed.mkdir(parents=True)
+    (globbed / "CLAUDE.local.md").write_text("private", encoding="utf-8")
+    other = root / "projects" / "a"
+    other.mkdir(parents=True)
+    elsewhere = tmp_path / "elsewhere.md"
+    elsewhere.write_text("not the vault's", encoding="utf-8")
+    (other / "CLAUDE.local.md").symlink_to(elsewhere)
+
+    outcome = commit_vault(root, env=clean_environ())
+
+    assert outcome.sha
+    tracked = _tracked(root).splitlines()
+    assert "projects/[ab]/CLAUDE.local.md" in tracked
+    assert "projects/a/CLAUDE.local.md" not in tracked
+
+
+def test_commit_with_a_committed_hidden_local_md_is_clean(tmp_path):
+    """Verify an unchanged CLAUDE.local.md, once committed, leaves the vault clean."""
+    root = _repo(tmp_path)
+    _hide_local_md_globally(root, tmp_path)
+    project = root / "projects" / "demo"
+    project.mkdir(parents=True)
+    (project / "CLAUDE.local.md").write_text("private", encoding="utf-8")
+    assert commit_vault(root, env=clean_environ()).sha
+
+    outcome = commit_vault(root, env=clean_environ())
+
+    assert outcome.reason == "clean"
+
+
+def test_commit_ignores_other_ignored_files_when_clean(tmp_path):
+    """Verify an ignored file other than CLAUDE.local.md does not make the vault dirty."""
+    root = _repo(tmp_path)
+    (root / ".gitignore").write_text("*.sqlite3\n", encoding="utf-8")
+    _git("add", ".gitignore", cwd=root)
+    _git("commit", "-q", "-m", "ignore", cwd=root)
+    (root / "index.sqlite3").write_text("x", encoding="utf-8")
+
+    assert commit_vault(root, env=clean_environ()).reason == "clean"

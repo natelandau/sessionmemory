@@ -407,6 +407,9 @@ class Sweep:
         self.config = config
         self.runner = runner
         self.vault = vault
+        # CLAUDE.local.md as it stood before the model ran, so a restore returns the
+        # person's uncommitted edits rather than whatever HEAD holds.
+        self._local_md_before: dict[Path, bytes] = {}
         # Choosing a CLI runs a version handshake, which the worker pays after it
         # detaches rather than the hook paying it inside Claude Code's budget.
         self.vault_root = vault_root
@@ -648,6 +651,7 @@ class Sweep:
                 changes=self._changes(job),
                 existing_log=self._existing_log(target, job.session_id),
             )
+            self._capture_local_md(target)
             before = snapshot.take(target.project_dir)
             result = self.runner.run(
                 prompt,
@@ -717,10 +721,90 @@ class Sweep:
         erase. The random prefix keeps two quarantined files of the same name
         from colliding.
         """
+        shutil.move(str(path), str(self._quarantine_dest(path)))
+
+    def _quarantine_dest(self, path: Path) -> Path:
+        """A fresh name in this project's quarantine directory for a file named like `path`."""
         quarantine_dir = self.store.state_dir / "quarantine"
         quarantine_dir.mkdir(parents=True, exist_ok=True)
-        dest = quarantine_dir / f"{uuid.uuid4().hex}-{path.name}"
-        shutil.move(str(path), str(dest))
+        return quarantine_dir / f"{uuid.uuid4().hex}-{path.name}"
+
+    def _capture_local_md(self, target: Target) -> None:
+        """Remember the vault copy's bytes before the run; an unreadable copy is not kept."""
+        path = (target.project_dir / shape.LOCAL_MD).resolve()
+        self._local_md_before.clear()
+        try:
+            if path.is_file():
+                self._local_md_before[path] = path.read_bytes()
+        except OSError:
+            _log.exception("local md unreadable before the run")
+
+    @staticmethod
+    def _write_atomic(path: Path, data: bytes) -> None:
+        """Replace `path` with `data` through a temp file in its directory, so a crash leaves one whole copy."""
+        temp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            temp.write_bytes(data)
+            temp.replace(path)
+        except OSError:
+            temp.unlink(missing_ok=True)
+            raise
+
+    def _restore_local_md(self, path: Path, problem: str) -> str:
+        """Return the person's CLAUDE.local.md to its pre-run content, keeping what it displaces.
+
+        The edit may be the person's own, made while the sweep ran, so the content is
+        copied aside before the restore. The pre-run bytes win over HEAD, since the
+        person may not have committed their latest edit. Only a copy with no pre-run
+        bytes falls back to HEAD, and one HEAD does not hold yet stays in place, since
+        moving it would leave every checkout's link dangling.
+        """
+        saved = self._quarantine_dest(path)
+        shutil.copy2(path, saved)
+        before = self._local_md_before.get(path.resolve())
+        try:
+            if before is not None:
+                self._write_atomic(path, before)
+                restored = True
+            else:
+                restored = self._git_restore(path)
+        except (OSError, subprocess.SubprocessError) as exc:
+            return f"malformed-unremovable: {path} ({problem}; {exc}; copy saved to {saved})"
+        if restored:
+            return f"malformed-restored: {path} ({problem}; displaced copy saved to {saved})"
+        saved.unlink(missing_ok=True)
+        return f"local-md-kept: {path} ({problem}; not in HEAD, left in place)"
+
+    def _protect_local_md(self, changes: Changes, target: Target) -> list[str]:
+        """Undo the run's edit or deletion of the person's CLAUDE.local.md.
+
+        A deleted copy is restored too, since every checkout's link points at it.
+        """
+        notes = [
+            self._local_md_note(path, problem)
+            for path in changes.modified
+            if path.exists()
+            and (problem := shape.local_md_problem(path, target.project_dir)) is not None
+        ]
+        for path in changes.deleted:
+            problem = shape.local_md_problem(path, target.project_dir)
+            if problem is None:
+                continue
+            before = self._local_md_before.get(path.resolve())
+            try:
+                if before is not None:
+                    self._write_atomic(path, before)
+                    restored = True
+                else:
+                    restored = self._git_restore(path)
+            except (OSError, subprocess.SubprocessError) as exc:
+                notes.append(f"deleted-unrestorable: {path} ({problem}; {exc})")
+                continue
+            if restored:
+                notes.append(f"deleted-restored: {path} ({problem})")
+            else:
+                notes.append(f"deleted-unrestorable: {path} ({problem}; not in HEAD)")
+        return notes
 
     def _revert(self, path: Path) -> str:
         """Undo one escaped write and report how it was undone.
@@ -766,11 +850,13 @@ class Sweep:
 
         A new file that fails is quarantined. A modified learning that fails is
         restored from HEAD, so a good page the model rewrote into another format is
-        not lost; only learnings are checked on edit, since a log or backlog edit
-        keeps its name and has no frontmatter to break. A learning that cannot be
-        read is quarantined whether new or modified: its content is unknown, so
-        HEAD is no safer a guess, and left in place it would fail `git add`. Debris
-        a sync tool, editor, or OS drops is left alone, as the CLI ignores it too.
+        not lost. CLAUDE.local.md belongs to the person: a modified one is restored
+        from HEAD with its displaced content saved aside, and a deleted one is
+        restored too. No other edit is checked, since a log or backlog edit keeps its
+        name and has no frontmatter to break. A learning that cannot be read is
+        quarantined whether new or modified: its content is unknown, so HEAD is no
+        safer a guess, and left in place it would fail `git add`. Debris a sync tool,
+        editor, or OS drops is left alone, as the CLI ignores it too.
         """
         notes: list[str] = []
         learnings = target.learnings_dir.resolve()
@@ -793,7 +879,7 @@ class Sweep:
                     path, target.project_dir
                 )
             else:
-                problem = None
+                continue
             if problem is None:
                 continue
             try:
@@ -806,7 +892,15 @@ class Sweep:
                 notes.append(f"malformed-unremovable: {path} ({problem}; {exc})")
                 continue
             notes.append(f"malformed-{outcome}: {path} ({problem})")
+        notes.extend(self._protect_local_md(changes, target))
         return notes
+
+    def _local_md_note(self, path: Path, problem: str) -> str:
+        """Restore a modified CLAUDE.local.md and phrase the outcome as a note; never raises."""
+        try:
+            return self._restore_local_md(path, problem)
+        except (OSError, subprocess.SubprocessError) as exc:
+            return f"malformed-unremovable: {path} ({problem}; {exc})"
 
     def _quarantine_unreadable(self, path: Path) -> str:
         """Move an unreadable page aside and phrase the outcome as a note; never raises."""

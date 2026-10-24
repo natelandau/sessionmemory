@@ -8,6 +8,8 @@ reason `require_vault` can trust `is_initialized` later.
 
 from __future__ import annotations
 
+import subprocess
+
 import pytest
 
 from sessionmemory.lib.bootstrap import NotAVaultError, initialize
@@ -120,3 +122,29 @@ def test_initialize_ignores_plans(tmp_path):
     initialize(tmp_path)
     lines = (tmp_path / ".gitignore").read_text(encoding="utf-8").splitlines()
     assert "projects/*/plans/" in lines
+
+
+def test_gitignore_reincludes_local_md(tmp_path):
+    """Verify the vault's gitignore overrides a global rule naming CLAUDE.local.md."""
+    vault = tmp_path / "vault"
+    initialize(vault)
+    excludes = tmp_path / "global-ignore"
+    excludes.write_text("CLAUDE.local.md\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", "."], cwd=vault, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "core.excludesFile", str(excludes)],
+        cwd=vault,
+        check=True,
+        capture_output=True,
+    )
+    (vault / "projects" / "demo").mkdir(parents=True)
+    (vault / "projects" / "demo" / "CLAUDE.local.md").write_text("x", encoding="utf-8")
+
+    checked = subprocess.run(
+        ["git", "check-ignore", "-q", "projects/demo/CLAUDE.local.md"],
+        cwd=vault,
+        check=False,
+        capture_output=True,
+    )
+
+    assert checked.returncode == 1

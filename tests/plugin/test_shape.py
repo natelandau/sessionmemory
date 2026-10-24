@@ -9,6 +9,7 @@ from sessionhooks.shape import (  # ty: ignore[unresolved-import]
     UNREADABLE,
     is_debris,
     learning_problem,
+    local_md_problem,
     log_problem,
     nested_problem,
     stray_problem,
@@ -72,6 +73,15 @@ def test_stray_problem_flags_top_level_files_except_the_backlog(tmp_path: Path) 
     assert stray_problem(_write(project / "MEMORY.md", "x"), project) == "stray top-level file"
     assert stray_problem(_write(project / "backlog.md", "x"), project) is None
     assert stray_problem(_write(project / "specs" / "a.md", "x"), project) is None
+
+
+def test_local_md_problem_flags_only_the_top_level_file(tmp_path: Path) -> None:
+    """Verify only CLAUDE.local.md directly in the project folder is the person's."""
+    project = tmp_path / "x"
+    message = "CLAUDE.local.md is the person's, not the sweep's"
+    assert local_md_problem(_write(project / "CLAUDE.local.md", "x"), project) == message
+    assert local_md_problem(_write(project / "learnings" / "CLAUDE.local.md", "x"), project) is None
+    assert local_md_problem(_write(project / "backlog.md", "x"), project) is None
 
 
 def test_learning_problem_reads_past_an_indented_fence(tmp_path: Path) -> None:

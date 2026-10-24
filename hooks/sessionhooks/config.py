@@ -2,8 +2,8 @@
 
 Resolution (low to high precedence): built-in defaults, then
 ~/.claude/sessionmemory.toml, then $CLAUDE_PROJECT_DIR/.claude/
-sessionmemory.toml (project wins per key). The schema is four flat tables,
-`[vault]`, `[inject]`, `[sweep]`, and `[log]`; there are no profiles or per-hook
+sessionmemory.toml (project wins per key). The schema is five flat tables,
+`[vault]`, `[inject]`, `[sweep]`, `[local]`, and `[log]`; there are no profiles or per-hook
 disable lists. Any read or parse error is swallowed (warned to stderr) so a
 broken config never wedges a session.
 
@@ -62,6 +62,8 @@ class SessionMemoryConfig:
     # Where the hooks log. Empty means the XDG state root, which is the normal case.
     log_path: str = ""
     log_level: str = DEFAULT_LOG_LEVEL
+    # Link this checkout's CLAUDE.local.md to the vault copy at session start.
+    local_link: bool = True
 
     @classmethod
     def load(
@@ -84,6 +86,7 @@ class SessionMemoryConfig:
         vault = merged.get("vault", {})
         inject = merged.get("inject", {})
         sweep = merged.get("sweep", {})
+        local = merged.get("local", {})
         log = merged.get("log", {})
         return cls(
             vault_root=_as_str(vault.get("root"), default=""),
@@ -97,6 +100,7 @@ class SessionMemoryConfig:
             min_user_chars=_as_int(sweep.get("min_user_chars"), default=DEFAULT_MIN_USER_CHARS),
             sweep_save_transcript=_as_bool(sweep.get("save_transcript"), default=True),
             sweep_timeout=_as_positive_int(sweep.get("timeout"), default=DEFAULT_SWEEP_TIMEOUT),
+            local_link=_as_bool(local.get("link"), default=True),
             log_path=_as_str(log.get("path"), default=""),
             log_level=_as_choice(log.get("level"), LOG_LEVELS, default=DEFAULT_LOG_LEVEL),
         )
@@ -115,11 +119,11 @@ def _read_toml(path: Path) -> dict[str, object]:
 
 
 def _overlay(merged: dict[str, dict[str, object]], layer: dict[str, object]) -> None:
-    """Merge one config layer's four tables into `merged` per key.
+    """Merge one config layer's five tables into `merged` per key.
 
-    The tables are `[vault]`, `[inject]`, `[sweep]`, and `[log]`.
+    The tables are `[vault]`, `[inject]`, `[sweep]`, `[local]`, and `[log]`.
     """
-    for section in ("vault", "inject", "sweep", "log"):
+    for section in ("vault", "inject", "sweep", "local", "log"):
         table = layer.get(section)
         if isinstance(table, dict):
             merged.setdefault(section, {}).update(

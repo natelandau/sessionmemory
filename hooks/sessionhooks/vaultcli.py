@@ -62,12 +62,16 @@ TIMEOUT = 25
 # alone should not risk doubling a session-start hook's total wait.
 RESOLVE_TIMEOUT = 5
 
+# `local link` reads the registry and runs a few git calls and loads no model, so like
+# `project` it never needs the full budget.
+LINK_TIMEOUT = 5
+
 # The detached sweep worker has no hook budget to protect, and a cold shim build
 # can outlast the interactive timeouts, so its CLI calls get a long one.
 WORKER_CLI_TIMEOUT = 120
 
-# commit_vault runs up to eight git calls in sequence; five seconds each keeps its
-# worst case at 40s, inside the SessionStart budget. SessionEnd's budget is Claude
+# commit_vault runs up to nine git calls in sequence; five seconds each keeps its
+# worst case at 45s, inside the SessionStart budget. SessionEnd's budget is Claude
 # Code's, not ours, so a commit there is best effort.
 COMMIT_GIT_TIMEOUT = 5
 
@@ -368,6 +372,30 @@ class VaultCLI:
             return None
         slug = payload.get("slug")
         return slug if isinstance(slug, str) and slug else None
+
+    def link_local(self, *, cwd: Path, env: Mapping[str, str]) -> dict[str, Any] | None:
+        """Link this checkout's `CLAUDE.local.md` to the vault copy; the payload, or None.
+
+        The CLI owns every rule: where the link goes, what counts as a conflict, and
+        what it refuses. A conflict exits 1 and still prints its payload, which is
+        returned. A refusal exits 1 with no payload and reads as `{"status": "refused"}`,
+        so the hook can tell it from a CLI that could not run or answered nothing usable,
+        which reads as None.
+        """
+        proc = self.run(
+            ["local", "link", "--json", "--cwd", str(cwd)],
+            cwd=cwd,
+            env=env,
+            timeout=LINK_TIMEOUT,
+        )
+        if proc is None or proc.returncode not in (EXIT_OK, EXIT_REFUSED):
+            return None
+        payload = _json_object(proc.stdout)
+        if proc.returncode == EXIT_OK:
+            return payload
+        if payload is not None and isinstance(payload.get("status"), str):
+            return payload
+        return {"status": "refused"}
 
     def commit(self, *, env: Mapping[str, str], note: str = "") -> CommitOutcome:
         """Commit the vault's outstanding changes and report what happened."""

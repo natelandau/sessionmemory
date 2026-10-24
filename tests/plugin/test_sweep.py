@@ -2820,14 +2820,111 @@ def test_run_job_restores_a_learning_rewritten_into_auto_memory_shape(tmp_path: 
     assert f"malformed-restored: {page.resolve()} (unexpected keys: name, metadata)" in notes
 
 
+def test_modified_local_md_is_restored(tmp_path: Path) -> None:
+    """Verify an edit to the person's CLAUDE.local.md returns to HEAD."""
+    vault_root = tmp_path / "vault"
+    store = _job_store(tmp_path)
+    target = _target_at(vault_root)
+    local_md = target.project_dir / "CLAUDE.local.md"
+    local_md.write_text("private notes\n", encoding="utf-8")
+    _seed_git(vault_root)
+    sweep = Sweep(
+        store,
+        SessionMemoryConfig(),
+        _WritingRunner(lambda: local_md.write_text("rewritten\n", encoding="utf-8")),
+        _FakeVault(target, root=vault_root),
+    )
+
+    notes = sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="sess-local"))
+
+    assert local_md.read_text(encoding="utf-8") == "private notes\n"
+    message = "CLAUDE.local.md is the person's, not the sweep's"
+    saved = list((store.state_dir / "quarantine").glob("*-CLAUDE.local.md"))
+    assert len(saved) == 1
+    assert saved[0].read_text(encoding="utf-8") == "rewritten\n"
+    expected = (
+        f"malformed-restored: {local_md.resolve()} ({message}; displaced copy saved to {saved[0]})"
+    )
+    assert expected in notes
+
+
+def test_uncommitted_local_md_edit_survives_a_run_that_changes_it(tmp_path: Path) -> None:
+    """Verify the restore returns the pre-run bytes, not HEAD, when the person's edit is uncommitted."""
+    vault_root = tmp_path / "vault"
+    store = _job_store(tmp_path)
+    target = _target_at(vault_root)
+    local_md = target.project_dir / "CLAUDE.local.md"
+    local_md.write_text("committed\n", encoding="utf-8")
+    _seed_git(vault_root)
+    local_md.write_text("uncommitted edit\n", encoding="utf-8")
+    sweep = Sweep(
+        store,
+        SessionMemoryConfig(),
+        _WritingRunner(lambda: local_md.write_text("rewritten\n", encoding="utf-8")),
+        _FakeVault(target, root=vault_root),
+    )
+
+    notes = sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="sess-new-local"))
+
+    assert local_md.read_text(encoding="utf-8") == "uncommitted edit\n"
+    saved = list((store.state_dir / "quarantine").glob("*-CLAUDE.local.md"))
+    assert len(saved) == 1
+    assert saved[0].read_text(encoding="utf-8") == "rewritten\n"
+    assert any(n.startswith("malformed-restored: ") and str(saved[0]) in n for n in notes)
+
+
+def test_local_md_deleted_during_a_run_returns_with_its_pre_run_bytes(tmp_path: Path) -> None:
+    """Verify a deleted CLAUDE.local.md comes back with uncommitted pre-run content."""
+    vault_root = tmp_path / "vault"
+    store = _job_store(tmp_path)
+    target = _target_at(vault_root)
+    local_md = target.project_dir / "CLAUDE.local.md"
+    local_md.write_text("committed\n", encoding="utf-8")
+    _seed_git(vault_root)
+    local_md.write_text("uncommitted edit\n", encoding="utf-8")
+    sweep = Sweep(
+        store,
+        SessionMemoryConfig(),
+        _WritingRunner(local_md.unlink),
+        _FakeVault(target, root=vault_root),
+    )
+
+    notes = sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="sess-del-pre"))
+
+    assert local_md.read_text(encoding="utf-8") == "uncommitted edit\n"
+    assert any(n.startswith("deleted-restored: ") for n in notes)
+
+
+def test_deleted_local_md_is_restored(tmp_path: Path) -> None:
+    """Verify a CLAUDE.local.md the run deletes comes back from HEAD."""
+    vault_root = tmp_path / "vault"
+    store = _job_store(tmp_path)
+    target = _target_at(vault_root)
+    local_md = target.project_dir / "CLAUDE.local.md"
+    local_md.write_text("private notes\n", encoding="utf-8")
+    _seed_git(vault_root)
+    sweep = Sweep(
+        store,
+        SessionMemoryConfig(),
+        _WritingRunner(local_md.unlink),
+        _FakeVault(target, root=vault_root),
+    )
+
+    notes = sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="sess-del-local"))
+
+    assert local_md.read_text(encoding="utf-8") == "private notes\n"
+    message = "CLAUDE.local.md is the person's, not the sweep's"
+    assert any(n.startswith("deleted-restored: ") and message in n for n in notes)
+
+
 def _seed_git(root: Path) -> None:
-    """Commit everything under `root` into a fresh repository."""
+    """Commit everything under `root` into a fresh repository, ignored files included."""
     git_env = clean_environ()
     for args in (
         ["init", "-q"],
         ["config", "user.email", "t@e.com"],
         ["config", "user.name", "T"],
-        ["add", "-A"],
+        ["add", "-A", "-f"],
         ["commit", "-qm", "seed"],
     ):
         subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, env=git_env)
@@ -2971,3 +3068,34 @@ def test_run_job_quarantines_a_page_nested_in_a_field(tmp_path: Path, field_name
 
     assert not nested.exists()
     assert f"malformed-quarantined: {nested.resolve()} (nested in a field)" in notes
+
+
+def test_local_md_restore_that_raises_names_the_saved_copy(tmp_path: Path, monkeypatch) -> None:
+    """Verify a restore that fails to run keeps the file and names the copy saved aside."""
+    vault_root = tmp_path / "vault"
+    store = _job_store(tmp_path)
+    target = _target_at(vault_root)
+    local_md = target.project_dir / "CLAUDE.local.md"
+    local_md.write_text("private notes\n", encoding="utf-8")
+    _seed_git(vault_root)
+    sweep = Sweep(
+        store,
+        SessionMemoryConfig(),
+        _WritingRunner(lambda: local_md.write_text("edited\n", encoding="utf-8")),
+        _FakeVault(target, root=vault_root),
+    )
+
+    def failing_write(_path: Path, _data: bytes) -> None:
+        msg = "disk full"
+        raise OSError(msg)
+
+    monkeypatch.setattr(sweep, "_write_atomic", failing_write)
+
+    notes = sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="sess-hung"))
+
+    saved = list((store.state_dir / "quarantine").glob("*-CLAUDE.local.md"))
+    assert len(saved) == 1
+    assert saved[0].read_text(encoding="utf-8") == "edited\n"
+    assert local_md.read_text(encoding="utf-8") == "edited\n"
+    note = next(n for n in notes if n.startswith("malformed-unremovable: "))
+    assert str(saved[0]) in note
