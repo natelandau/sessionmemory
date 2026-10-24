@@ -251,3 +251,40 @@ def test_inject_and_search_prose_stay_unstyled_and_unwrapped(colored):
     # A path this long is one Rich would soft-wrap unless emit_value disables that;
     # finding it whole on its own line proves the newline is not embedded mid-path.
     assert any(line.strip() == page_path for line in text.splitlines())
+
+
+@pytest.fixture
+def colored_checkout(tmp_path):
+    """Build a vault, a registered git checkout, and a vault CLAUDE.local.md, with color forced."""
+    vault = tmp_path / "vault"
+    initialize(vault)
+    repo = tmp_path / "a-checkout-with-a-deliberately-long-directory-name"
+    repo.mkdir()
+    for args in (["init", "-q", "."], ["commit", "-q", "--allow-empty", "-m", "init"]):
+        subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+    env = {
+        **os.environ,
+        **COLORED,
+        "SESSIONMEMORY_VAULT": str(vault),
+        "SESSIONMEMORY_EMBEDDER": "stub",
+    }
+    assert _run(env, "project", "--register", "--cwd", str(repo)).returncode == 0
+    (vault / "projects" / repo.name / "CLAUDE.local.md").write_text("notes\n")
+    return env, repo
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        pytest.param(["local", "status", "--json"], id="local-status"),
+        pytest.param(["local", "link", "--json"], id="local-link"),
+    ],
+)
+def test_local_json_output_is_parseable_in_a_colored_shell(colored_checkout, arguments):
+    """Emit `local` JSON unstyled, since the SessionStart hook parses `local link --json`."""
+    env, repo = colored_checkout
+    result = _run(env, *arguments, "--cwd", str(repo))
+
+    assert result.returncode == 0
+    assert ESCAPE not in result.stdout
+    assert isinstance(json.loads(result.stdout), dict)

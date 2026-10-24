@@ -97,7 +97,9 @@ sessionmemory init --force ~/old-notes   # a directory that already has contents
 
 It never overwrites a file, so it is safe to run again. Run it again after an upgrade
 that adds a file to that list. The `.gitignore` it writes ignores the derived index files
-and `projects/*/plans/`, since a plan is scratch that never belongs in history.
+and `projects/*/plans/`, since a plan is scratch that never belongs in history. It also
+re-includes `projects/*/CLAUDE.local.md`, so a global ignore rule that names that file
+cannot keep a project's private instructions out of the vault.
 
 ## `sessionmemory project`
 
@@ -154,7 +156,8 @@ none:
     "plans": "~/repos/my-vault/projects/invoice-api/plans",
     "runbooks": "~/repos/my-vault/projects/invoice-api/runbooks",
     "reference": "~/repos/my-vault/projects/invoice-api/reference",
-    "backlog": "~/repos/my-vault/projects/invoice-api/backlog.md"
+    "backlog": "~/repos/my-vault/projects/invoice-api/backlog.md",
+    "local_md": "~/repos/my-vault/projects/invoice-api/CLAUDE.local.md"
   }
 }
 ```
@@ -178,7 +181,7 @@ directly.
 
 | Option   | What it does                                                                                        |
 | -------- | --------------------------------------------------------------------------------------------------- |
-| `<kind>` | `project`, `learnings`, `logs`, `specs`, `plans`, `runbooks`, `reference`, or `backlog`. Required. |
+| `<kind>` | `project`, `learnings`, `logs`, `specs`, `plans`, `runbooks`, `reference`, `backlog`, or `local`. Required. |
 | `--cwd`  | Directory to resolve the project from.                                                              |
 
 ```bash
@@ -197,8 +200,173 @@ sessionmemory path backlog --cwd .
 ~/repos/my-vault/projects/invoice-api/backlog.md
 ```
 
-The path is printed whether or not the file or folder exists yet. `sessionmemory project
---json` prints every path at once.
+```bash
+sessionmemory path local --cwd .
+```
+
+```
+~/repos/my-vault/projects/invoice-api/CLAUDE.local.md
+```
+
+`local` is the vault copy of the project's `CLAUDE.local.md`. The path is printed whether
+or not the file or folder exists yet. `sessionmemory project --json` prints every path at
+once, and names this one `local_md`.
+
+## `sessionmemory local`
+
+Keep this project's private `CLAUDE.local.md` in the vault and link it into the checkout.
+A `CLAUDE.local.md` holds personal instructions that must not reach the project's
+repository. Without this command it exists in one clone only. In the vault it follows
+your other machines and every git worktree of the project.
+
+The vault copy is `projects/<slug>/CLAUDE.local.md`. The link is an absolute symlink at
+the top level of the git work tree that holds `--cwd`, which is not always the registered
+root. Claude Code reads the link as it reads a regular file, and an edit made through
+Claude Code changes the vault copy.
+
+Each sub-command resolves the project from `--cwd`, refuses an unregistered directory, and
+refuses a directory outside git. `adopt` and `link` also refuse when git tracks
+`CLAUDE.local.md`, since the file is then not private. `link` skips that check when the
+vault holds no copy, because it has nothing to link.
+
+| Sub-command | What it does                                                           |
+| ----------- | ---------------------------------------------------------------------- |
+| `adopt`     | Move this checkout's `CLAUDE.local.md` into the vault and link it back |
+| `link`      | Create the link for a vault copy that already exists                   |
+| `status`    | Report how this checkout's file relates to the vault copy              |
+
+Every sub-command takes `--cwd`, the directory to resolve the project from. `link` and
+`status` also take `--json`.
+
+### `sessionmemory local status`
+
+Report the state of this checkout's file.
+
+```bash
+sessionmemory local status --cwd .
+```
+
+```
+state: unadopted
+link: ~/repos/invoice-api/CLAUDE.local.md
+target: ~/repos/my-vault/projects/invoice-api/CLAUDE.local.md
+ignored: no
+tracked: no
+```
+
+`state` is one of seven values:
+
+| State          | Meaning                                                        |
+| -------------- | -------------------------------------------------------------- |
+| `linked`       | The checkout holds a link to the vault copy                    |
+| `not linked`   | The vault holds a copy, and the checkout has no file           |
+| `unadopted`    | The checkout holds a regular file, and the vault holds no copy |
+| `diverged`     | The checkout holds a regular file, and the vault holds a copy  |
+| `foreign link` | The checkout holds a link that resolves somewhere else         |
+| `dangling`     | The checkout holds a link to nothing                           |
+| `none`         | Neither the checkout nor the vault holds a file                |
+
+`ignored` says whether git ignores the file, and `tracked` says whether git tracks it. A
+`diverged` state adds a `contents` line, `identical` or `different`. An editor that saves
+by writing a temporary file and renaming it over the link also leaves a `diverged` state
+behind.
+
+`--json` prints `state`, `link`, `target`, `ignored`, `tracked`, and `match`. `match` is
+`true` or `false` when both files are regular, and `null` otherwise.
+
+```json
+{
+  "state": "linked",
+  "link": "~/repos/invoice-api/CLAUDE.local.md",
+  "target": "~/repos/my-vault/projects/invoice-api/CLAUDE.local.md",
+  "ignored": true,
+  "tracked": false,
+  "match": null
+}
+```
+
+### `sessionmemory local adopt`
+
+Move this checkout's file into the vault and replace it with a link.
+
+```bash
+sessionmemory local adopt --cwd .
+```
+
+```
+! @./sandbox-notes.md resolves from the vault copy's folder and will not load
+! the hooks commit the vault copy to the vault's git remote
+~/repos/my-vault/projects/invoice-api/CLAUDE.local.md
+```
+
+The command prints the vault path on stdout and nothing else. The warnings go to stderr.
+It does these steps in order:
+
+1. If the file is already a link to the vault copy, it adds the `info/exclude` entry when
+   git does not ignore the link, prints the vault path, and exits 0.
+2. It refuses when git tracks the file, when the link points somewhere other than the vault
+   copy, and when the checkout holds no file.
+3. If the vault copy exists and differs from the file, it refuses and names both paths. You
+   choose which version wins.
+4. It refuses a file that is not valid UTF-8. If the vault copy does not exist, it writes
+   the copy, reads it back, and compares the bytes with the original. On a mismatch it
+   removes the copy, stops, and leaves the original untouched. A vault copy with the same
+   bytes skips this write.
+5. It replaces the original with the link in one rename, so the file never goes missing.
+6. It adds `CLAUDE.local.md` to the repository's `info/exclude` when git does not already
+   ignore the file. It never edits a committed `.gitignore`.
+
+Claude Code resolves a relative `@` import in a linked file from the vault folder, where
+the imported file does not exist. `adopt` warns once for each relative import it finds and
+still adopts the file. Write the imported content into `CLAUDE.local.md`, or remove the
+import.
+
+### `sessionmemory local link`
+
+Create the link for a vault copy that already exists, such as on a new machine or in a new
+worktree.
+
+```bash
+sessionmemory local link --cwd .
+```
+
+```
+~/repos/invoice-api/CLAUDE.local.md
+```
+
+The command prints the link path. With `--json` it prints a `status`, the `link`, and the
+`target`:
+
+```json
+{
+  "status": "present",
+  "link": "~/repos/invoice-api/CLAUDE.local.md",
+  "target": "~/repos/my-vault/projects/invoice-api/CLAUDE.local.md"
+}
+```
+
+| Status     | Meaning                                                                    |
+| ---------- | -------------------------------------------------------------------------- |
+| `created`  | The checkout had no file, or a link to nothing. The command made the link  |
+| `present`  | The checkout already holds a link to the vault copy                        |
+| `none`     | The vault holds no copy, so there is nothing to link                       |
+| `conflict` | A regular file, or a link to another file, is in the way                   |
+
+`link` never replaces a file that holds content. On `conflict` it exits 1 and names the
+next step:
+
+```
+✗ ~/repos/invoice-api/CLAUDE.local.md is in the way of the vault copy (diverged)
+  └─ Run `local adopt` to move it into the vault, or `local status` to compare them.
+```
+
+With `--json`, a `conflict` prints its payload and exits 1.
+
+To resolve a `diverged` state, copy the newer content over the vault copy, delete the
+checkout file, and run `local link`. The plugin runs `local link --json` at every session
+start (see [SessionStart](plugin.md#sessionstart)). On `created` and on `present`, `link`
+also adds the `info/exclude` entry when git does not ignore the link, so a fresh clone is
+covered and a lost entry comes back.
 
 ## `sessionmemory new learning`
 
@@ -813,11 +981,19 @@ than 30 days ago, gets one more line under its titles:
   Learnings last reviewed: never. At a natural stopping point, suggest /sessionmemory:review to the user.
 ```
 
-`--json` emits the same content as nine keys: `guidance`, `project`, `titles`,
-`open_backlog`, `specs`, `reference`, `runbooks`, `reviewed`, and `review_due`.
+`--json` emits the same content as ten keys: `guidance`, `project`, `titles`,
+`open_backlog`, `specs`, `reference`, `runbooks`, `reviewed`, `review_due`, and
+`unadopted_local`.
 `open_backlog` and `specs` are counts, `reference` and `runbooks` are lists of filenames,
 `reviewed` is the date of the last review or an empty string when never reviewed, and
 `review_due` says whether the review line above is shown.
+
+When the checkout holds a regular `CLAUDE.local.md` and the vault holds no copy, the block
+ends with one more line, and `unadopted_local` is `true`:
+
+```
+  CLAUDE.local.md here is not in the vault yet; `sessionmemory local adopt --cwd .` moves it there
+```
 
 ## `sessionmemory reindex`
 
@@ -968,7 +1144,7 @@ sessionmemory doctor
 ]
 ```
 
-See [Vault health](vault-health.md) for the nine checks and what to do about each one.
+See [Vault health](vault-health.md) for the ten checks and what to do about each one.
 
 ## `sessionmemory export`
 

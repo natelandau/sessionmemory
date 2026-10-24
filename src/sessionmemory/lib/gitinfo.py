@@ -20,8 +20,12 @@ import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from sessionmemory.lib import registry
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 GIT_TIMEOUT_SECONDS = 10
 
@@ -60,6 +64,36 @@ class GitContext:
         return self.repo_root != self.worktree_root
 
 
+def run_git(
+    cwd: Path, *args: str, env: Mapping[str, str] | None = None
+) -> subprocess.CompletedProcess[str] | None:
+    """Run git in `cwd` under the C locale, for a caller that reads its exit code itself.
+
+    Args:
+        cwd (Path): The directory to run in.
+        *args: Arguments passed to git.
+        env (Mapping[str, str] | None): The environment to start from, in place of the
+            process's own.
+
+    Returns:
+        subprocess.CompletedProcess[str] | None: The finished process whatever its exit
+            code, or None when git could not be run or did not finish in time.
+    """
+    try:
+        return subprocess.run(  # noqa: S603
+            ["git", *args],  # noqa: S607
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=GIT_TIMEOUT_SECONDS,
+            # The C locale keeps git's own messages in the wording the classifier reads.
+            env={**(os.environ if env is None else env), "LC_ALL": "C", "LANGUAGE": ""},
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
 def _git(cwd: Path, *args: str) -> _GitAnswer:
     """Run a git command and report both its output and whether git answered at all.
 
@@ -72,20 +106,9 @@ def _git(cwd: Path, *args: str) -> _GitAnswer:
             exit counts as a verdict only when git says the directory is not a
             repository.
     """
-    try:
-        completed = subprocess.run(  # noqa: S603
-            ["git", *args],  # noqa: S607
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=GIT_TIMEOUT_SECONDS,
-            # The C locale keeps git's own messages in the wording the classifier reads.
-            env={**os.environ, "LC_ALL": "C", "LANGUAGE": ""},
-        )
-    except (OSError, subprocess.SubprocessError):
+    completed = run_git(cwd, *args)
+    if completed is None:
         return _GitAnswer(stdout=None, answered=False)
-
     if completed.returncode != 0:
         return _GitAnswer(stdout=None, answered=_NOT_A_REPOSITORY in completed.stderr.lower())
     return _GitAnswer(stdout=completed.stdout.strip() or None, answered=True)

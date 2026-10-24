@@ -12,6 +12,7 @@ from sessionmemory.commands import doctor as doctor_commands
 from sessionmemory.commands import export as export_commands
 from sessionmemory.commands import init as init_commands
 from sessionmemory.commands import inject as inject_commands
+from sessionmemory.commands import local as local_commands
 from sessionmemory.commands import log as log_commands
 from sessionmemory.commands import new as new_commands
 from sessionmemory.commands import path as path_commands
@@ -73,6 +74,7 @@ app.command("reindex", help="Rebuild this project's search indexes, or every pro
 app.command("search", help="Search this project's learnings by meaning, or its logs with --logs.")(
     search_commands.search_command
 )
+app.add_typer(local_commands.app, name="local")
 app.add_typer(new_commands.app, name="new")
 
 

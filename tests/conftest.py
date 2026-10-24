@@ -61,3 +61,8 @@ def _git_identity(tmp_path_factory, monkeypatch) -> None:
     config.write_text('[user]\n\tname = "Test"\n\temail = "test@example.com"\n')
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    # Code that drops `GIT_`-prefixed variables never sees the two above, so it would read
+    # the developer's real global config and ignore file from HOME instead.
+    home = tmp_path_factory.mktemp("home")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))

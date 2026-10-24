@@ -43,6 +43,7 @@ def workspace(vault, tmp_path, monkeypatch):
         ("runbooks", "projects/demo/runbooks"),
         ("reference", "projects/demo/reference"),
         ("backlog", "projects/demo/backlog.md"),
+        ("local", "projects/demo/CLAUDE.local.md"),
     ],
 )
 def test_path_prints_one_absolute_path(workspace, kind, tail):
@@ -57,7 +58,11 @@ def test_path_prints_one_absolute_path(workspace, kind, tail):
 
 @pytest.mark.parametrize(
     ("kind", "tail"),
-    [("runbooks", "projects/demo/runbooks"), ("backlog", "projects/demo/backlog.md")],
+    [
+        ("runbooks", "projects/demo/runbooks"),
+        ("backlog", "projects/demo/backlog.md"),
+        ("local", "projects/demo/CLAUDE.local.md"),
+    ],
 )
 def test_path_prints_a_path_that_does_not_exist_yet(workspace, kind, tail):
     """Verify a missing folder or file is still printed."""
@@ -81,7 +86,8 @@ def test_path_kinds_match_the_project_paths_keys(workspace):
     vault, _ = workspace
     keys = set(paths.project_paths(vault, "demo"))
 
-    kinds = {"project_dir" if kind.value == "project" else kind.value for kind in PathKind}
+    renamed = {"project": "project_dir", "local": "local_md"}
+    kinds = {renamed.get(kind.value, kind.value) for kind in PathKind}
 
     assert kinds == keys
 

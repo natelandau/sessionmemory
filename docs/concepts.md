@@ -32,14 +32,15 @@ commits the vault when a session starts and again when a session ends.
     runbooks/<slug>.md
     reference/<slug>.md
     backlog.md                       a list of open work, not a page
+    CLAUDE.local.md                  private instructions that checkouts link to
 ```
 
 `learnings/` and `logs/` are fields: flat directories of pages, each with its own
 index file. `specs/` has an index file of the same kind, but it is not a field. A spec has
 no summary field and no size limit, and the index embeds a derived text rather than the
-file (see [The index](#the-index)). `plans/`, `runbooks/`, `reference/`, and `backlog.md`
-are never indexed, which is what keeps the backlog or a plan from being embedded as
-memory.
+file (see [The index](#the-index)). `plans/`, `runbooks/`, `reference/`, `backlog.md`, and
+`CLAUDE.local.md` are never indexed, which is what keeps the backlog or a plan from being
+embedded as memory.
 
 A project's files are found by its slug and nothing else. There is no global folder, and
 no page belongs to more than one project.
@@ -153,6 +154,39 @@ happen, and git history is the record of what was done. A session start reports 
 bullets the file holds, and nothing more. An indented bullet is a note under an item and
 is not counted. A ticked `- [x]` line is not an open item either, and
 `sessionmemory doctor` reports it.
+
+## CLAUDE.local.md
+
+A `CLAUDE.local.md` holds private instructions for one project: a sandbox URL, which
+account to use, where a credential lives. It must not reach the project's repository, so
+it normally exists in one clone only. A second machine, a fresh clone, and a new git
+worktree start without it.
+
+The vault holds one copy, `projects/<name>/CLAUDE.local.md`. Each checkout holds an
+absolute symlink to that copy, at the top level of its git work tree. Claude Code loads the
+link as it loads a regular file, and an edit made through Claude Code changes the vault
+copy. The vault's remote carries the copy to your other machines. The file is not a page,
+and nothing indexes, lists, or searches it. Record where a credential lives in it, never
+the credential, because the vault is committed.
+
+`sessionmemory local adopt` moves an existing file into the vault. The plugin then links
+every other checkout at session start. Git ignores the link through the repository's
+`info/exclude` file, which all worktrees of a clone share, so the link never reaches a
+commit of the project.
+
+Two limits come from how Claude Code loads the file:
+
+- A relative `@` import, such as `@./notes.md`, resolves from the vault folder, where the
+  imported file does not exist. Claude Code also asks you to approve the import as an
+  external file. Put the content into `CLAUDE.local.md` itself, or remove the import.
+  `local adopt` and `doctor` report each relative import.
+- Claude Code reads its memory files before `SessionStart` runs. A link that the hook
+  creates loads from the next session. The hook adds the file's content to the injected
+  block in the session that created the link.
+
+Only the `CLAUDE.local.md` at the root of the work tree is managed. Files of that name in
+subdirectories stay as they are. See [`sessionmemory local`](cli.md#sessionmemory-local)
+for the commands.
 
 ## Logs
 
