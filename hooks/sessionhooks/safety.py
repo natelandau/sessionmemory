@@ -1,7 +1,7 @@
 """Secret redaction for the sweep's write backstop.
 
 The sweep runs skip-permissions work over an untrusted transcript whose
-proposed writes could carry a leaked credential. `Sweep._validate_writes` is
+proposed writes could carry a leaked credential. `WriteGuard.validate_writes` is
 the one caller, and it runs every write, tool-reported or diff-derived,
 through this scrubber before trusting it.
 """

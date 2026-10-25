@@ -513,15 +513,16 @@ new one: without it, the model has no way to keep what was already recorded.
 
 The sweep may write anywhere inside its own project's folder, which is what a later pass
 strengthening a memory means. Two backstops run after the model finishes, and neither is
-complete. `Sweep._validate_writes` walks the tool-use stream's reported paths, which
-`ClaudeRunner.run` reads from a timed-out run's partial output too, and reverts anything
+complete. Both live on `WriteGuard` in `hooks/sessionhooks/guard.py`, which the worker
+builds once its vault resolves. `WriteGuard.validate_writes` walks the tool-use stream's
+reported paths, which `ClaudeRunner.run` reads from a timed-out run's partial output too, and reverts anything
 outside the project folder, restoring it from the vault's `HEAD` or quarantining it when
 git cannot. It then scrubs for secrets by content hash: `snapshot.take` hashes the project
 folder before and after the run, skipping symlinks, and every file whose hash changed is
 scrubbed, which is what catches a write made through Bash, since a Bash write never
 appears in the tool-use stream. A file that cannot be read is recorded as
 `snapshot.UNREADABLE` rather than left out, so it reads as modified and never as created
-or deleted. A deletion is noted, not undone. `Sweep._enforce_shapes` then checks what
+or deleted. A deletion is noted, not undone. `WriteGuard.enforce_shapes` then checks what
 `hooks/sessionhooks/shape.py` knows of a page's shape: a new learning, log, or top-level
 file that fails is quarantined, as is a new file nested below `learnings/` or `logs/`, and
 a modified learning that fails is restored from `HEAD` (`_restore_or_quarantine`). A
@@ -533,9 +534,9 @@ mirroring `field.is_debris`, is left alone. A Bash write **outside** the project
 sibling project's folder foremost, is caught by nothing here and is committed by the next
 hook. Git history is the recovery. The prompt forbids deleting a page, and a page the
 model deletes through Bash is committed as a deletion. The prompt never mentions
-`CLAUDE.local.md`, which belongs to the person, so `Sweep._protect_local_md` undoes any
-change to `<project>/CLAUDE.local.md` (`shape.local_md_problem`). `Sweep._capture_local_md`
-reads that one file's bytes before the run, and a modified or deleted copy is rewritten
+`CLAUDE.local.md`, which belongs to the person, so `WriteGuard._protect_local_md` undoes
+any change to `<project>/CLAUDE.local.md` (`shape.local_md_problem`).
+`WriteGuard.capture_local_md` reads that one file's bytes before the run, and a modified or deleted copy is rewritten
 from them (temp file in the same directory, then rename) rather than from `HEAD`, since
 the person may not have committed their latest edit. A modified one is copied into
 quarantine first, since the edit may be the person's own made while the sweep ran, and
