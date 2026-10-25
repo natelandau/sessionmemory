@@ -1,3 +1,9 @@
+## v0.13.0 (2026-10-25)
+
+### Feat
+
+- **sweep**: add a /sessionmemory:sweep skill (#16)
+
 ## v0.12.0 (2026-10-24)
 
 ### Feat
