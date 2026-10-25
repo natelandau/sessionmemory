@@ -17,6 +17,7 @@ from sessionhooks import log as log_mod  # ty: ignore[unresolved-import]
 from sessionhooks import sweep as sweep_mod  # ty: ignore[unresolved-import]
 from sessionhooks.commit import CommitOutcome  # ty: ignore[unresolved-import]
 from sessionhooks.config import SessionMemoryConfig  # ty: ignore[unresolved-import]
+from sessionhooks.guard import WriteGuard  # ty: ignore[unresolved-import]
 from sessionhooks.runner import LOG_TITLE_ENV, RunResult  # ty: ignore[unresolved-import]
 from sessionhooks.snapshot import Changes  # ty: ignore[unresolved-import]
 from sessionhooks.store import LOCK_NAME, Store, state_root  # ty: ignore[unresolved-import]
@@ -462,6 +463,70 @@ def test_gate_below_threshold_returns_none(tmp_path: Path) -> None:
     assert result is None
 
 
+def _manual_sweep_turn() -> list[dict]:
+    """A finished `/sessionmemory:sweep` turn: the command, its check run, the result."""
+    check = "/plugin/hooks/sweep-check.py"
+    return [
+        _user("<command-name>/sessionmemory:sweep</command-name>"),
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {"type": "tool_use", "id": "tu_c", "name": "Bash", "input": {"command": check}}
+                ]
+            },
+        },
+        {
+            "type": "user",
+            "message": {"content": [{"type": "tool_result", "tool_use_id": "tu_c", "content": ""}]},
+        },
+    ]
+
+
+def test_gate_skips_a_session_already_swept_by_hand(tmp_path: Path) -> None:
+    """Verify a finished manual sweep leaves only the short tail after it to judge."""
+    # Given a long session, a finished manual sweep, then one more exchange
+    hooks_log = _capture_log(tmp_path)
+    store = store_at(tmp_path)
+    t_file = tmp_path / "swept.jsonl"
+    entries = [*_meaningful(20), *_manual_sweep_turn(), _user("thanks"), _assistant("bye")]
+    _write_transcript(t_file, entries)
+    sweep = Sweep(store, SessionMemoryConfig(), _FakeRunner([]))
+
+    # When gating
+    result = sweep._gate({"cwd": str(tmp_path), "transcript_path": str(t_file)})
+
+    # Then the sweep is skipped as below threshold
+    assert result is None
+    assert "sweep skipped: below threshold (exchanges 2/" in hooks_log_text(hooks_log)
+
+
+def test_gate_sweeps_only_the_work_after_a_manual_sweep(tmp_path: Path) -> None:
+    """Verify work done after a manual sweep is swept, and nothing before it."""
+    # Given a manual sweep followed by a full session's worth of work
+    store = store_at(tmp_path)
+    t_file = tmp_path / "swept.jsonl"
+    before, after = _meaningful(4), _meaningful(20)
+    _write_transcript(t_file, [*before, *_manual_sweep_turn(), *after])
+    sweep = Sweep(store, SessionMemoryConfig(), _FakeRunner([]))
+
+    # When gating
+    job = sweep._gate({"cwd": str(tmp_path), "transcript_path": str(t_file)})
+
+    # Then the job's window is the later work alone
+    assert job is not None
+    assert job.window == after
+
+
+def test_run_job_without_a_runner_is_skipped(tmp_path: Path) -> None:
+    """Verify a sweep built only to compose a prompt never runs a job."""
+    hooks_log = _capture_log(tmp_path)
+    sweep = Sweep(store_at(tmp_path), SessionMemoryConfig())
+
+    assert sweep._run_job(_job(cwd=str(tmp_path))) == []
+    assert "sweep skipped: no runner" in hooks_log_text(hooks_log)
+
+
 def test_gate_logs_a_below_threshold_skip_with_every_count(tmp_path: Path) -> None:
     """Verify a skipped session explains itself: each measure against its floor."""
     hooks_log = _capture_log(tmp_path)
@@ -643,7 +708,7 @@ def test_gate_returns_none_on_an_unexpected_error(
         message = "boom"
         raise RuntimeError(message)
 
-    monkeypatch.setattr(sweep_mod.transcript, "window_since_compact", _raise)
+    monkeypatch.setattr(sweep_mod.transcript, "window_since_boundary", _raise)
 
     # When gating
     result = sweep._gate({"cwd": str(tmp_path), "transcript_path": str(t_file)})
@@ -693,7 +758,7 @@ def test_trigger_never_raises_when_the_gate_itself_blows_up(
         message = "boom"
         raise RuntimeError(message)
 
-    monkeypatch.setattr(sweep_mod.transcript, "window_since_compact", _raise)
+    monkeypatch.setattr(sweep_mod.transcript, "window_since_boundary", _raise)
 
     # When triggering
     sweep.trigger({"cwd": str(tmp_path), "transcript_path": str(t_file)})  # must not raise
@@ -807,7 +872,7 @@ def test_changes_returns_empty_when_git_cannot_run(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Sweep._validate_writes (containment + secret scrub)
+# WriteGuard.validate_writes (containment + secret scrub)
 # ---------------------------------------------------------------------------
 
 
@@ -840,6 +905,14 @@ def sweep_factory(tmp_path: Path):
     return _make
 
 
+def _guard(sweep: Sweep) -> WriteGuard:
+    """The write guard the worker would build for `sweep` once its vault resolved."""
+    return WriteGuard(
+        state_dir=sweep.store.state_dir,
+        vault_root=sweep.vault.root if sweep.vault else None,
+    )
+
+
 def _sweep_with_data(tmp_path: Path) -> tuple[Sweep, Target]:
     store = store_at(tmp_path)
     target = _target_at(tmp_path / "vault")
@@ -858,7 +931,7 @@ def test_validate_writes_escaped_file_quarantined(tmp_path: Path) -> None:
     outside = tmp_path / "outside.md"
     outside.write_text("nope", encoding="utf-8")
     # When validating
-    notes = sweep._validate_writes([str(outside)], target, Changes())
+    notes = _guard(sweep).validate_writes([str(outside)], target, Changes())
     # Then the file is gone from its original path, its content survives in
     # quarantine, and the note says so
     assert not outside.exists()
@@ -882,7 +955,7 @@ def test_validate_writes_rejects_a_sibling_project(tmp_path: Path) -> None:
     other.parent.mkdir(parents=True)
     other.write_text("not mine", encoding="utf-8")
     # When validating
-    notes = sweep._validate_writes([str(other)], target, Changes())
+    notes = _guard(sweep).validate_writes([str(other)], target, Changes())
     # Then it is gone from the sibling project's folder, its content survives
     # in quarantine, and the note says so
     assert not other.exists()
@@ -899,7 +972,7 @@ def test_validate_writes_anchors_a_relative_path_to_the_project(tmp_path: Path) 
     written = target.project_dir / "learnings" / "rel.md"
     written.write_text("a learning", encoding="utf-8")
     # When validating
-    notes = sweep._validate_writes(["learnings/rel.md"], target, Changes())
+    notes = _guard(sweep).validate_writes(["learnings/rel.md"], target, Changes())
     # Then it is treated as contained and left alone
     assert written.exists()
     assert notes == []
@@ -930,7 +1003,7 @@ def test_validate_writes_restores_a_tracked_escape(tmp_path: Path) -> None:
         _FakeVault(target, root=vault_root),
     )
     # When validating
-    notes = sweep._validate_writes([str(tracked)], target, Changes())
+    notes = _guard(sweep).validate_writes([str(tracked)], target, Changes())
     # Then the note survives with its committed content
     assert tracked.read_text(encoding="utf-8") == "the original"
     assert notes == [f"escaped-reverted: {tracked}"]
@@ -965,7 +1038,7 @@ def test_validate_writes_redacts_a_secret(
     written = target.project_dir / f"{name}.md"
     written.write_text(content.format(secret=secret), encoding="utf-8")
     # When validating
-    notes = sweep._validate_writes([str(written)], target, Changes())
+    notes = _guard(sweep).validate_writes([str(written)], target, Changes())
     # Then the secret is gone, the file remains, and the redaction is noted
     after = written.read_text(encoding="utf-8")
     assert secret not in after
@@ -980,7 +1053,7 @@ def test_validate_writes_clean_file_untouched(tmp_path: Path) -> None:
     written = target.project_dir / "clean.md"
     written.write_text("nothing secret here", encoding="utf-8")
     # When validating
-    notes = sweep._validate_writes([str(written)], target, Changes())
+    notes = _guard(sweep).validate_writes([str(written)], target, Changes())
     # Then it is unchanged and unremarked
     assert written.read_text(encoding="utf-8") == "nothing secret here"
     assert notes == []
@@ -992,7 +1065,7 @@ def test_validate_writes_missing_file_no_note(tmp_path: Path) -> None:
     sweep, target = _sweep_with_data(tmp_path)
     ghost = target.project_dir / "ghost.md"
     # When validating
-    notes = sweep._validate_writes([str(ghost)], target, Changes())
+    notes = _guard(sweep).validate_writes([str(ghost)], target, Changes())
     # Then nothing is reported
     assert notes == []
 
@@ -1010,7 +1083,7 @@ def test_validate_writes_reports_escaped_for_a_reported_but_nonexistent_path(
     ghost = tmp_path / "outside-ghost.md"
 
     # When validating writes
-    notes = sweep._validate_writes([str(ghost)], target, Changes())
+    notes = _guard(sweep).validate_writes([str(ghost)], target, Changes())
 
     # Then it is reported escaped, with nothing quarantined
     assert notes == [f"escaped: {ghost}"]
@@ -1033,7 +1106,7 @@ def test_revert_and_note_reports_unremovable_when_git_cannot_run(
     monkeypatch.setattr(sweep_mod.subprocess, "run", _raise)
 
     # When reverting and noting the outcome
-    note = sweep._revert_and_note(tracked, str(tracked))
+    note = _guard(sweep)._revert_and_note(tracked, str(tracked))
 
     # Then the failure is reported as unremovable rather than raised
     assert note.startswith(f"escaped-unremovable: {tracked}")
@@ -1129,7 +1202,7 @@ def test_existing_memory_concatenates_backlog_and_learnings(tmp_path: Path) -> N
 
 
 # ---------------------------------------------------------------------------
-# Sweep._validate_writes (hash-derived: writes Bash made, never reported)
+# WriteGuard.validate_writes (hash-derived: writes Bash made, never reported)
 # ---------------------------------------------------------------------------
 
 
@@ -1139,7 +1212,9 @@ def test_a_secret_bash_wrote_into_the_project_dir_is_scrubbed(tmp_path, sweep_fa
     leaked = target.learnings_dir / "leak.md"
     leaked.write_text("token = 'ghp_" + "a" * 36 + "'", encoding="utf-8")
 
-    notes = sweep_factory()._validate_writes([], target, Changes(created=(leaked.resolve(),)))
+    notes = _guard(sweep_factory()).validate_writes(
+        [], target, Changes(created=(leaked.resolve(),))
+    )
 
     assert any(note.startswith("secret-redacted") for note in notes)
     assert "ghp_" not in leaked.read_text(encoding="utf-8")
@@ -1151,7 +1226,7 @@ def test_a_file_the_run_did_not_change_is_not_rescanned(tmp_path, sweep_factory)
     old = target.learnings_dir / "old.md"
     old.write_text("token = 'ghp_" + "b" * 36 + "'", encoding="utf-8")
 
-    notes = sweep_factory()._validate_writes([], target, Changes())
+    notes = _guard(sweep_factory()).validate_writes([], target, Changes())
 
     assert notes == []
 
@@ -1164,7 +1239,7 @@ def test_a_binary_file_does_not_abort_the_scrub(tmp_path, sweep_factory):
     leaked = target.learnings_dir / "leak.md"
     leaked.write_text("token = 'ghp_" + "a" * 36 + "'", encoding="utf-8")
 
-    notes = sweep_factory()._validate_writes(
+    notes = _guard(sweep_factory()).validate_writes(
         [], target, Changes(created=(binary.resolve(), leaked.resolve()))
     )
 
@@ -1177,7 +1252,7 @@ def test_validate_writes_names_each_deletion(tmp_path, sweep_factory):
     target = _target_at(tmp_path / "vault")
     gone = target.learnings_dir / "gone.md"
 
-    notes = sweep_factory()._validate_writes([], target, Changes(deleted=(gone,)))
+    notes = _guard(sweep_factory()).validate_writes([], target, Changes(deleted=(gone,)))
 
     assert notes == [f"deleted: {gone}"]
 
@@ -2999,7 +3074,9 @@ def test_enforce_shapes_quarantines_a_learning_the_snapshot_could_not_read(
     sweep = Sweep(store, SessionMemoryConfig(), _RecordingRunner(), _FakeVault(target))
 
     # When enforcing shapes
-    notes = sweep._enforce_shapes(Changes(created=(resolved,), unreadable=(resolved,)), target)
+    notes = _guard(sweep).enforce_shapes(
+        Changes(created=(resolved,), unreadable=(resolved,)), target
+    )
 
     # Then it is quarantined as unreadable
     assert notes == [f"unreadable-quarantined: {resolved}"]
@@ -3089,7 +3166,7 @@ def test_local_md_restore_that_raises_names_the_saved_copy(tmp_path: Path, monke
         msg = "disk full"
         raise OSError(msg)
 
-    monkeypatch.setattr(sweep, "_write_atomic", failing_write)
+    monkeypatch.setattr(WriteGuard, "_write_atomic", staticmethod(failing_write))
 
     notes = sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="sess-hung"))
 

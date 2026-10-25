@@ -348,6 +348,40 @@ value as its `ANTHROPIC_API_KEY`, ahead of all three. The pass also drops
 A signed-in Claude apps gateway outranks every credential and still wins. Your session
 itself never reads the variable.
 
+### Sweeping by hand
+
+Run `/sessionmemory:sweep` to do the sweep in your own session instead of in a separate
+`claude -p` run. The agent that did the work records it, with the same instructions, the
+same four jobs, and the same backstops. The pass uses the credentials and the model of
+your session.
+
+The skill runs in three parts:
+
+1. `hooks/sweep-prompt.py` prints the sweep instructions for this project and this
+   session, and records the project folder before any write.
+2. The agent follows the instructions.
+3. `hooks/sweep-check.py` runs the backstops from
+   [What the sweep may write](#what-the-sweep-may-write) on every file that changed in
+   the project folder after part 1.
+
+When the check script exits 0, the transcript records a finished manual sweep. The
+automatic sweep at session end or before a compaction then judges only the messages
+after it, against the same three floors. A session that ends right after a manual sweep
+is below the floors, so the automatic sweep skips it and the hooks log shows
+`sweep skipped: below threshold (...)`. If you continue to work after a manual sweep, the
+automatic sweep records only that later work.
+
+If the manual sweep is interrupted, or the check script fails, the transcript records no
+finished sweep. The automatic sweep then judges the whole session as usual.
+
+A manual sweep and a later automatic sweep of the same session write the same log page.
+The automatic sweep receives the page that the manual sweep wrote and carries its dated
+blocks forward.
+
+The manual sweep reads the project's learnings and backlog into your session, up to
+50,000 characters. If your session is close to its context limit, run the sweep before
+you run `/compact`.
+
 ## Settings
 
 Settings live in `sessionmemory.toml`. Two files are read, and the later one wins per
@@ -398,10 +432,11 @@ redundant is a judgment, so curation is yours to start.
 | `/sessionmemory:review`  | Curates the learnings: sharpens weak titles, retires stale or redundant pages |
 | `/sessionmemory:backlog` | Triages `backlog.md`, then ranks what is left by impact and effort           |
 | `/sessionmemory:handoff` | Writes a consume-once handoff of the current task, for the next session      |
+| `/sessionmemory:sweep`   | Records this session into the vault now, in this session                      |
 | `/sessionmemory:cli`    | The command surface, loaded when a session needs to read or write the vault  |
 
-`cli` is the one skill a session can reach on its own. The other three run only
-when you ask for them.
+`cli` is the one skill a session can reach on its own. The other four run only
+when you ask for them. [Sweeping by hand](#sweeping-by-hand) describes `sweep`.
 
 `review` handles the learnings field and `backlog` handles `backlog.md`; neither
 touches the other's files, except that `review` adds a backlog line for a page that

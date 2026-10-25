@@ -1,18 +1,16 @@
 """The end-of-session memory sweep: gate, detach, run, validate, commit.
 
 The gate runs inline in the SessionEnd/PreCompact hook: it resolves the transcript,
-windows it since the last compaction, drops system/hook noise, and yields a SweepJob
+windows it since the last compaction or finished manual sweep, drops system/hook noise, and yields a SweepJob
 only when the session clears every floor in `_shortfall`. The heavy `claude -p` pass
 runs in a double-forked daemon that outlives session teardown. The daemon takes a
 per-project `flock` before it runs, so a second sweep for the same project queues
 behind the first rather than being dropped, and gives up after `queue_wait`.
 
-The agent may write anywhere inside this project's vault folder and nowhere else. A
-tool-reported write outside it is reverted or quarantined. The agent keeps Bash for
-the whole run, and a write made through it never appears in the tool-use stream, so
-the project folder is hashed before and after the run and every file whose hash
-changed is scrubbed for secrets as well. A Bash write outside the project folder is
-caught by nothing here. Every boundary fails open so a sweep never wedges the session.
+The agent may write anywhere inside this project's vault folder and nowhere else.
+The folder is hashed before and after the run, and `guard.WriteGuard` checks what
+changed. A Bash write outside the project folder is caught by nothing here. Every
+boundary fails open so a sweep never wedges the session.
 """
 
 from __future__ import annotations
@@ -23,20 +21,17 @@ import json
 import os
 import re
 import shlex
-import shutil
 import subprocess
 import time
-import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any
 
-from sessionhooks import log, shape, snapshot, transcript
+from sessionhooks import log, snapshot, transcript
 from sessionhooks.config import SessionMemoryConfig
-from sessionhooks.paths import is_within_root
+from sessionhooks.guard import Target, WriteGuard
 from sessionhooks.runner import LOG_TITLE_ENV, ClaudeRunner
-from sessionhooks.safety import scrub
 from sessionhooks.store import LOCK_NAME, Store, git_safe_env, state_root
 from sessionhooks.vaultcli import ROOT_ENV, WORKER_CLI_TIMEOUT, VaultCLI
 
@@ -80,35 +75,6 @@ class SweepJob:
     transcript_path: str = ""
     session_url: str = ""
     started: str = ""
-
-
-@dataclass(frozen=True, slots=True)
-class Target:
-    """Where in the vault one project's sweep may write."""
-
-    project_dir: Path
-    learnings_dir: Path
-    backlog_path: Path
-    logs_dir: Path
-
-    REQUIRED: ClassVar[tuple[str, ...]] = ("project_dir", "learnings", "backlog", "logs")
-
-    @classmethod
-    def from_paths(cls, payload: dict[str, str]) -> Target | None:
-        """Build a target from a flattened `sessionmemory project` payload, or None when incomplete."""
-        if not all(payload.get(k) for k in cls.REQUIRED):
-            return None
-        return cls(
-            project_dir=Path(payload["project_dir"]),
-            learnings_dir=Path(payload["learnings"]),
-            backlog_path=Path(payload["backlog"]),
-            logs_dir=Path(payload["logs"]),
-        )
-
-    @property
-    def roots(self) -> tuple[Path, ...]:
-        """The one directory a sweep may write into."""
-        return (self.project_dir,)
 
 
 class Lock:
@@ -252,9 +218,18 @@ def _log_moment(started: str) -> str:
     return moment.astimezone().strftime("%Y-%m-%d %H:%M")
 
 
-def _render_template(path: Path, **variables: str) -> str:
-    """Read a template file and substitute {{name}} placeholders."""
+def _render_template(path: Path, *, manual: bool = False, **variables: str) -> str:
+    """Read a template file, keep the passages for one kind of run, and fill its placeholders.
+
+    A `<!-- headless -->` block is for the detached worker and a `<!-- manual -->`
+    block for a sweep run in the user's own session. The other kind's blocks are
+    dropped and the kept blocks' marker lines removed, so the worker's prompt reads
+    exactly as it would with no markers at all.
+    """
+    keep, drop = ("manual", "headless") if manual else ("headless", "manual")
     content = path.read_text(encoding="utf-8")
+    content = re.sub(rf"<!-- {drop} -->\n.*?<!-- /{drop} -->\n", "", content, flags=re.DOTALL)
+    content = re.sub(rf"<!-- /?{keep} -->\n", "", content)
     for key, value in variables.items():
         content = content.replace("{{" + key + "}}", value)
     return content
@@ -396,7 +371,7 @@ class Sweep:
         self,
         store: Store,
         config: SessionMemoryConfig,
-        runner: Runner,
+        runner: Runner | None = None,
         vault: VaultCLI | None = None,
         *,
         env: Mapping[str, str] | None = None,
@@ -407,9 +382,6 @@ class Sweep:
         self.config = config
         self.runner = runner
         self.vault = vault
-        # CLAUDE.local.md as it stood before the model ran, so a restore returns the
-        # person's uncommitted edits rather than whatever HEAD holds.
-        self._local_md_before: dict[Path, bytes] = {}
         # Choosing a CLI runs a version handshake, which the worker pays after it
         # detaches rather than the hook paying it inside Claude Code's budget.
         self.vault_root = vault_root
@@ -463,7 +435,7 @@ class Sweep:
                 _log.info("sweep skipped: no transcript")
                 return None
             entries = transcript.read_entries(transcript_path)
-            window = transcript.window_since_compact(entries)
+            window = transcript.window_since_boundary(entries)
             shortfall = self._shortfall(window)
             if shortfall is not None:
                 _log.info("sweep skipped: %s", shortfall)
@@ -512,7 +484,7 @@ class Sweep:
         _log.warning("sweep skipped: lock still held after %.0fs", polls * QUEUE_POLL)
         return False
 
-    def _prepare(self, job: SweepJob) -> tuple[Target, str] | str:
+    def _prepare(self, job: SweepJob, *, title: str = "") -> tuple[Target, str] | str:
         """Resolve where to write and compose this session's log command, or the skip reason.
 
         The command is built here rather than run here: a session the model
@@ -532,17 +504,49 @@ class Sweep:
         if target is None:
             missing = next(k for k in Target.REQUIRED if not lookup.paths.get(k))
             return f"project payload lacked {missing}"
-        return target, self._log_command(job)
+        return target, self._log_command(job, title=title)
 
-    def _log_command(self, job: SweepJob) -> str:
+    def compose(self, job: SweepJob, *, manual: bool = False) -> tuple[Target, str] | str:
+        """Resolve where this sweep writes and render its prompt, or say why it cannot run.
+
+        `manual` renders for a sweep run in the user's own session: the template's
+        manual passages, no transcript, since that agent saw the conversation, and the
+        log's title on the command line, since no environment carries it there.
+        """
+        prepared = self._prepare(job, title=_log_moment(job.started) if manual else "")
+        if isinstance(prepared, str):
+            return prepared
+        target, log_command = prepared
+        # A project registered on another machine has no folder until its first
+        # page is written, and the model runs inside the folder.
+        target.project_dir.mkdir(parents=True, exist_ok=True)
+        prompt = _render_template(
+            PROMPT_PATH,
+            manual=manual,
+            transcript="" if manual else _transcript_text(job.window),
+            existing_memory=self._existing_memory(target),
+            git_context=_git_context(job.cwd),
+            capture_criteria=CRITERIA_PATH.read_text(encoding="utf-8"),
+            vault_cli=self.vault.command if self.vault else "",
+            repo=job.cwd,
+            project_dir=str(target.project_dir),
+            log_command=log_command,
+            nothing_sentinel=NOTHING_TO_RECORD,
+            changes=self._changes(job),
+            existing_log=self._existing_log(target, job.session_id),
+        )
+        return target, prompt
+
+    def _log_command(self, job: SweepJob, *, title: str = "") -> str:
         """Build the `sessionmemory log` command line, complete except for the body.
 
         The body is the one thing the model composes rather than runs, because the
         summary does not exist until it writes one, and it arrives on stdin through
         `--body-file -` so its quoting cannot be mangled. Everything that decides
-        placement, filename, and frontmatter stays resolved here. The title is not on
-        the line: the hook resolves it and hands it over in the environment, because a
-        model asked to type it rewrites it.
+        placement, filename, and frontmatter stays resolved here. The worker leaves the
+        title off the line and hands it over in the environment, because a model asked
+        to type it rewrites it; a manual sweep has no such channel, so `title` puts it
+        on the line.
         """
         args = [
             self.vault.command if self.vault else "",
@@ -556,6 +560,8 @@ class Sweep:
             args += ["--transcript", job.transcript_path]
         if job.session_url:
             args += ["--url", job.session_url]
+        if title:
+            args += ["--title", title]
         return shlex.join(args)
 
     def _changes(self, job: SweepJob) -> str:
@@ -620,6 +626,9 @@ class Sweep:
         (it runs in a detached worker with no one to catch it). Returns the
         remediation notes.
         """
+        if self.runner is None:
+            _log.info("sweep skipped: no runner")
+            return []
         lock = Lock(self.store.lock_path)
         log.bind(step="sweep", session=job.session_id)
         if not self._await_lock(lock):
@@ -629,29 +638,17 @@ class Sweep:
                 self.vault = VaultCLI.for_root(
                     self.vault_root, env=self.env, version_timeout=WORKER_CLI_TIMEOUT
                 )
-            prepared = self._prepare(job)
-            if isinstance(prepared, str):
-                _log.info("sweep skipped: %s", prepared)
+            composed = self.compose(job)
+            if isinstance(composed, str):
+                _log.info("sweep skipped: %s", composed)
                 return []
-            target, log_command = prepared
-            # A project registered on another machine has no folder until its first
-            # page is written, and the model runs inside the folder.
-            target.project_dir.mkdir(parents=True, exist_ok=True)
+            target, prompt = composed
             started_at = time.time()
-            prompt = _render_template(
-                PROMPT_PATH,
-                transcript=_transcript_text(job.window),
-                existing_memory=self._existing_memory(target),
-                git_context=_git_context(job.cwd),
-                capture_criteria=CRITERIA_PATH.read_text(encoding="utf-8"),
-                vault_cli=self.vault.command if self.vault else "",
-                repo=job.cwd,
-                log_command=log_command,
-                nothing_sentinel=NOTHING_TO_RECORD,
-                changes=self._changes(job),
-                existing_log=self._existing_log(target, job.session_id),
+            guard = WriteGuard(
+                state_dir=self.store.state_dir,
+                vault_root=self.vault.root if self.vault else None,
             )
-            self._capture_local_md(target)
+            guard.capture_local_md(target)
             before = snapshot.take(target.project_dir)
             result = self.runner.run(
                 prompt,
@@ -660,8 +657,8 @@ class Sweep:
             )
             changes = snapshot.diff(before, snapshot.take(target.project_dir))
             _log.debug("claude ran %.1fs", time.time() - started_at)
-            notes = self._validate_writes(result.changed_files, target, changes)
-            notes.extend(self._enforce_shapes(changes, target))
+            notes = guard.validate_writes(result.changed_files, target, changes)
+            notes.extend(guard.enforce_shapes(changes, target))
             # The sentinel also appears in the transcript the agent summarizes, so
             # an actual write outranks it: a run that wrote something did record.
             if NOTHING_TO_RECORD in result.text and not changes.touched() and not changes.deleted:
@@ -710,269 +707,6 @@ class Sweep:
             outcome,
             suffix,
         )
-
-    def _quarantine(self, path: Path) -> None:
-        """Move `path` into this project's quarantine directory rather than deleting it.
-
-        Nothing outside the write roots is snapshotted before a run, so a write
-        git cannot restore from HEAD might still be a note an earlier, not-yet-
-        committed sweep created, or content that predates this run entirely.
-        Moving it aside keeps it recoverable instead of guessing it was safe to
-        erase. The random prefix keeps two quarantined files of the same name
-        from colliding.
-        """
-        shutil.move(str(path), str(self._quarantine_dest(path)))
-
-    def _quarantine_dest(self, path: Path) -> Path:
-        """A fresh name in this project's quarantine directory for a file named like `path`."""
-        quarantine_dir = self.store.state_dir / "quarantine"
-        quarantine_dir.mkdir(parents=True, exist_ok=True)
-        return quarantine_dir / f"{uuid.uuid4().hex}-{path.name}"
-
-    def _capture_local_md(self, target: Target) -> None:
-        """Remember the vault copy's bytes before the run; an unreadable copy is not kept."""
-        path = (target.project_dir / shape.LOCAL_MD).resolve()
-        self._local_md_before.clear()
-        try:
-            if path.is_file():
-                self._local_md_before[path] = path.read_bytes()
-        except OSError:
-            _log.exception("local md unreadable before the run")
-
-    @staticmethod
-    def _write_atomic(path: Path, data: bytes) -> None:
-        """Replace `path` with `data` through a temp file in its directory, so a crash leaves one whole copy."""
-        temp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-        try:
-            temp.write_bytes(data)
-            temp.replace(path)
-        except OSError:
-            temp.unlink(missing_ok=True)
-            raise
-
-    def _restore_local_md(self, path: Path, problem: str) -> str:
-        """Return the person's CLAUDE.local.md to its pre-run content, keeping what it displaces.
-
-        The edit may be the person's own, made while the sweep ran, so the content is
-        copied aside before the restore. The pre-run bytes win over HEAD, since the
-        person may not have committed their latest edit. Only a copy with no pre-run
-        bytes falls back to HEAD, and one HEAD does not hold yet stays in place, since
-        moving it would leave every checkout's link dangling.
-        """
-        saved = self._quarantine_dest(path)
-        shutil.copy2(path, saved)
-        before = self._local_md_before.get(path.resolve())
-        try:
-            if before is not None:
-                self._write_atomic(path, before)
-                restored = True
-            else:
-                restored = self._git_restore(path)
-        except (OSError, subprocess.SubprocessError) as exc:
-            return f"malformed-unremovable: {path} ({problem}; {exc}; copy saved to {saved})"
-        if restored:
-            return f"malformed-restored: {path} ({problem}; displaced copy saved to {saved})"
-        saved.unlink(missing_ok=True)
-        return f"local-md-kept: {path} ({problem}; not in HEAD, left in place)"
-
-    def _protect_local_md(self, changes: Changes, target: Target) -> list[str]:
-        """Undo the run's edit or deletion of the person's CLAUDE.local.md.
-
-        A deleted copy is restored too, since every checkout's link points at it.
-        """
-        notes = [
-            self._local_md_note(path, problem)
-            for path in changes.modified
-            if path.exists()
-            and (problem := shape.local_md_problem(path, target.project_dir)) is not None
-        ]
-        for path in changes.deleted:
-            problem = shape.local_md_problem(path, target.project_dir)
-            if problem is None:
-                continue
-            before = self._local_md_before.get(path.resolve())
-            try:
-                if before is not None:
-                    self._write_atomic(path, before)
-                    restored = True
-                else:
-                    restored = self._git_restore(path)
-            except (OSError, subprocess.SubprocessError) as exc:
-                notes.append(f"deleted-unrestorable: {path} ({problem}; {exc})")
-                continue
-            if restored:
-                notes.append(f"deleted-restored: {path} ({problem})")
-            else:
-                notes.append(f"deleted-unrestorable: {path} ({problem}; not in HEAD)")
-        return notes
-
-    def _revert(self, path: Path) -> str:
-        """Undo one escaped write and report how it was undone.
-
-        A path the vault repository tracks is restored from HEAD, because the
-        agent edited a note that already existed and deleting it would turn an
-        unauthorized edit into permanent data loss. When git cannot restore it,
-        there is no snapshot to check it against either, since it sits outside
-        every write root: rather than assume it is safe to erase, it is
-        quarantined. A path that never existed in the first place has nothing to
-        lose, so that case alone reports `escaped` with no file left behind.
-        """
-        if self._git_restore(path):
-            return "escaped-reverted"
-        if not path.exists():
-            return "escaped"
-        self._quarantine(path)
-        return "escaped-quarantined"
-
-    def _git_restore(self, path: Path) -> bool:
-        """Check `path` out of the vault's HEAD; True when git restored it."""
-        if self.vault is None:
-            return False
-        restore = subprocess.run(  # noqa: S603
-            ["git", "-C", str(self.vault.root), "checkout", "HEAD", "--", str(path)],  # noqa: S607
-            capture_output=True,
-            text=True,
-            timeout=_GIT_TIMEOUT,
-            check=False,
-            env=git_safe_env(os.environ),
-        )
-        return restore.returncode == 0
-
-    def _restore_or_quarantine(self, path: Path) -> str:
-        """Return `path` to its committed content, or move it aside when git has none."""
-        if self._git_restore(path):
-            return "restored"
-        self._quarantine(path)
-        return "quarantined"
-
-    def _enforce_shapes(self, changes: Changes, target: Target) -> list[str]:
-        """Set aside each written page that lacks the shape its folder requires.
-
-        A new file that fails is quarantined. A modified learning that fails is
-        restored from HEAD, so a good page the model rewrote into another format is
-        not lost. CLAUDE.local.md belongs to the person: a modified one is restored
-        from HEAD with its displaced content saved aside, and a deleted one is
-        restored too. No other edit is checked, since a log or backlog edit keeps its
-        name and has no frontmatter to break. A learning that cannot be read is
-        quarantined whether new or modified: its content is unknown, so HEAD is no
-        safer a guess, and left in place it would fail `git add`. Debris a sync tool,
-        editor, or OS drops is left alone, as the CLI ignores it too.
-        """
-        notes: list[str] = []
-        learnings = target.learnings_dir.resolve()
-        logs = target.logs_dir.resolve()
-        judged = [(path, True) for path in changes.created]
-        judged += [(path, False) for path in changes.modified]
-        for path, is_new in judged:
-            if not path.exists() or shape.is_debris(path.name):
-                continue
-            parent = path.parent
-            if parent == learnings:
-                problem = shape.learning_problem(path)
-                if path in changes.unreadable or problem == shape.UNREADABLE:
-                    notes.append(self._quarantine_unreadable(path))
-                    continue
-            elif parent == logs and is_new:
-                problem = shape.log_problem(path)
-            elif is_new:
-                problem = shape.nested_problem(path, (learnings, logs)) or shape.stray_problem(
-                    path, target.project_dir
-                )
-            else:
-                continue
-            if problem is None:
-                continue
-            try:
-                if is_new:
-                    self._quarantine(path)
-                    outcome = "quarantined"
-                else:
-                    outcome = self._restore_or_quarantine(path)
-            except (OSError, subprocess.SubprocessError) as exc:
-                notes.append(f"malformed-unremovable: {path} ({problem}; {exc})")
-                continue
-            notes.append(f"malformed-{outcome}: {path} ({problem})")
-        notes.extend(self._protect_local_md(changes, target))
-        return notes
-
-    def _local_md_note(self, path: Path, problem: str) -> str:
-        """Restore a modified CLAUDE.local.md and phrase the outcome as a note; never raises."""
-        try:
-            return self._restore_local_md(path, problem)
-        except (OSError, subprocess.SubprocessError) as exc:
-            return f"malformed-unremovable: {path} ({problem}; {exc})"
-
-    def _quarantine_unreadable(self, path: Path) -> str:
-        """Move an unreadable page aside and phrase the outcome as a note; never raises."""
-        try:
-            self._quarantine(path)
-        except OSError as exc:
-            return f"unreadable-unremovable: {path} ({exc})"
-        return f"unreadable-quarantined: {path}"
-
-    def _revert_and_note(self, path: Path, raw: str) -> str:
-        """Revert one out-of-root write and phrase the outcome as a note; never raises."""
-        try:
-            outcome = self._revert(path)
-        except (OSError, subprocess.SubprocessError) as exc:
-            return f"escaped-unremovable: {raw} ({exc})"
-        return f"{outcome}: {raw}"
-
-    def _scrub_path(self, path: Path, raw: str) -> str | None:
-        """Redact any secret-shaped content at `path` in place; a note, or None when clean.
-
-        `raw` is what the note names, so a diff-derived path (already resolved
-        and absolute) and a tool-reported one (possibly relative, possibly
-        still carrying a symlink) both read the same in the hooks log.
-        """
-        try:
-            content = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            return None  # absent, unreadable, or binary: nothing to scan
-        scrubbed, changed = scrub(content)
-        if not changed:
-            return None
-        try:
-            path.write_text(scrubbed, encoding="utf-8")
-        except OSError as exc:
-            return f"secret-found-unredactable: {raw} ({exc})"
-        return f"secret-redacted: {raw}"
-
-    def _judge_write(
-        self, path: Path, raw: str, target: Target, *, seen: set[Path], notes: list[str]
-    ) -> None:
-        """Apply containment and the secret scrub to one path, once."""
-        resolved = path.resolve()
-        if resolved in seen:
-            return
-        seen.add(resolved)
-        if not any(is_within_root(path, root) for root in target.roots):
-            notes.append(self._revert_and_note(path, raw))
-            return
-        note = self._scrub_path(path, raw)
-        if note is not None:
-            notes.append(note)
-
-    def _validate_writes(
-        self, changed_files: list[str], target: Target, changes: Changes
-    ) -> list[str]:
-        """Enforce containment on tool-reported writes and scrub every file the run changed.
-
-        Bash never reports a path, so the second pass scrubs every file under the project
-        folder whose content hash changed during the run, and names each deletion. A
-        relative tool-reported path is anchored to the directory the agent ran in.
-        """
-        notes: list[str] = []
-        seen: set[Path] = set()
-        for raw in changed_files:
-            path = Path(raw)
-            if not path.is_absolute():
-                path = target.project_dir / path
-            self._judge_write(path, raw, target, seen=seen, notes=notes)
-        for path in changes.touched():
-            self._judge_write(path, str(path), target, seen=seen, notes=notes)
-        notes.extend(f"deleted: {path}" for path in changes.deleted)
-        return notes
 
     def _existing_memory(self, target: Target, *, max_chars: int = 50_000) -> str:
         """Concatenate this project's backlog and learnings so the agent can dedup and refine."""

@@ -68,7 +68,7 @@ def test_skill_agent_and_hook_command_counts() -> None:
     walks (`skills/`, say) would leave its parametrized tests with zero cases,
     which pytest reports as passing rather than as a loss of coverage.
     """
-    assert len(_skill_files()) == 4
+    assert len(_skill_files()) == 5
     assert len(_agent_files()) == 4
     assert len(_hooks_commands()) == 3
 

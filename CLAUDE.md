@@ -437,7 +437,7 @@ and models are far better at the second than the first.
 
 The guidance exists because the block under it is data. It says what this project knows
 and nothing about what to do with it, so a session receiving only titles learns the vault
-exists and not how to read or write it. It cannot be left to a skill: three of the four
+exists and not how to read or write it. It cannot be left to a skill: four of the five
 ship `disable-model-invocation: true` and are the user's slash commands, and the one that
 is model-invocable only reaches an agent that happens to match its description, which
 fails silently. `--command` is how the guidance spells this CLI, defaulting to
@@ -513,15 +513,16 @@ new one: without it, the model has no way to keep what was already recorded.
 
 The sweep may write anywhere inside its own project's folder, which is what a later pass
 strengthening a memory means. Two backstops run after the model finishes, and neither is
-complete. `Sweep._validate_writes` walks the tool-use stream's reported paths, which
-`ClaudeRunner.run` reads from a timed-out run's partial output too, and reverts anything
+complete. Both live on `WriteGuard` in `hooks/sessionhooks/guard.py`, which the worker
+builds once its vault resolves. `WriteGuard.validate_writes` walks the tool-use stream's
+reported paths, which `ClaudeRunner.run` reads from a timed-out run's partial output too, and reverts anything
 outside the project folder, restoring it from the vault's `HEAD` or quarantining it when
 git cannot. It then scrubs for secrets by content hash: `snapshot.take` hashes the project
 folder before and after the run, skipping symlinks, and every file whose hash changed is
 scrubbed, which is what catches a write made through Bash, since a Bash write never
 appears in the tool-use stream. A file that cannot be read is recorded as
 `snapshot.UNREADABLE` rather than left out, so it reads as modified and never as created
-or deleted. A deletion is noted, not undone. `Sweep._enforce_shapes` then checks what
+or deleted. A deletion is noted, not undone. `WriteGuard.enforce_shapes` then checks what
 `hooks/sessionhooks/shape.py` knows of a page's shape: a new learning, log, or top-level
 file that fails is quarantined, as is a new file nested below `learnings/` or `logs/`, and
 a modified learning that fails is restored from `HEAD` (`_restore_or_quarantine`). A
@@ -533,9 +534,9 @@ mirroring `field.is_debris`, is left alone. A Bash write **outside** the project
 sibling project's folder foremost, is caught by nothing here and is committed by the next
 hook. Git history is the recovery. The prompt forbids deleting a page, and a page the
 model deletes through Bash is committed as a deletion. The prompt never mentions
-`CLAUDE.local.md`, which belongs to the person, so `Sweep._protect_local_md` undoes any
-change to `<project>/CLAUDE.local.md` (`shape.local_md_problem`). `Sweep._capture_local_md`
-reads that one file's bytes before the run, and a modified or deleted copy is rewritten
+`CLAUDE.local.md`, which belongs to the person, so `WriteGuard._protect_local_md` undoes
+any change to `<project>/CLAUDE.local.md` (`shape.local_md_problem`).
+`WriteGuard.capture_local_md` reads that one file's bytes before the run, and a modified or deleted copy is rewritten
 from them (temp file in the same directory, then rename) rather than from `HEAD`, since
 the person may not have committed their latest edit. A modified one is copied into
 quarantine first, since the edit may be the person's own made while the sweep ran, and
@@ -543,6 +544,24 @@ the note names the copy. Only a copy with no pre-run bytes falls back to `HEAD`,
 `HEAD` does not hold yet is left in place rather than quarantined, since every checkout
 links to it. One the sweep creates is already a stray top-level
 file and is quarantined.
+
+`/sessionmemory:sweep` runs the same sweep in the user's own session, in two halves that
+`hooks/sessionhooks/manual.py` holds. `hooks/sweep-prompt.py` renders the prompt through
+`Sweep.compose(job, manual=True)` and saves a snapshot of the project folder and the
+`CLAUDE.local.md` bytes to `manual-sweep.json` in the project's state directory. The agent
+writes, and `hooks/sweep-check.py` runs `WriteGuard` on the diff. `sweep.md` stays the one
+statement of the sweep's rules: a `<!-- headless -->` or `<!-- manual -->` block is kept
+for one kind of run and dropped for the other, so the worker's prompt is byte for byte
+what it would be with no markers. The manual log command carries `--title`, since no
+environment hands the title to the main agent. The two scripts do not fail open, because
+the check script's zero exit is the boundary: `transcript.window_since_boundary` starts
+the automatic sweep's window after a successful Bash call to `sweep-check.py` inside a
+turn the user opened with `/sessionmemory:sweep`. A check outside that turn, a failed
+one, or a model-printed marker is no boundary, so an interrupted manual sweep leaves the
+automatic one its whole window. The session id comes from `CLAUDE_CODE_SESSION_ID`,
+which Claude Code sets in every Bash call, and the transcript is found by that id rather
+than through the store's pointer, which a concurrent session in the same project
+overwrites.
 
 `hooks.json` budgets each hook's own worst case. `SessionStart` runs `Store.for_cwd` (one
 git call, `_GIT_TIMEOUT` 5s), `head_commit` (5s), two `VaultCLI.discover` handshakes

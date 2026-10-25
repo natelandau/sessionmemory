@@ -58,7 +58,7 @@ def _compact(boundary_type: str = "type") -> dict:
 
 
 # ---------------------------------------------------------------------------
-# window_since_compact
+# window_since_boundary
 # ---------------------------------------------------------------------------
 
 
@@ -69,7 +69,7 @@ def test_window_drops_up_to_and_including_boundary() -> None:
     after = [_user("post"), _assistant("post reply")]
     entries = [*before, _compact("type"), *after]
     # When windowing since the last compact boundary
-    result = transcript.window_since_compact(entries)
+    result = transcript.window_since_boundary(entries)
     # Then only post-boundary entries are returned
     assert result == after
 
@@ -85,7 +85,7 @@ def test_window_uses_last_boundary() -> None:
         _user("newest"),
     ]
     # When windowing
-    result = transcript.window_since_compact(entries)
+    result = transcript.window_since_boundary(entries)
     # Then only the entries after the second boundary are returned
     assert len(result) == 1
     assert result[0]["message"]["content"] == "newest"
@@ -96,7 +96,7 @@ def test_window_no_boundary_returns_all() -> None:
     # Given entries with no compact boundary
     entries = [_user("hello"), _assistant("hi"), _user("bye")]
     # When windowing
-    result = transcript.window_since_compact(entries)
+    result = transcript.window_since_boundary(entries)
     # Then all entries are returned unchanged
     assert result == entries
 
@@ -107,10 +107,146 @@ def test_window_recognizes_all_boundary_shapes(btype: str) -> None:
     # Given a boundary of each shape with trailing content
     entries = [_user("before"), _compact(btype), _user("after")]
     # When windowing
-    result = transcript.window_since_compact(entries)
+    result = transcript.window_since_boundary(entries)
     # Then only the post-boundary entry is returned
     assert len(result) == 1
     assert result[0]["message"]["content"] == "after"
+
+
+def _invoke(command: str) -> dict:
+    """Build the user entry Claude Code records when a slash command is typed."""
+    return _user(
+        f"<command-message>{command[1:]}</command-message>\n<command-name>{command}</command-name>"
+    )
+
+
+def _skill_prompt() -> dict:
+    """Build the meta user entry carrying a skill's expanded prompt."""
+    return {
+        "type": "user",
+        "isMeta": True,
+        "message": {
+            "role": "user",
+            "content": [{"type": "text", "text": "Base directory for this skill: /x"}],
+        },
+    }
+
+
+def _bash(command: str, tool_id: str) -> dict:
+    """Build an assistant entry that runs one Bash command."""
+    return {
+        "type": "assistant",
+        "message": {
+            "role": "assistant",
+            "content": [
+                {"type": "tool_use", "id": tool_id, "name": "Bash", "input": {"command": command}}
+            ],
+        },
+    }
+
+
+def _result(tool_id: str, *, error: bool = False) -> dict:
+    """Build the user entry carrying one tool's result."""
+    return {
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": tool_id, "content": "ok", "is_error": error}
+            ],
+        },
+    }
+
+
+_CHECK = "/plugin/hooks/sweep-check.py"
+
+
+def _manual_sweep(*, error: bool = False, command: str = "/sessionmemory:sweep") -> list[dict]:
+    """Build a whole manual sweep turn ending in the check script."""
+    return [
+        _invoke(command),
+        _skill_prompt(),
+        _bash("/plugin/hooks/sweep-prompt.py", "tu_prompt"),
+        _result("tu_prompt"),
+        _bash(_CHECK, "tu_check"),
+        _result("tu_check", error=error),
+        _assistant("Recorded two learnings."),
+    ]
+
+
+def test_window_since_boundary_starts_after_a_completed_manual_sweep() -> None:
+    """Verify a manual sweep whose check script succeeded ends the window before it."""
+    # Given work, a completed manual sweep, then more work
+    tail = [_user("one more thing"), _assistant("done")]
+    entries = [_user("earlier work"), _assistant("ok"), *_manual_sweep(), *tail]
+
+    # When windowing
+    result = transcript.window_since_boundary(entries)
+
+    # Then only the sweep's closing reply and the later work remain
+    assert result == [_assistant("Recorded two learnings."), *tail]
+
+
+def test_window_since_boundary_ignores_a_failed_check() -> None:
+    """Verify a manual sweep whose check script failed is not a boundary."""
+    # Given a manual sweep whose check exited non-zero
+    entries = [_user("earlier work"), *_manual_sweep(error=True)]
+
+    # When windowing / Then nothing is dropped
+    assert transcript.window_since_boundary(entries) == entries
+
+
+def test_window_since_boundary_ignores_an_interrupted_sweep() -> None:
+    """Verify a manual sweep that never ran its check script is not a boundary."""
+    # Given a sweep turn cut off before the check ran
+    entries = [_user("earlier work"), *_manual_sweep()[:4], _user("[Request interrupted by user]")]
+
+    # When windowing / Then nothing is dropped
+    assert transcript.window_since_boundary(entries) == entries
+
+
+def test_window_since_boundary_ignores_a_check_outside_a_sweep_turn() -> None:
+    """Verify the check script run without the sweep command is not a boundary."""
+    # Given the check script run in an ordinary turn
+    entries = [_user("run the sweep check"), _bash(_CHECK, "tu_check"), _result("tu_check")]
+
+    # When windowing / Then nothing is dropped
+    assert transcript.window_since_boundary(entries) == entries
+
+
+def test_window_since_boundary_ignores_another_skill() -> None:
+    """Verify a different skill's turn is not a boundary, even one running the check."""
+    # Given another skill's turn that runs the same script
+    entries = [_user("earlier work"), *_manual_sweep(command="/sessionmemory:review")]
+
+    # When windowing / Then nothing is dropped
+    assert transcript.window_since_boundary(entries) == entries
+
+
+def test_window_since_boundary_ends_the_sweep_turn_at_the_next_prompt() -> None:
+    """Verify a check run in the turn after the sweep's is not a boundary."""
+    # Given a sweep turn with no check, then a new prompt whose turn runs one
+    entries = [
+        *_manual_sweep()[:4],
+        _user("now something else"),
+        _bash(_CHECK, "tu_check"),
+        _result("tu_check"),
+    ]
+
+    # When windowing / Then nothing is dropped
+    assert transcript.window_since_boundary(entries) == entries
+
+
+def test_window_since_boundary_uses_the_later_of_sweep_and_compact() -> None:
+    """Verify a compaction after a manual sweep is the boundary that counts."""
+    # Given a manual sweep, more work, then a compaction
+    entries = [*_manual_sweep(), _user("more"), _compact("type"), _user("after")]
+
+    # When windowing
+    result = transcript.window_since_boundary(entries)
+
+    # Then only the entry after the compaction remains
+    assert result == [_user("after")]
 
 
 # ---------------------------------------------------------------------------
@@ -499,3 +635,30 @@ def test_session_start_skips_a_timestamp_of_the_wrong_shape(stamp: object) -> No
 def test_session_start_is_empty_without_a_timestamp() -> None:
     """Verify a transcript with no timestamped entry yields nothing rather than a guess."""
     assert transcript.session_start([{"type": "mode", "mode": "normal"}]) == ""
+
+
+# ---------------------------------------------------------------------------
+# find_transcript
+# ---------------------------------------------------------------------------
+
+
+def test_find_transcript_searches_every_project_folder(tmp_path: Path) -> None:
+    """Verify a session's transcript is found whichever project folder holds it."""
+    # Given a transcript filed under one project folder of the config dir
+    path = tmp_path / "projects" / "-Users-me-repo" / "sess-9.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_text("{}\n", encoding="utf-8")
+
+    # When finding it by session id
+    found = transcript.find_transcript("sess-9", env={"CLAUDE_CONFIG_DIR": str(tmp_path)})
+
+    # Then its path is returned
+    assert found == str(path)
+
+
+@pytest.mark.parametrize("session_id", ["", "missing", "../escape"])
+def test_find_transcript_returns_empty_when_absent(tmp_path: Path, session_id: str) -> None:
+    """Verify an empty, unknown, or path-shaped session id finds nothing."""
+    (tmp_path / "projects").mkdir()
+
+    assert transcript.find_transcript(session_id, env={"CLAUDE_CONFIG_DIR": str(tmp_path)}) == ""
