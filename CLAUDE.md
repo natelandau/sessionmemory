@@ -6,764 +6,181 @@ This project keeps a coding agent's durable memory as markdown. Each registered 
 owns one folder in a vault, and inside it `learnings/` and `logs/` are fields: flat
 directories of pages, each with its own deletable vector index. The CLI creates pages and
 searches them by meaning, and does nothing an agent already does well with Read, Grep,
-and Write.
+and Write. The repository is also a Claude Code plugin (`hooks/`, `skills/`).
+
+User-facing behavior is documented in `README.md` and `docs/` (`concepts.md`, `cli.md`,
+`plugin.md`, `vault-health.md`). Read those for what a command or hook does; this file
+covers what to know before changing the code. Most modules carry a docstring explaining
+their own design, so read the module before reasoning about it.
 
 ## Running
 
-Every command reads `SESSIONMEMORY_VAULT` to locate the vault, falls back to
-`vault.root` in `~/.claude/sessionmemory.toml` when the variable is unset, and exits
-non-zero when neither names a vault or the named directory is missing or uninitialized.
-The fallback lives in `lib/config.vault_root` and reads that one key and nothing else;
-every other setting in the file belongs to the hooks. `init` reads the root directly
-rather than through the check every other command goes through, since `init` is what
-makes that check pass. Point the variable at a throwaway directory when running by hand,
-since it wins over the file.
+Every command finds the vault through `SESSIONMEMORY_VAULT`, falling back to `vault.root`
+in `~/.claude/sessionmemory.toml` (`lib/config.vault_root`). The variable wins, so point it
+at a throwaway directory when running by hand:
 
 ```bash
 export SESSIONMEMORY_VAULT=/tmp/scratch-vault && mkdir -p "$SESSIONMEMORY_VAULT"
 uv run sessionmemory init
-uv run sessionmemory [COMMAND]
 uv run sessionmemory --help
 ```
 
-`sessionmemory init` is a human bootstrap command, not something an agent runs: it takes a
-directory, runs once per vault, and happens before `SESSIONMEMORY_VAULT` points anywhere
-useful. A directory a human has been dropping notes into by hand holds files but no
-`_system/vault.toml` marker; every other command refuses it rather than naming `--force`
-as a next action, since scaffolding a vault into whatever directory an agent happens to be
-pointed at is not something an error message should invite. Bringing such a directory
-under `sessionmemory init` is a one-time step a human runs by hand:
-`sessionmemory init --force <path>`. Nothing existing is overwritten.
+`init` is a human bootstrap command. An agent never runs it, and no error message may
+suggest `init --force` as a next action.
 
 ## Development
 
 ```bash
 uv sync                  # Install dependencies
-uv run duty lint         # Run all linters (ruff, ty, typos, yamllint, shellcheck, prek)
-uv run duty test         # Run tests with coverage
-uv run ruff check src/   # Check code quality
-uv run ruff format src/  # Format code
+uv run duty lint         # All linters (ruff, ty, typos, yamllint, shellcheck, prek)
+uv run duty test         # Tests with coverage
 ```
 
-Every check duty runs its command through `gated()`, which wraps it in `gate-cache`: a
-check that already passed on the same git tree prints `already passed ... skipping` and
-exits 0, and that skip is a pass, not a check that failed to run. The pre-commit hooks
-call the duties rather than the tools, so hooks, agents, and the terminal share one set
-of markers. A new check gets a duty that calls `gated()`, a local hook running
-`uv run duty <name>`, and its hook id in `PREK_DUTY_HOOKS` so the `prek` duty does not
-run it twice. A marker covers only the tree, so an input git does not track goes in the
-gate name, as the test duty does with the Python version. `GATE_CACHE_DISABLE=1` forces
-a real run; gate-cache is off whenever `CI` is set.
+Every check duty runs through `gated()`, which wraps it in `gate-cache`. A check that
+already passed on the same git tree prints `already passed ... skipping` and exits 0;
+that is a pass. `GATE_CACHE_DISABLE=1` forces a real run. A new check needs a duty that
+calls `gated()`, a local prek hook running `uv run duty <name>`, and its hook id in
+`PREK_DUTY_HOOKS`. An input git does not track goes in the gate name, as the test duty
+does with the Python version.
 
-### CLI Wiring
+## Code Layout
 
-The root `typer.Typer()` lives in `cli.py`, and its `@app.callback()` holds the global
-`-v` flags. Entry point: `sessionmemory.cli:main` (configured in `pyproject.toml`).
-Command modules live in `src/sessionmemory/commands/` and know nothing about file
-formats; library modules in `src/sessionmemory/lib/` hold the logic and know nothing
-about Typer.
+- `src/sessionmemory/commands/`: Typer commands. They parse options, call the library,
+  and report through `pp`. They know nothing about file formats.
+- `src/sessionmemory/lib/`: the logic, with no Typer imports.
+- `hooks/`: standalone `uv run --script` programs. They import nothing from `src/` and
+  reach the CLI only by executing it.
+- `tests/unit/` (library), `tests/integration/` (CLI through `sessionmemory.cli.app`),
+  `tests/plugin/` (hooks, run as subprocesses).
 
-Two shapes are in use, and which one a command takes depends on whether it has
-sub-commands of its own:
+### Adding a command
 
-- **A flat command is a plain function.** `project.py` exports `project_command` as an
-  ordinary function, and `cli.py` registers it:
+1. Library function in `lib/`.
+2. Command function in `commands/`. A command that touches an index builds its embedder
+   with `_common.build_embedder()` so the test stub stays selectable.
+3. Register in `cli.py` with `app.command("<name>", help="...")(module.function)`. Use a
+   group (`app.add_typer`, own `typer.Typer(cls=VersionedGroup, help=...)`, as `new.py`
+   does) only when the command has sub-commands.
+4. Unit and integration tests.
 
-    ```python
-    app.command("project", help="...")(project.project_command)
-    ```
+A command's docstring renders as its `--help`, including any `Args:` or `Raises:`
+section. When ruff requires such a section, pass an explicit `help=` at registration.
 
-    Use this shape by default. A module may export several such functions.
+### Console output
 
-- **A command group exports its own `typer.Typer()`.** `new.py` creates its group:
+- All output goes through `nclutils.pp` (load the `nclutils` skill). Never `print()` or
+  instantiate `rich.Console()`.
+- Anything a caller parses goes through `_common.emit_json` or `_common.emit_value`,
+  never `pp.console().print*`. Rich styles output even off a terminal (`FORCE_COLOR`),
+  and one escape sequence breaks a payload or a `cd "$(...)"`. This covers every `--json`
+  payload, `search`, `inject`, the path every `new` command and `log` print, `path`,
+  and the `local` subcommands.
+- `tests/integration/test_cli_machine_output.py` checks this in a subprocess with color
+  forced. `CliRunner` cannot, since the console picks its color system at import.
 
-    ```python
-    app = typer.Typer(
-        cls=VersionedGroup,
-        no_args_is_help=True,
-        help="Create a learning, spec, plan, runbook, reference doc, or backlog item.",
-    )
-    ```
+## Invariants
 
-    and decorates each sub-command with `@app.command("learning")`. `VersionedGroup` is
-    the group class that names the installed version when a command is unknown. `cli.py`
-    mounts the group:
+### Pages and fields
 
-    ```python
-    app.add_typer(new_commands.app, name="new")
-    ```
+The format is Cal Paterson's memoryfield spec
+(<https://github.com/calpaterson/memoryfield-spec/blob/main/SPEC.md>). His reference
+tool (<https://github.com/calpaterson/memoryfield-tool>) can validate our fields, but
+never let it write an index ours reads: its Ollama vectors need not match fastembed's.
 
-    Use this shape only when the command genuinely takes a sub-command, as
-    `sessionmemory new learning` does. The group carries `help=` on the `Typer()` call rather
-    than a `@app.callback()`, since it has no options or behavior of its own.
-
-### Command Docstrings Render as `--help`
-
-Typer uses a command function's docstring as its `--help` text, and a `@app.callback()`
-docstring as the app's own help. A Google-style `Args:`, `Returns:`, or `Raises:` section
-in either one is printed to the user verbatim.
-
-Ruff requires those sections wherever the signature calls for them, so the two rules
-collide on any command that raises. Resolve it by registering the command with an
-explicit `help=` string, which overrides the docstring for help output and leaves the
-docstring free to document `Raises:` for a reader of the code. A command whose docstring
-is a single line, such as `new_learning`, needs no `help=`.
-
-### Console Output
-
-- Output is handled by the external `nclutils` package via its `pp` printer. Never call
-  `print()` or instantiate `rich.Console()` directly
-- Import the printer: `from nclutils import pp`
-    - `pp.step("message")`: context manager, spinner while running, `✓`/`✗` on completion
-        - Use `s.sub("text")` inside `with pp.step(...) as s:` to queue sub-items
-    - `pp.success(msg, details=[...])`: terminal success line with optional sub-items
-    - `pp.info(msg)`: informational line
-    - `pp.debug(msg)`: shown with `-v`
-    - `pp.trace(msg)`: shown with `-vv`
-    - `pp.dryrun(msg)`: always shown, prefixed `[dry-run]`
-    - `pp.warning(msg, details=[...])` / `pp.error(msg, details=[...])`: stderr, pass a
-      list for follow-up lines
-- For tables/panels/direct Rich usage: `pp.console().print(...)`
-- Verbosity set via `-v`/`-vv` flags on root command, wired through
-  `pp.configure(verbosity=...)`
-
-#### Machine-readable output is never styled
-
-Anything a caller parses goes through a helper in `commands/_common.py`, never through
-`pp.console().print_json()` or a bare `pp.console().print()`:
-
-- `emit_json(payload)` for a `--json` payload
-- `emit_value(text)` for a single value or block a caller consumes
-
-Rich colors JSON and highlights values by default, and it honors `FORCE_COLOR`, which
-real shells export, so styling does not depend on stdout being a terminal. One escape
-sequence turns a payload into a parse error and a path into something `cd "$(...)"`
-cannot use. The helpers pass `markup=False`, `emoji=False`, `highlight=False`, and
-`soft_wrap=True`. `emoji=False` is separate from `markup=False` because Rich replaces a
-`:word:` segment with the named emoji independently of markup, so a vault path containing
-one would print as a path that does not exist. `soft_wrap=True` keeps a long path from
-being wrapped mid-value.
-
-Prose for a person keeps its styling: `pp.success`, `pp.warning`, and `pp.error`.
-
-Every `--json` payload goes through `emit_json`, and every prose output a caller parses
-goes through `emit_value`. Seven are worth naming. `search` prints a path, a title, and a
-summary per hit, all of which a caller copies or parses, and bracketed prose in a summary
-is exactly what Rich would eat as markup. `inject` prints a block a caller redirects or
-pipes whole. `new --json` prints the path a caller writes the body into. Without `--json`,
-every `new` command prints that same plain path and nothing else (`new backlog` prints the
-line, then the path), so `path=$(sessionmemory new spec ...)` works, and `log` prints the
-path of the page it wrote the same way. `path <kind>` prints one bare path the same way,
-and `project --json` prints every path the plugin's hooks read. `local adopt` prints the
-vault path and nothing else on stdout, `local link` prints the link path, `local status`
-prints one `key: value` line per fact, and `local link --json` is the payload the
-SessionStart hook parses.
-
-`CliRunner` is not a terminal and the console decides its color system at import, so an
-in-process test proves nothing here. `tests/integration/test_cli_machine_output.py` runs
-the CLI in a subprocess with color forced in the environment and asserts the raw bytes
-carry no `\x1b[`.
-
-### Adding a New Command
-
-1. Write the logic as a library function in `src/sessionmemory/lib/`, with no Typer
-   imports.
-2. Add a function to a module in `src/sessionmemory/commands/`, either an existing one
-   or a new one, that parses options, calls the library, and reports through `pp`. A
-   command that reads or writes an index builds its embedder through
-   `_common.build_embedder()` and calls `lib/fieldindex` with it, so the stub embedder
-   stays selectable from the environment.
-3. Register it in `cli.py` with `app.command("<name>", help="...")(module.function)`.
-   Reach for `app.add_typer()` only if the command takes sub-commands.
-4. Add tests: `tests/unit/` for the library function, `tests/integration/` for the
-   command as invoked through `sessionmemory.cli.app`.
-
-### The memoryfield format
-
-The format is Cal Paterson's. The spec is
-<https://github.com/calpaterson/memoryfield-spec/blob/main/SPEC.md>, the article behind it
-is <https://calpaterson.com/memoryfields.html>, and every "the spec" below means that
-document. His reference implementation is
-<https://github.com/calpaterson/memoryfield-tool>, and it is the independent check on this
-one: it can `connect` to any field directory here as is, and its `validate` passes every
-field in the vault. Its default search cutoff for this model, 0.45, is the ceiling
-here too, but a hit here must also clear a margin below the field's median page (see The
-index). Never let it write an index file ours reads: it embeds through Ollama, and
-the vectors are not guaranteed to match fastembed's. It also pins `pysqlite3-binary`,
-which has no Apple Silicon wheel, so on a Mac it runs only with that dependency dropped
-from a scratch copy.
-
-A project's `learnings/` and `logs/` are fields: flat directories of pages, each
-with its own index file. `specs/` sits beside them and is indexed for `search --specs`,
-but it is not a field: it has no page-size rule, and `lib/specs.py` derives its embedding
-input instead of embedding the file. `plans/`, `runbooks/`, `reference/`, and
-`backlog.md` are never indexed, which is what keeps the backlog or a plan from being
-embedded as memory. There is no global scope and no cross-project read; `lib/paths.py`
-finds a project's files by its slug and nothing else.
-
-**`lib/field.py` is the one place a page's shape is known.** The filename rule, the
-debris rule, and the 8KB limit all come from the memoryfield spec and live there.
-`iter_pages` is the only definition of what counts as a page: a conformant name at the
-top level of the field, since the spec forbids indexing a page in a sub-directory. A
-file with any other name is reported by `doctor` and read by nothing. `is_debris` drops
-`.DS_Store`, `desktop.ini`, `Thumbs.db`, a Syncthing conflict copy, and an editor backup
-ending in `~`, because the spec requires ignoring them rather than reporting them.
-
-A page has five frontmatter fields and no more. `read_page` never refuses a page without
-frontmatter, since the spec makes that a valid page, and it decodes with
-`errors="replace"` so one corrupt byte cannot crash a read of the whole field.
-
-`PAGE_LIMIT` is 8192 bytes, and it is a limit on the page rather than on the file
-`fieldindex` reads. `embedding_input` truncates to the first 8192 bytes without splitting
-a character, so an oversized page is embedded in part rather than skipped or chunked.
-Chunking is what the limit exists to avoid: one page is one embedding, and the remedy for
-more detail is a second page. `doctor` reports the oversized page, and the truncation is
-what keeps that finding a suggestion rather than a failure.
-
-`write_page` is the single seam every page write goes through, and it exists because of
-markdown formatters. It skips the write outright
-when the file on disk already parses to the same metadata and body, because a markdown
-formatter rewrites frontmatter quoting and sequence indentation into a shape
-`frontmatter.serialize` does not produce. Comparing parsed content rather than rendered
-bytes is what makes a difference of formatting alone read as no change. Anything that
-grows a second way to write a page has to keep that property, so add it to `write_page`
-rather than beside it.
-
-`claim_filename` takes a name by exclusive creation rather than by checking first, so two
-writers racing for one title get two files rather than one overwritten page.
-
-**`lib/backlog.py` is the one place a backlog item's shape is known.** `KINDS`, `SIZES`,
-and the `is_item` predicate that `inject` counts by live there, and
-`sessionmemory new backlog` is the CLI's one exception to leaving `backlog.md` to Read
-and Edit. It earns that because a full line carries a heading from a fixed set, a size
-from a fixed set, and a date, none of which Edit validates. The shape the command writes
-is strict, but the shape the reader accepts is loose: `is_item` counts every column-0
-`- ` bullet with text, and no line is silently uncounted for being malformed. Only a
-ticked `- [x]` or `- [X]` line, and an indented bullet, which is a note under an item,
-are not open items. `KINDS` includes `decide`, written under a `## decide` heading, for
-a question the user has to answer. `new backlog` refuses a topic holding whitespace or a
-bracket, since `topics` could not read it back as one tag. Once the line is written it
-warns on stderr, without refusing, for a topic no existing line uses (listing the topics
-in use) and for a description over 200 characters, so a refused item prints no warning.
-The line has no checkbox: finished work is deleted, and git history is the record of it.
-A `- [ ]` prefix is an affordance, and an agent that sees one ticks it however the prompt
-reads, so the shape itself is what keeps a done item from lingering as `- [x]`. The
-command only appends: deleting needs no validation and stays a direct edit, and
-`add_item` never inserts the `# Backlog` heading into an existing file, since a file
-someone else structured is theirs.
-
-**`lib/localmd.py` is the one place a checkout's `CLAUDE.local.md` link is understood.** It
-knows the seven states (linked, not linked, unadopted, diverged, foreign link, dangling,
-none) and decides what `adopt` and `link` may do in each. The link is an absolute symlink
-at the git work tree's top level, never the registered root or the cwd, because the vault
-root differs per machine and worktrees sit at different depths. The ignore entry goes in
-the file `git rev-parse --git-path info/exclude` names, which a clone's worktrees share,
-and never in a committed `.gitignore`. `Checkout.ignored` raises on a git fatal error
-rather than reading it as "not ignored", since a wrongly "not ignored" answer would write
-an exclude entry the person did not need. `link` replaces only a missing file or a
-dangling link and reports `conflict` for anything holding content, and `adopt` refuses a
-vault copy that differs from the checkout's file, since which one wins is a person's call.
-Both write the exclude entry on an already linked checkout too, so a lost entry comes
-back. A missing link is created exclusively (`create_link`), which never overwrites a file
-written after the state was read and leaves no temporary name behind; only a dangling
-link or an adopted file is replaced by rename (`place_link`). The vault copy is never
-indexed, never listed by `inject`, and never read by `search`; `inject` only notices that
-the checkout holds a regular file and the vault holds none. Claude Code resolves a
-relative `@` import in a linked file from the vault folder, where it does not load, so
-`adopt` and `doctor` report each one and nothing rewrites it. Claude Code reads memory
-files before `SessionStart` runs, so the hook injects the file's content once, on the
-start that created the link.
+- `lib/field.py` is the one place a page's shape is known: filename rule, debris rule,
+  8KB `PAGE_LIMIT`, and `iter_pages` as the only definition of a page.
+- `write_page` is the single seam for page writes. It skips writes whose parsed content
+  is unchanged so a markdown formatter's reshaping reads as no change. A second write path
+  goes into `write_page`, not beside it.
+- An oversized page is embedded truncated, never chunked. One page, one embedding.
+- `lib/backlog.py` owns the backlog item shape; `lib/localmd.py` owns `CLAUDE.local.md`
+  link states. `new backlog` is the CLI's only write to `backlog.md`, and it only appends.
+- `specs/` is indexed but is not a field. `plans/`, `runbooks/`, `reference/`, and
+  `backlog.md` are never indexed. There is no cross-project read.
 
 ### The index
 
-One SQLite file per field, and one in `specs/`, named `<embedder.name>.sqlite3` by
-`fieldindex.index_path`, so two embedders never share an index and changing the model
-needs no migration. It holds the spec's table and nothing else:
+- One SQLite file per field (and one in `specs/`), named for the embedder, holding only
+  the spec's `pages` table. Changing the model changes `embed.MODEL_CODE`, which renames
+  the file; that is the whole migration.
+- The index is derived and disposable. Nothing may treat a value read from it as
+  authoritative. Freshness is the sha256 of raw bytes, and `search` refreshes before
+  querying, so nothing depends on `reindex` having run.
+- Bump `specs.INPUT_VERSION` whenever `specs.embedding_input` changes what it derives,
+  since the hash cannot see that change.
+- Search thresholds (`DEFAULT_MAX_DISTANCE`, `DEFAULT_MIN_MARGIN`, the `SPECS_*` pair,
+  `MIN_BACKGROUND_PAGES`, `FALLBACK_BACKGROUND`) came from labeled queries against real
+  vaults. Change them only by re-measuring, never by reasoning about one query. The
+  vault's specs hold the measurements.
+- `DOCUMENT_PREFIX` and `QUERY_PREFIX` stay together in `lib/embed.py` so pages and
+  queries are never embedded under different conventions.
 
-```sql
-CREATE TABLE pages (
-    filename      TEXT PRIMARY KEY,
-    frontmatter   JSON NOT NULL,
-    last_modified DATETIME NOT NULL,
-    sha256_hash   BLOB NOT NULL,
-    embedding     BLOB NOT NULL
-);
-```
+### Locking
 
-For a field the embedding input is the whole file, frontmatter included, as the spec
-requires. `fieldindex._embedding_text` dispatches on the directory name: a file in
-`specs/` embeds `specs.embedding_input` instead, which is the title, the text under the
-`# ` title minus metadata lines, the frontmatter `summary`, the purpose sections whole
-(`PURPOSE_HEADINGS`), every `## ` heading joined by `; `, and the decision sections whole
-(`DECISION_HEADINGS`), cut at the last whole line within `field.PAGE_LIMIT`. A leading
-`---` block that does not parse is dropped through its closing line before any part is
-derived, so raw YAML never reaches the input or a hit's summary. The body is never
-embedded. This revises the 2026-10-02 spec's rejection of an index over specs, which
-assumed one embedding of a spec's first 8KB: a filename fails once a topic crosses several
-features, specs reach 40KB so their detail cannot be embedded anyway, and search only has
-to land on the spec, which the reader then opens. The specs index keeps the spec's table
-and nothing else, and a spec is not subject to the page rules.
-
-Freshness is the sha256 of the raw bytes, so a page edited in any editor is re-embedded on
-the next read and nothing has to be told that a file changed. A hash cannot see a change
-to the derived spec input, so `specs.INPUT_VERSION` is stored in the specs index's
-`PRAGMA user_version`; `_refresh` empties a specs index whose version differs, so every
-spec is re-embedded, and `doctor` reads the mismatch as a stale index. Bump it whenever
-`specs.embedding_input` changes what it derives. Fields are never stamped. `search` calls
-the same `_refresh` before it queries, which is why a page written moments ago is found
-without a `reindex`. `reindex` exists to do that work up front, not because anything
-depends on it having been run.
-
-The index is derived, gitignored, and never backed up. Deleting `<field>/*.sqlite3` and
-running `sessionmemory reindex` reproduces it exactly, and the restore procedure for a
-whole vault is `git clone` followed by `sessionmemory reindex --all`, which walks every
-directory `paths.iter_index_dirs` lists rather than resolving one project.
-`fieldindex._open` treats a corrupt file the same way: it deletes the file and its
-`-journal` sibling and reconnects once, rather than letting a damaged cache crash a read
-that has no reason to fail. Nothing may treat a value read from the index as
-authoritative.
-
-**There is no general application lock, and the CLI holds exactly one.** A page write is
-an atomic rename, each field's index is one SQLite file under SQLite's own locking with a
-five second busy timeout, and two sessions ending in different projects touch different
-files entirely. Two hooks committing at once race on git's own `index.lock`, the loser
-skips, and the next session's hook commits what it left behind. Do not reintroduce
-`lib/locking.py`: the shared index and the taxonomy file it guarded are both gone. The
-CLI's one lock is `registry.locked`, an exclusive `fcntl.flock` on a descriptor opened on
-the vault's `_system/` directory, held for the whole load, modify, and save of
-`registry.toml` by registration and by `mark_reviewed`. Every writer rewrites that one
-shared file from what it loaded, so two unlocked writers would each save a registry
-missing the other's entry. It creates no lock file, and `registry.save` is called by those
-paths only inside it. The plugin's lock is separate: the sweep worker holds a per-project
-`fcntl.flock` on the store's `sweep.lock` while it runs, so a second sweep for the same
-project queues behind the first rather than being dropped. The kernel releases it when the
-worker exits, however it exits, so nothing ages it out, and the file is never deleted,
-since a waiter would otherwise lock a new file at the same path. A queued worker polls
-every `QUEUE_POLL` seconds for `sweep.queue_wait`, which is
-`max(3600, 4 * (sweep_timeout + 120))`: several queued sweeps' worth at the configured
-timeout, so raising the timeout never turns a queued sweep into a dropped one. Only
-`BlockingIOError` from `flock` means another worker holds it. Any other failure sets
-`Lock.error`, which ends a worker's wait at once and reads as no sweep when a hook decides
-whether to commit, so a lock file that cannot be opened never blocks either.
-
-**A hit is relative to its field, not a fixed distance.** `fieldindex.search` keeps a
-page within `DEFAULT_MAX_DISTANCE` (0.45) only when it also sits `DEFAULT_MIN_MARGIN`
-(0.11) nearer than the median distance from the query to every page in the field. No
-absolute number separates matches from non-matches: phrasing a query as a question lowers
-every distance by about 0.05, and a log, which summarizes a whole session, sits near every
-query about its project, so 0.45 alone returned hits for most queries that had no answer.
-A median over fewer than `MIN_BACKGROUND_PAGES` is noise, so a smaller field measures
-against `FALLBACK_BACKGROUND` instead. All three numbers came from labeled queries
-against real vaults; the vault's spec on the search cutoff holds the measurements.
-Change them only by re-measuring, never by reasoning about one query.
-
-Specs have their own pair, `SPECS_MAX_DISTANCE` 0.38 and `SPECS_MIN_MARGIN` 0.07, which
-`search --specs` uses unless `--max-distance` or `--min-margin` is given. Specs spread
-wide: the median distance from a query to a project's specs measured 0.53 to 0.56, so the
-relative margin alone let unrelated specs through at 0.42 to 0.44, and the absolute
-ceiling had to be tighter. At the learnings pair 3 of 10 unanswerable queries returned a
-spec. The pair was measured on 50 labeled queries against one project's 51 specs and tuned
-in-sample, with the vault's spec on spec findability holding the table. Re-measure when
-the embedding input rule changes or a second project's specs are available. Retired specs
-(`superseded`, `abandoned`) are filtered out after the median is taken, so
-`--include-retired` changes what is shown and not what counts as a hit. Without `--specs`,
-`--include-retired` is a usage error, and only a spec hit is printed with a retired
-suffix.
-
-Two environment variables exist for tests rather than for a person configuring the CLI:
-
-- `SESSIONMEMORY_EMBEDDER=stub` selects the deterministic, hash-derived `StubEmbedder`
-  instead of the real model. `tests/conftest.py` sets it for the whole suite with an
-  autouse fixture, since loading the real model costs seconds and, on a machine with no
-  cached copy, downloads 520MB.
-- `SESSIONMEMORY_MODEL_CACHE` overrides where the real model is cached, in place of
-  `embed.DEFAULT_CACHE`.
-
-`_common.build_embedder` reads the first at call time rather than at import, so a test
-selects the stub with `monkeypatch.setenv`.
-
-### The embedder
-
-`lib/embed.py` runs `nomic-embed-text-v1.5` on ONNX Runtime in this process through
-`fastembed`. Ollama was rejected for one reason: it is a service, and a service is
-something every write would depend on being up. A model file on disk cannot be down.
-
-`MODEL_CODE` and `MODEL_NAME` are two different strings and neither substitutes for the
-other. `MODEL_CODE` is `nomic-embed-text-v1.5`, the model code the spec names and the
-index file is named for. `MODEL_NAME` is `nomic-ai/nomic-embed-text-v1.5`, the repository
-id fastembed loads. Changing the model changes `MODEL_CODE`, which changes the index
-filename, which is the whole migration: the old file is orphaned and the new one is built
-on first use.
-
-The model is trained with task prefixes and fastembed 0.8 does not add them, so
-`DOCUMENT_PREFIX` and `QUERY_PREFIX` are prepended here. The spec permits that for a
-model that mandates them. Both prefixes stay in this file so that a stored page and a
-query are never embedded under different conventions, which would degrade ranking without
-failing anything.
-
-`DEFAULT_CACHE` is pinned to `~/.cache/sessionmemory/models` rather than left at
-fastembed's default under the system temp directory. macOS purges that periodically, and
-a silent re-download of 520MB in the middle of a command is indistinguishable from a
-hang.
-
-`EMBED_BATCH_SIZE` is 1. fastembed pads every batch to its longest input, so a larger
-batch of long specs costs memory and time quadratic in the longest one, and one page per
-batch measured fastest and leanest.
-
-### Injection
-
-`sessionmemory inject` emits a fixed guidance block, then every learning's title, then
-every reference doc's and every runbook's filename, then a count of open backlog items
-and a count of specs. A review nudge line follows the titles when the project holds at
-least 10 learnings and `reviewed` in `_system/registry.toml` is absent or more than 30
-days old; `sessionmemory project --mark-reviewed` writes that key, and the review skill
-runs it last.
-
-Specs are counted rather than listed because they outlive the work they describe, so a
-list is a changelog that grows forever rather than open work; the guidance tells a session
-to search `specs/` before designing a feature. Reference docs and runbooks are listed
-because they are few and edited in place rather than accumulated, and `_listed_docs` lists
-every markdown file rather than only conformant names, since a doc moved in by hand keeps
-the name it had. Plans are never mentioned, since the tool that writes them manages them.
-**The index is never read here**, and no page body ever enters an injection, which is what
-makes its cost proportional to the number of pages rather than to their length.
-`lib/inject.build` reads the files directly.
-
-Titles rather than summaries, because injection is a push channel and must not grow into
-the thing it is trying to save. Titles rather than nothing, because pushing titles trades
-recall for recognition: an agent that hits a failing test starts debugging and never
-generates the idea of searching, but it can notice that a title matches its situation,
-and models are far better at the second than the first.
-
-The guidance exists because the block under it is data. It says what this project knows
-and nothing about what to do with it, so a session receiving only titles learns the vault
-exists and not how to read or write it. It cannot be left to a skill: four of the five
-ship `disable-model-invocation: true` and are the user's slash commands, and the one that
-is model-invocable only reaches an agent that happens to match its description, which
-fails silently. `--command` is how the guidance spells this CLI, defaulting to
-`sessionmemory` for a human and set to `VaultCLI.command` by `VaultCLI.inject`: the bare
-name when the tool on `PATH` passed the handshake, and the shim's absolute path when the
-hooks fell back to it, since guidance naming a command the reader cannot run tells them
-nothing.
-
-The guidance also names `path <kind>` as the way to find a file, routes "remember this"
-to `new learning` rather than the agent's own memory files, says the hooks commit the
-vault, states the bullet rule for the backlog, and sends questions for the user to
-`## decide`. For specs it teaches `search --specs`, a short paragraph directly under the
-`# ` title, what a search shows (the frontmatter `summary`, else a goal or purpose
-section's first paragraph, else that opening paragraph, as `specs.hit_summary` picks it),
-the four statuses, setting `status: shipped` when the work ships, and
-`new spec --supersedes` to replace one.
-
-Injection is deliberately unranked and unlimited. If the titles prove not to be read, the
-next thing to try is a `UserPromptSubmit` hook that embeds each prompt and injects the
-nearest pages above a threshold, ahead of any ranking of the titles themselves. The
-threshold is already measured: `search` keeps a page only when it sits
-`fieldindex.DEFAULT_MIN_MARGIN` nearer than the field's median page, and returns nothing
-otherwise rather than the nearest pages dressed up as hits. `--read`
-prints every hit's whole file, so one call replaces a search and a Read per hit.
-
-### The Plugin Half of This Repository
-
-This repository is also a Claude Code plugin. `.claude-plugin/marketplace.json` declares
-one marketplace holding one plugin, `sessionmemory`, sourced from `./`. A local-path
-marketplace installs by copying this repository into
-`~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/`, so `${CLAUDE_PLUGIN_ROOT}`
-inside any hook is that copy, never this checkout. A commit to this repository reaches a
-running session only after `/plugin update sessionmemory@sessionmemory` refreshes the
-copy, or a reinstall replaces it.
-
-**`VaultCLI.discover` in `hooks/sessionhooks/vaultcli.py` is the one place that decides
-which CLI runs.** Two can exist: the `sessionmemory` a person installed on `PATH` from
-PyPI, and `bin/sessionmemory` inside the plugin copy. The tool on `PATH` is preferred
-when it passes a version handshake, since it is what the person and their agent type and
-its environment is already built. The handshake runs `sessionmemory --version` once per
-discovery, under `VERSION_TIMEOUT`, and passes when the reported version is at or past
-the plugin's own, which `plugin_version` reads from the `pyproject.toml` beside the
-shim. The floor is the package version rather than a separate constant because the two
-halves release together under it, so a bump needs no second edit. Anything short of a
-pass, including a plugin copy that cannot read its own version, falls back to the shim.
-The handshake exists because the hooks hard-code the flags and payloads of the CLI they
-shipped with and every hook fails open, so an older tool would mean a session with no
-memory and no error. `VaultCLI.command` is how a prompt spells the result: the bare name
-for a tool on `PATH`, the absolute path for the shim. `hooks/vault-path.py --cli` prints
-`VaultCLI.cli`, and every skill resolves the CLI through that call, so a skill never
-decides this for itself.
-
-`bin/sessionmemory` is the fallback, and the only thing in this repository that knows the
-CLI can run through `uv`. It resolves its own location by walking any symlink chain back
-to the directory it lives in before running `uv run --project "$ROOT" --frozen
-sessionmemory "$@"`, against an environment that belongs to the copy alone; the first
-fallback run after an install pays to build it. Nothing else may invoke `uv` directly.
-
-`hooks/` imports nothing from `src/`. The hooks are standalone `uv run --script` programs
-with no dependencies of their own, and they reach the CLI only by executing whichever
-path `VaultCLI.discover` chose, the same as a human would from a shell. A hook that
-imported `sessionmemory` directly would pay for the CLI's whole dependency graph just to
-decide whether to shell out to it.
-
-`.claude-plugin/plugin.json` carries the same version as `pyproject.toml`, and
-`version_files` in the commitizen config bumps both, so the manifest cannot fall behind
-the package it describes.
-
-`sessionmemory log` replaces a note's body on every call, and `--body` defaults to empty,
-so any caller has to send the complete body every time, never a diff or an addendum. This
-is why the sweep hands the model the note's existing log before asking it to compose the
-new one: without it, the model has no way to keep what was already recorded.
-
-The sweep may write anywhere inside its own project's folder, which is what a later pass
-strengthening a memory means. Two backstops run after the model finishes, and neither is
-complete. Both live on `WriteGuard` in `hooks/sessionhooks/guard.py`, which the worker
-builds once its vault resolves. `WriteGuard.validate_writes` walks the tool-use stream's
-reported paths, which `ClaudeRunner.run` reads from a timed-out run's partial output too, and reverts anything
-outside the project folder, restoring it from the vault's `HEAD` or quarantining it when
-git cannot. It then scrubs for secrets by content hash: `snapshot.take` hashes the project
-folder before and after the run, skipping symlinks, and every file whose hash changed is
-scrubbed, which is what catches a write made through Bash, since a Bash write never
-appears in the tool-use stream. A file that cannot be read is recorded as
-`snapshot.UNREADABLE` rather than left out, so it reads as modified and never as created
-or deleted. A deletion is noted, not undone. `WriteGuard.enforce_shapes` then checks what
-`hooks/sessionhooks/shape.py` knows of a page's shape: a new learning, log, or top-level
-file that fails is quarantined, as is a new file nested below `learnings/` or `logs/`, and
-a modified learning that fails is restored from `HEAD` (`_restore_or_quarantine`). A
-created or modified learning that cannot be read, because the snapshot recorded
-`snapshot.UNREADABLE` or `shape.learning_problem` hit an `OSError`, is quarantined with
-the note `unreadable-quarantined: <path>` rather than restored, since its content is
-unknown and an unreadable file would fail `git add`. Debris that `shape.is_debris` names,
-mirroring `field.is_debris`, is left alone. A Bash write **outside** the project folder, a
-sibling project's folder foremost, is caught by nothing here and is committed by the next
-hook. Git history is the recovery. The prompt forbids deleting a page, and a page the
-model deletes through Bash is committed as a deletion. The prompt never mentions
-`CLAUDE.local.md`, which belongs to the person, so `WriteGuard._protect_local_md` undoes
-any change to `<project>/CLAUDE.local.md` (`shape.local_md_problem`).
-`WriteGuard.capture_local_md` reads that one file's bytes before the run, and a modified or deleted copy is rewritten
-from them (temp file in the same directory, then rename) rather than from `HEAD`, since
-the person may not have committed their latest edit. A modified one is copied into
-quarantine first, since the edit may be the person's own made while the sweep ran, and
-the note names the copy. Only a copy with no pre-run bytes falls back to `HEAD`, and one
-`HEAD` does not hold yet is left in place rather than quarantined, since every checkout
-links to it. One the sweep creates is already a stray top-level
-file and is quarantined.
-
-`/sessionmemory:sweep` runs the same sweep in the user's own session, in two halves that
-`hooks/sessionhooks/manual.py` holds. `hooks/sweep-prompt.py` renders the prompt through
-`Sweep.compose(job, manual=True)` and saves a snapshot of the project folder and the
-`CLAUDE.local.md` bytes to `manual-sweep.json` in the project's state directory. The agent
-writes, and `hooks/sweep-check.py` runs `WriteGuard` on the diff. `sweep.md` stays the one
-statement of the sweep's rules: a `<!-- headless -->` or `<!-- manual -->` block is kept
-for one kind of run and dropped for the other, so the worker's prompt is byte for byte
-what it would be with no markers. The manual log command carries `--title`, since no
-environment hands the title to the main agent. The two scripts do not fail open, because
-the check script's zero exit is the boundary: `transcript.window_since_boundary` starts
-the automatic sweep's window after a successful Bash call to `sweep-check.py` inside a
-turn the user opened with `/sessionmemory:sweep`. A check outside that turn, a failed
-one, or a model-printed marker is no boundary, so an interrupted manual sweep leaves the
-automatic one its whole window. The session id comes from `CLAUDE_CODE_SESSION_ID`,
-which Claude Code sets in every Bash call, and the transcript is found by that id rather
-than through the store's pointer, which a concurrent session in the same project
-overwrites.
-
-`hooks.json` budgets each hook's own worst case. `SessionStart` runs `Store.for_cwd` (one
-git call, `_GIT_TIMEOUT` 5s), `head_commit` (5s), two `VaultCLI.discover` handshakes
-(`VERSION_TIMEOUT` 5s each), the vault commit (`COMMIT_GIT_TIMEOUT` 5s across up to nine
-git calls, so 45s), `VaultCLI.resolve` and `VaultCLI.register` (`RESOLVE_TIMEOUT` 5s
-each), `VaultCLI.inject` (`TIMEOUT` 25s), and `VaultCLI.link_local` (`LINK_TIMEOUT`
-5s): a worst case of 105s under a timeout of 110. `tests/plugin/test_hooks_manifest.py`
-sums those constants, counting the commit's git calls on a real vault, and asserts the
-timeout exceeds the sum. `PreCompact` only gates and spawns, and its timeout is 10.
-Raising any of those constants means raising the timeout that covers them.
-
-`SessionEnd` is the exception: its 60 in `hooks.json` is not the limit that applies.
-Claude Code gives every SessionEnd hook one shared budget, 1.5s by default, and a
-plugin's own `timeout` cannot raise it; only the user's
-`CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS` can. So nothing SessionEnd runs inline may
-start the vault CLI. It finds the vault with `VaultCLI.locate`, which checks the marker
-and starts no subprocess, commits with git alone, and hands the sweep worker a root
-rather than a `VaultCLI`, so the version handshake runs in the worker after it detaches.
-A commit cut short costs nothing, since the next `SessionStart` commits what it left.
-
-Both start and end hooks skip their commit while any project's sweep is running, since the
-commit stages the whole vault and would capture a worker's writes before it scrubs and
-shape-checks them. `sweep.any_in_progress` probes every project's lock under the state
-root. A worker skips its commit while another project's sweep runs, so when two finish at
-once both may skip, and the next hook commits what they left. `sessionend.py` commits
-whether or not the sweep is enabled, so a page written by hand still lands.
-
-### Committing
-
-`hooks/sessionhooks/commit.py` is what replaced the scheduled checkpoint job. `SessionStart`
-commits before it injects, `SessionEnd` commits after it triggers the sweep, and the sweep
-worker commits once its own writes are validated, so a page reaches git inside the session
-that produced it.
-
-Every git subprocess runs under `store.git_safe_env`, which drops every `GIT_`-prefixed
-variable. Git exports `GIT_DIR` and `GIT_INDEX_FILE` into anything it runs, so a hook
-launched from inside another git operation would otherwise retarget `git add -A` at
-whatever repository set those variables rather than at the vault. The rule is a prefix
-rather than a fixed set because the `GIT_CONFIG_KEY_<n>` family is indexed and cannot be
-enumerated, and a config override such as `core.worktree` relocates a repository exactly
-as `GIT_DIR` does.
-
-The message is built from `git diff --cached --name-status` by `commit.message`: the
-subject groups paths by the segment after the vault's own `projects/` (or `vault` for
-`_system/`). That segment is read right after the prefix `--show-prefix` reports, since a
-vault may sit under an outer folder that is itself named `projects`, and a path outside
-the prefix belongs to no project. One project's subject counts its paths by kind, and
-`_system` paths ride along with it; several projects get `<names>: update <n> files`,
-counting every staged path. `vault` is not a project, so it names the subject only when it
-is alone. The body lists every path and opens with the sweep log's summary when there is
-one. The message goes to `git commit -F -` on stdin, so a large first commit cannot
-overflow the per-argument size limit.
-
-Staging is
-`git add -A -- :/ ':(exclude,glob)**/*.sqlite3*' ':(top,exclude,glob)<prefix>projects/*/plans/**'`.
-`:/` keeps the whole repository in scope for a vault nested inside a larger one. The
-exclusion beside it keeps the derived index out of history, and the second keeps scratch
-plans out, whatever the vault's `.gitignore` says, since `sessionmemory init --force`
-adopts a directory without replacing an ignore file that predates either rule. The plans
-exclusion is anchored at the vault: `<prefix>` is the vault's own path inside the
-repository, read by the `git rev-parse --is-inside-work-tree --show-prefix` call that
-also checks for a work tree, with glob characters escaped, so an outer repository's own
-`projects/*/plans` is still staged. When git reports no prefix, the exclusion falls back
-to `**/projects/*/plans/**`. A plan already tracked stays tracked, but the exclusion keeps
-`git add -A` from staging an edit to it, so the hooks never commit one; a person commits
-it by hand. `sessionmemory init` writes `projects/*/plans/` into the vault's `.gitignore`
-for the same reason. `_commit` checks `git add`'s exit status: `git add` stages what it
-can reach and still exits non-zero on a path it could not read, and committing over that
-writes a commit silently missing the one file that needed attention.
-
-Every regular `projects/*/CLAUDE.local.md` is then staged with `git add -f`
-(`_local_md_paths`, `_force_add`). A global gitignore commonly lists that name, and it
-applies inside the vault repository too, so `add -A` would skip the file and a person's
-private instructions would never reach the remote. The same hiding is why the "clean"
-check cannot trust a plain `git status --porcelain`, which omits ignored files: the one
-status call passes `--ignored=matching`, and `_has_changes` reads the vault as clean when
-it lists nothing but ignored files other than those force-staged copies, so an unchanged,
-committed copy costs no `add`. A symlink is skipped, since a
-vault copy is a real file and a link at that path is not one. Each path is passed as a
-`:(literal)` pathspec, so a project folder named with `[` or `*` cannot match another.
-`sessionmemory init` writes `!projects/*/CLAUDE.local.md` into the vault's `.gitignore` to
-re-include the file over a global rule, and the force-add covers a vault whose ignore file
-predates it.
-
-A commit is skipped rather than forced for seven reasons: `not a repository`, `clean`, a
-merge or rebase or cherry-pick or revert `operation in progress`, a `detached HEAD`, a lost
-race on git's `index lock`, an `add failed`, or `git unavailable`. None of them is an error
-worth surfacing from a hook. The next session's hook commits whatever was left behind,
-which is what makes skipping cheap and retrying automatic. A commit whose `git commit`
-landed but whose sha could not be read back afterward is reported as `committed (sha
-unavailable)` rather than as a skip, since the commit happened and a skip reason here
-would send a reader hunting for a failure that never occurred.
-
-### Logging
-
-Every hook and the sweep worker write to one log, `hooks.log` under the XDG state root,
-configured by `hooks/sessionhooks/log.py` and nowhere else. Every hook opens through
-`hookmain.begin(step, *, payload, env) -> HookContext`, which loads the config, resolves
-the cwd and the `Store`, and calls `log.configure` with the store's project name and the
-payload's session id; every module underneath logs through `log.logger("<name>")` and
-inherits that context. Each hook's `main` reads its own payload, calls `begin`, and wraps
-`_run` in a `try`/`except` that logs `hook failed` with the traceback, so the log is
-configured before anything in the hook's body can raise. `run_sweep` in
-`hooks/sessionhooks/sweep.py` takes an optional `store` keyword so a hook that already
-resolved one through `begin` does not pay for a second `git rev-parse` inside its timeout
-budget. The worker relabels itself with `log.bind(step="sweep")` after the fork.
-
-The default level is INFO and the rule is one line per decision: a gate skip with its
-counts, a spawn, a worker result, a commit or the reason it was skipped, and what a
-start injected. A step that went as expected is DEBUG. Every fail-open boundary logs
-the exception at ERROR before swallowing it, so a new `except` that returns quietly
-needs a line too, and a new reason for a skip needs to be in the message. Rotation is
-fixed at 1 MB and two backups in `log.py` and is not a setting.
-
-A line is `DATE TIME LEVEL [step] project: message (session=<id>)`. Only the level and
-the bracketed step are padded, since a project name has no known width; the session
-closes the line so the message stays readable. Nothing reads the file but a person, so
-it stays plaintext.
+There is no general application lock; do not reintroduce `lib/locking.py`. The CLI's one
+lock is `registry.locked`, held around every load-modify-save of `registry.toml`, and
+`registry.save` is called only inside it. The plugin's one lock is the per-project
+`sweep.lock` flock held by the sweep worker; that file is never deleted.
 
 ### Doctor
 
-`lib/doctor.py` holds ten checks and the `CHECKS` tuple that runs them. There are no
-tiers: every finding is a suggestion, `doctor_command` always exits 0, and nothing here
-can fail a build. Semantic retrieval never surfaces a page that does not match, so an
-imperfect page costs nothing, and a check that failed a build over one would fail it
-forever.
+Every finding is a suggestion and `doctor` always exits 0. There is no `--fix`, and
+repair is not coming back: each finding forks on a judgment the command cannot make.
 
-The ten are a nonconformant filename in a field or `specs/`, a page over `PAGE_LIMIT`,
-frontmatter that cannot be parsed or a learnings page missing `title` or `summary`, a bare
-date or datetime in frontmatter, a registered project whose root no longer exists, a
-ticked `- [x]` or `- [X]` line in a `backlog.md` (any other top-level bullet is an open
-item, so nothing else there is reported), a reference to a vault file that does not exist,
-a spec with an unusable status, a `CLAUDE.local.md` problem, and an index that is
-unreadable or behind its pages, which covers the specs index too. The reference check
-scans specs, runbooks, reference docs, and learnings for a mention such as
-`runbooks/deploy-the-worker.md` and reports each one that names no file. Plans are never a
-target, since a plan is scratch and may be gone by design. The spec check reports a
-`status` outside `specs.STATUSES`, a superseded spec with no `superseded_by`, a
-`superseded_by` naming no spec in `specs/` or naming the spec itself, and a frontmatter
-block that cannot be parsed, since that silently makes the spec current; a spec with no
-block at all is current and silent, and a `superseded_by` without `status: superseded` is
-not reported. The `local_instructions` check reports a relative `@` import in a vault
-copy, which cannot load, and at the registered root one finding chosen by state: a tracked
-file, a regular file that differs from the vault copy, or a file or link git does not
-ignore, advised toward `local adopt`, `local link`, or removal by what it is. It does not
-walk worktrees, since `local status` covers them one at a time. A file that is not valid
-UTF-8 is reported by the frontmatter check. A logs page with no frontmatter block at all
-is fine, since a log has nothing a search result would show. The datetime check has its
-own reader, `frontmatter.unquoted_datetime_keys`, because `frontmatter.parse` stringifies
-a date PyYAML typed and nothing downstream can then tell a quoted value from a bare one.
+### Injection
 
-**There is no `--fix`, and repair is not coming back.** Every finding above forks on a
-judgment the command cannot make: which name to rename a file to, where to split a page,
-what a missing summary should say, whether a repository moved or died. The ticked
-backlog line is the one whose remedy is fixed, a deletion, and the `backlog` skill makes
-it, since the backlog is the skill's file to curate rather than a page. The previous
-version of this project grew a 294-line repair module by adding one plausible case at a
-time, and a repair that guesses destroys the signal that made the finding worth reporting.
+`lib/inject.build` never reads the index and never includes a page body, so its cost
+scales with page count, not page length. The guidance block's text is the only place a
+session learns how to use the vault, so a CLI change that alters a command it names
+must update it.
 
-### Testing
+## The Plugin
 
-- `tests/unit/` for the library: page read and write, frontmatter round-trip, filename
-  conformance, index build and search.
-- `tests/integration/` for the CLI as invoked through `sessionmemory.cli.app`.
-- `tests/plugin/` for the hooks, which are exercised as subprocesses.
-- `tests/integration/test_conformance.py` asserts that a built field satisfies the
-  memoryfield spec's requirements: a flat directory, the filename rule, an index named for
-  the model code, and the whole file as the embedding input.
-- `tests/integration/test_cli_machine_output.py` runs the CLI in a subprocess with color
-  forced and asserts that nothing a caller parses carries an escape sequence.
+- Installing copies this repo into `~/.claude/plugins/cache/...`, so `${CLAUDE_PLUGIN_ROOT}`
+  is that copy. A commit reaches a session only after `/plugin update sessionmemory@sessionmemory`.
+- `VaultCLI.discover` (`hooks/sessionhooks/vaultcli.py`) is the one place that picks the
+  CLI: the `sessionmemory` on `PATH` if its version is at or past the plugin's, else the
+  `bin/sessionmemory` shim. Skills resolve it via `hooks/vault-path.py --cli`.
+- `bin/sessionmemory` is the only thing allowed to invoke `uv`.
+- `.claude-plugin/plugin.json` and `pyproject.toml` share a version, bumped together by
+  commitizen `version_files`.
+- `sessionmemory log` replaces the whole body on every call, which is why the sweep is
+  handed the existing log first.
+- `sweep.md` is the one statement of the sweep's rules for both runs; `<!-- headless -->`
+  and `<!-- manual -->` blocks are kept for one kind and dropped for the other.
+- `hookmain.begin` opens every hook and configures logging. Log one INFO line per
+  decision, and every fail-open `except` logs at ERROR before swallowing.
+- Every git subprocess runs under `store.git_safe_env`. Commit staging and its skip
+  reasons are documented in `hooks/sessionhooks/commit.py`.
+- Sweep backstops (containment, secret scrub, shape checks, `CLAUDE.local.md`
+  protection) live on `WriteGuard` in `hooks/sessionhooks/guard.py`.
 
-### User-Facing Documentation
+### Hook timeouts
 
-`README.md` and `docs/` are written for a stranger on GitHub who has never run this, and
-this file is written for whoever changes the code. They are not two views of one text. The
-README leads with what a person gets and never with the CLI, which is plumbing in that
-frame however central it is here.
+`hooks.json` budgets each hook's worst case from the timeout constants it calls, and
+`tests/plugin/test_hooks_manifest.py` asserts the `SessionStart` timeout exceeds their
+sum. Raising any such constant means raising the timeout that covers it.
 
-Four pages sit under `docs/`, and a change to behavior belongs in whichever ones cover it:
+`SessionEnd` is different: Claude Code gives all SessionEnd hooks a shared 1.5s budget
+that a plugin cannot raise. Nothing it runs inline may start the vault CLI. It finds the
+vault with `VaultCLI.locate`, commits with git alone, and leaves the version handshake to
+the detached sweep worker.
 
-- `concepts.md`: pages, fields, the layout, the index, what a session receives, and the
-  format's conformance and deviations.
-- `cli.md`: every command, its options, and its real output.
-- `plugin.md`: the hooks, the sweep, every setting key and default, the slash commands,
-  the review subagents.
-- `vault-health.md`: the ten `doctor` checks and what to do about each.
+## Testing
 
-A new command, a new option, a new `doctor` check, a new settings key, or a changed
-default is a documentation change as much as a code change. The output in those pages is
-copied from real runs rather than composed, so re-run the command and paste what it
-prints. The runs come from a scratch vault holding one registered project, `invoice-api`,
-and the pasted output shortens the home directory to `~`, so a path reads
-`~/repos/my-vault/projects/invoice-api/...`. Nothing in the documentation names a real
-machine, user, repository, or page: the project is public, and a reader's own paths are
-the only ones that matter.
+`tests/conftest.py` sets `SESSIONMEMORY_EMBEDDER=stub` for the whole suite, since the
+real model costs seconds and may download 520MB. `SESSIONMEMORY_MODEL_CACHE` overrides
+the model cache location.
+
+## Documentation
+
+`README.md` and `docs/` are for a stranger on GitHub. The README leads with what a person
+gets, not with the CLI. A new command, option, `doctor` check, settings key, or changed
+default is a documentation change too. Output in `docs/` is pasted from real runs against
+a scratch vault holding one project, `invoice-api`, with the home directory shortened to
+`~`. Nothing in the docs names a real machine, user, repository, or page.
 
 ## Conventions
 
-- Functions: `snake_case`
-- Constants: `UPPER_SNAKE_CASE`
-- Docstrings: Google format
-- Type hints on all function signatures
-- `ty` for type checking
-- `ruff` for linting and formatting
-- `prek` replaces `pre-commit` for pre-commit hooks
+- Google-style docstrings, type hints on every signature
+- `ruff` for lint and format, `ty` for types, `prek` for pre-commit hooks
