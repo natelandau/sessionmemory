@@ -437,7 +437,7 @@ and models are far better at the second than the first.
 
 The guidance exists because the block under it is data. It says what this project knows
 and nothing about what to do with it, so a session receiving only titles learns the vault
-exists and not how to read or write it. It cannot be left to a skill: three of the four
+exists and not how to read or write it. It cannot be left to a skill: four of the five
 ship `disable-model-invocation: true` and are the user's slash commands, and the one that
 is model-invocable only reaches an agent that happens to match its description, which
 fails silently. `--command` is how the guidance spells this CLI, defaulting to
@@ -544,6 +544,24 @@ the note names the copy. Only a copy with no pre-run bytes falls back to `HEAD`,
 `HEAD` does not hold yet is left in place rather than quarantined, since every checkout
 links to it. One the sweep creates is already a stray top-level
 file and is quarantined.
+
+`/sessionmemory:sweep` runs the same sweep in the user's own session, in two halves that
+`hooks/sessionhooks/manual.py` holds. `hooks/sweep-prompt.py` renders the prompt through
+`Sweep.compose(job, manual=True)` and saves a snapshot of the project folder and the
+`CLAUDE.local.md` bytes to `manual-sweep.json` in the project's state directory. The agent
+writes, and `hooks/sweep-check.py` runs `WriteGuard` on the diff. `sweep.md` stays the one
+statement of the sweep's rules: a `<!-- headless -->` or `<!-- manual -->` block is kept
+for one kind of run and dropped for the other, so the worker's prompt is byte for byte
+what it would be with no markers. The manual log command carries `--title`, since no
+environment hands the title to the main agent. The two scripts do not fail open, because
+the check script's zero exit is the boundary: `transcript.window_since_boundary` starts
+the automatic sweep's window after a successful Bash call to `sweep-check.py` inside a
+turn the user opened with `/sessionmemory:sweep`. A check outside that turn, a failed
+one, or a model-printed marker is no boundary, so an interrupted manual sweep leaves the
+automatic one its whole window. The session id comes from `CLAUDE_CODE_SESSION_ID`,
+which Claude Code sets in every Bash call, and the transcript is found by that id rather
+than through the store's pointer, which a concurrent session in the same project
+overwrites.
 
 `hooks.json` budgets each hook's own worst case. `SessionStart` runs `Store.for_cwd` (one
 git call, `_GIT_TIMEOUT` 5s), `head_commit` (5s), two `VaultCLI.discover` handshakes

@@ -25,6 +25,8 @@ from sessionhooks.safety import scrub
 from sessionhooks.store import git_safe_env
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from sessionhooks.snapshot import Changes
 
 _log = log.logger("guard")
@@ -68,14 +70,26 @@ class WriteGuard:
     `validate_writes` then `enforce_shapes` run on the snapshot diff after it.
     """
 
-    def __init__(self, *, state_dir: Path, vault_root: Path | None) -> None:
+    def __init__(
+        self,
+        *,
+        state_dir: Path,
+        vault_root: Path | None,
+        local_md_before: Mapping[Path, bytes] | None = None,
+    ) -> None:
         self.state_dir = state_dir
         # Without a vault root nothing can be restored from HEAD, so every undo
         # falls back to quarantine.
         self.vault_root = vault_root
         # CLAUDE.local.md as it stood before the sweep wrote, so a restore returns the
-        # person's uncommitted edits rather than whatever HEAD holds.
-        self._local_md_before: dict[Path, bytes] = {}
+        # person's uncommitted edits rather than whatever HEAD holds. A guard built in
+        # another process than the capture takes it here.
+        self._local_md_before: dict[Path, bytes] = dict(local_md_before or {})
+
+    @property
+    def local_md_before(self) -> dict[Path, bytes]:
+        """What `capture_local_md` recorded, for a caller that checks in another process."""
+        return dict(self._local_md_before)
 
     def capture_local_md(self, target: Target) -> None:
         """Remember the vault copy's bytes before the run; an unreadable copy is not kept."""

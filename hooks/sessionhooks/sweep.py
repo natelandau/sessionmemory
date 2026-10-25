@@ -1,7 +1,7 @@
 """The end-of-session memory sweep: gate, detach, run, validate, commit.
 
 The gate runs inline in the SessionEnd/PreCompact hook: it resolves the transcript,
-windows it since the last compaction, drops system/hook noise, and yields a SweepJob
+windows it since the last compaction or finished manual sweep, drops system/hook noise, and yields a SweepJob
 only when the session clears every floor in `_shortfall`. The heavy `claude -p` pass
 runs in a double-forked daemon that outlives session teardown. The daemon takes a
 per-project `flock` before it runs, so a second sweep for the same project queues
@@ -218,9 +218,18 @@ def _log_moment(started: str) -> str:
     return moment.astimezone().strftime("%Y-%m-%d %H:%M")
 
 
-def _render_template(path: Path, **variables: str) -> str:
-    """Read a template file and substitute {{name}} placeholders."""
+def _render_template(path: Path, *, manual: bool = False, **variables: str) -> str:
+    """Read a template file, keep the passages for one kind of run, and fill its placeholders.
+
+    A `<!-- headless -->` block is for the detached worker and a `<!-- manual -->`
+    block for a sweep run in the user's own session. The other kind's blocks are
+    dropped and the kept blocks' marker lines removed, so the worker's prompt reads
+    exactly as it would with no markers at all.
+    """
+    keep, drop = ("manual", "headless") if manual else ("headless", "manual")
     content = path.read_text(encoding="utf-8")
+    content = re.sub(rf"<!-- {drop} -->\n.*?<!-- /{drop} -->\n", "", content, flags=re.DOTALL)
+    content = re.sub(rf"<!-- /?{keep} -->\n", "", content)
     for key, value in variables.items():
         content = content.replace("{{" + key + "}}", value)
     return content
@@ -362,7 +371,7 @@ class Sweep:
         self,
         store: Store,
         config: SessionMemoryConfig,
-        runner: Runner,
+        runner: Runner | None = None,
         vault: VaultCLI | None = None,
         *,
         env: Mapping[str, str] | None = None,
@@ -426,7 +435,7 @@ class Sweep:
                 _log.info("sweep skipped: no transcript")
                 return None
             entries = transcript.read_entries(transcript_path)
-            window = transcript.window_since_compact(entries)
+            window = transcript.window_since_boundary(entries)
             shortfall = self._shortfall(window)
             if shortfall is not None:
                 _log.info("sweep skipped: %s", shortfall)
@@ -475,7 +484,7 @@ class Sweep:
         _log.warning("sweep skipped: lock still held after %.0fs", polls * QUEUE_POLL)
         return False
 
-    def _prepare(self, job: SweepJob) -> tuple[Target, str] | str:
+    def _prepare(self, job: SweepJob, *, title: str = "") -> tuple[Target, str] | str:
         """Resolve where to write and compose this session's log command, or the skip reason.
 
         The command is built here rather than run here: a session the model
@@ -495,17 +504,49 @@ class Sweep:
         if target is None:
             missing = next(k for k in Target.REQUIRED if not lookup.paths.get(k))
             return f"project payload lacked {missing}"
-        return target, self._log_command(job)
+        return target, self._log_command(job, title=title)
 
-    def _log_command(self, job: SweepJob) -> str:
+    def compose(self, job: SweepJob, *, manual: bool = False) -> tuple[Target, str] | str:
+        """Resolve where this sweep writes and render its prompt, or say why it cannot run.
+
+        `manual` renders for a sweep run in the user's own session: the template's
+        manual passages, no transcript, since that agent saw the conversation, and the
+        log's title on the command line, since no environment carries it there.
+        """
+        prepared = self._prepare(job, title=_log_moment(job.started) if manual else "")
+        if isinstance(prepared, str):
+            return prepared
+        target, log_command = prepared
+        # A project registered on another machine has no folder until its first
+        # page is written, and the model runs inside the folder.
+        target.project_dir.mkdir(parents=True, exist_ok=True)
+        prompt = _render_template(
+            PROMPT_PATH,
+            manual=manual,
+            transcript="" if manual else _transcript_text(job.window),
+            existing_memory=self._existing_memory(target),
+            git_context=_git_context(job.cwd),
+            capture_criteria=CRITERIA_PATH.read_text(encoding="utf-8"),
+            vault_cli=self.vault.command if self.vault else "",
+            repo=job.cwd,
+            project_dir=str(target.project_dir),
+            log_command=log_command,
+            nothing_sentinel=NOTHING_TO_RECORD,
+            changes=self._changes(job),
+            existing_log=self._existing_log(target, job.session_id),
+        )
+        return target, prompt
+
+    def _log_command(self, job: SweepJob, *, title: str = "") -> str:
         """Build the `sessionmemory log` command line, complete except for the body.
 
         The body is the one thing the model composes rather than runs, because the
         summary does not exist until it writes one, and it arrives on stdin through
         `--body-file -` so its quoting cannot be mangled. Everything that decides
-        placement, filename, and frontmatter stays resolved here. The title is not on
-        the line: the hook resolves it and hands it over in the environment, because a
-        model asked to type it rewrites it.
+        placement, filename, and frontmatter stays resolved here. The worker leaves the
+        title off the line and hands it over in the environment, because a model asked
+        to type it rewrites it; a manual sweep has no such channel, so `title` puts it
+        on the line.
         """
         args = [
             self.vault.command if self.vault else "",
@@ -519,6 +560,8 @@ class Sweep:
             args += ["--transcript", job.transcript_path]
         if job.session_url:
             args += ["--url", job.session_url]
+        if title:
+            args += ["--title", title]
         return shlex.join(args)
 
     def _changes(self, job: SweepJob) -> str:
@@ -583,6 +626,9 @@ class Sweep:
         (it runs in a detached worker with no one to catch it). Returns the
         remediation notes.
         """
+        if self.runner is None:
+            _log.info("sweep skipped: no runner")
+            return []
         lock = Lock(self.store.lock_path)
         log.bind(step="sweep", session=job.session_id)
         if not self._await_lock(lock):
@@ -592,28 +638,12 @@ class Sweep:
                 self.vault = VaultCLI.for_root(
                     self.vault_root, env=self.env, version_timeout=WORKER_CLI_TIMEOUT
                 )
-            prepared = self._prepare(job)
-            if isinstance(prepared, str):
-                _log.info("sweep skipped: %s", prepared)
+            composed = self.compose(job)
+            if isinstance(composed, str):
+                _log.info("sweep skipped: %s", composed)
                 return []
-            target, log_command = prepared
-            # A project registered on another machine has no folder until its first
-            # page is written, and the model runs inside the folder.
-            target.project_dir.mkdir(parents=True, exist_ok=True)
+            target, prompt = composed
             started_at = time.time()
-            prompt = _render_template(
-                PROMPT_PATH,
-                transcript=_transcript_text(job.window),
-                existing_memory=self._existing_memory(target),
-                git_context=_git_context(job.cwd),
-                capture_criteria=CRITERIA_PATH.read_text(encoding="utf-8"),
-                vault_cli=self.vault.command if self.vault else "",
-                repo=job.cwd,
-                log_command=log_command,
-                nothing_sentinel=NOTHING_TO_RECORD,
-                changes=self._changes(job),
-                existing_log=self._existing_log(target, job.session_id),
-            )
             guard = WriteGuard(
                 state_dir=self.store.state_dir,
                 vault_root=self.vault.root if self.vault else None,

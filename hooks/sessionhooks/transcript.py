@@ -1,8 +1,8 @@
 """Transcript reading helpers for the sweep.
 
 Provides a windowed, noise-filtered view of the session transcript so the
-sweep only processes content recorded since the last compaction boundary and
-skips system/hook injections that are not meaningful user/assistant turns.
+sweep only processes content recorded since the last boundary (a compaction or a
+finished manual sweep) and skips system/hook injections that are not meaningful user/assistant turns.
 """
 
 from __future__ import annotations
@@ -11,7 +11,10 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 NOISE_MARKERS: frozenset[str] = frozenset(
     {
@@ -28,6 +31,11 @@ NOISE_MARKERS: frozenset[str] = frozenset(
         "Base directory for this skill:",
     }
 )
+
+# The slash command that runs the sweep in the main session, and the script its
+# skill runs last. A successful run of the one inside the other is a boundary.
+MANUAL_SWEEP_COMMAND = "/sessionmemory:sweep"
+SWEEP_CHECK_SCRIPT = "sweep-check.py"
 
 _COMMAND_NAME = re.compile(r"<command-name>(.*?)</command-name>", re.DOTALL)
 _COMMAND_ARGS = re.compile(r"<command-args>(.*?)</command-args>", re.DOTALL)
@@ -99,15 +107,77 @@ def _is_compact_boundary(entry: dict[str, Any]) -> bool:
     )
 
 
-def window_since_compact(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Return entries recorded after the most recent compaction boundary.
+def _opens_turn(entry: dict[str, Any]) -> bool:
+    """Return whether an entry is something the user sent, which starts a new turn.
 
-    Avoids re-processing content an earlier sweep already saw before a compact.
-    With no boundary present, returns all entries.
+    A skill's expanded prompt is a meta entry and a tool result is the agent's own
+    turn continuing, so neither counts. An interruption is recorded as user text
+    and does.
+    """
+    if entry.get("type") != "user" or entry.get("isMeta"):
+        return False
+    message = entry.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, str):
+        return True
+    return isinstance(content, list) and any(
+        isinstance(block, dict) and block.get("type") == "text" for block in content
+    )
+
+
+def _tool_results(entry: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return the tool_result blocks of a user entry, else []."""
+    if entry.get("type") != "user":
+        return []
+    message = entry.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, list):
+        return []
+    return [b for b in content if isinstance(b, dict) and b.get("type") == "tool_result"]
+
+
+def _check_runs(entry: dict[str, Any]) -> set[str]:
+    """Return the ids of every Bash call in an assistant entry that runs the sweep check."""
+    return {
+        str(block.get("id"))
+        for block in _assistant_content_blocks(entry)
+        if isinstance(block, dict)
+        and block.get("type") == "tool_use"
+        and block.get("name") == "Bash"
+        and SWEEP_CHECK_SCRIPT in str((block.get("input") or {}).get("command", ""))
+    }
+
+
+def window_since_boundary(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return entries recorded after the most recent boundary.
+
+    A boundary is a compaction, or a manual sweep that finished: a turn the user
+    opened with `MANUAL_SWEEP_COMMAND` in which the check script exited zero.
+    Either way an earlier sweep already saw what came before. Anchoring on the
+    check script's success rather than on the command means a sweep that was
+    interrupted or failed leaves the automatic sweep its whole window. With no
+    boundary present, returns all entries.
     """
     start = 0
+    in_sweep = False
+    check_ids: set[str] = set()
     for idx, entry in enumerate(entries):
         if _is_compact_boundary(entry):
+            start = idx + 1
+            in_sweep = False
+            continue
+        if _opens_turn(entry):
+            name = _COMMAND_NAME.search(_entry_text(entry))
+            in_sweep = name is not None and name.group(1).strip() == MANUAL_SWEEP_COMMAND
+            check_ids.clear()
+            continue
+        if not in_sweep:
+            continue
+        check_ids |= _check_runs(entry)
+        if any(
+            block.get("tool_use_id") in check_ids and not block.get("is_error")
+            for block in _tool_results(entry)
+        ):
             start = idx + 1
     return entries[start:]
 
@@ -170,6 +240,23 @@ def _prompted_model(entries: list[dict[str, Any]], index: int) -> bool:
             content = message.get("content") if isinstance(message, dict) else None
             return bool(entry.get("isMeta")) and isinstance(content, list)
     return False
+
+
+def find_transcript(session_id: str, *, env: Mapping[str, str]) -> str:
+    """Return the path of a session's transcript, or '' when none is on disk.
+
+    Claude Code files a transcript as `<config dir>/projects/<encoded cwd>/<id>.jsonl`.
+    Searching every project folder for the id finds it without re-deriving the
+    encoding, which is Claude Code's to change.
+    """
+    if not session_id or "/" in session_id:
+        return ""
+    config_dir = Path(env.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+    try:
+        found = sorted((config_dir / "projects").glob(f"*/{session_id}.jsonl"))
+    except OSError:
+        return ""
+    return str(found[0]) if found else ""
 
 
 def _typed_command(entry: dict[str, Any], text: str) -> dict[str, Any] | None:

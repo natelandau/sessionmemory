@@ -463,6 +463,70 @@ def test_gate_below_threshold_returns_none(tmp_path: Path) -> None:
     assert result is None
 
 
+def _manual_sweep_turn() -> list[dict]:
+    """A finished `/sessionmemory:sweep` turn: the command, its check run, the result."""
+    check = "/plugin/hooks/sweep-check.py"
+    return [
+        _user("<command-name>/sessionmemory:sweep</command-name>"),
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {"type": "tool_use", "id": "tu_c", "name": "Bash", "input": {"command": check}}
+                ]
+            },
+        },
+        {
+            "type": "user",
+            "message": {"content": [{"type": "tool_result", "tool_use_id": "tu_c", "content": ""}]},
+        },
+    ]
+
+
+def test_gate_skips_a_session_already_swept_by_hand(tmp_path: Path) -> None:
+    """Verify a finished manual sweep leaves only the short tail after it to judge."""
+    # Given a long session, a finished manual sweep, then one more exchange
+    hooks_log = _capture_log(tmp_path)
+    store = store_at(tmp_path)
+    t_file = tmp_path / "swept.jsonl"
+    entries = [*_meaningful(20), *_manual_sweep_turn(), _user("thanks"), _assistant("bye")]
+    _write_transcript(t_file, entries)
+    sweep = Sweep(store, SessionMemoryConfig(), _FakeRunner([]))
+
+    # When gating
+    result = sweep._gate({"cwd": str(tmp_path), "transcript_path": str(t_file)})
+
+    # Then the sweep is skipped as below threshold
+    assert result is None
+    assert "sweep skipped: below threshold (exchanges 2/" in hooks_log_text(hooks_log)
+
+
+def test_gate_sweeps_only_the_work_after_a_manual_sweep(tmp_path: Path) -> None:
+    """Verify work done after a manual sweep is swept, and nothing before it."""
+    # Given a manual sweep followed by a full session's worth of work
+    store = store_at(tmp_path)
+    t_file = tmp_path / "swept.jsonl"
+    before, after = _meaningful(4), _meaningful(20)
+    _write_transcript(t_file, [*before, *_manual_sweep_turn(), *after])
+    sweep = Sweep(store, SessionMemoryConfig(), _FakeRunner([]))
+
+    # When gating
+    job = sweep._gate({"cwd": str(tmp_path), "transcript_path": str(t_file)})
+
+    # Then the job's window is the later work alone
+    assert job is not None
+    assert job.window == after
+
+
+def test_run_job_without_a_runner_is_skipped(tmp_path: Path) -> None:
+    """Verify a sweep built only to compose a prompt never runs a job."""
+    hooks_log = _capture_log(tmp_path)
+    sweep = Sweep(store_at(tmp_path), SessionMemoryConfig())
+
+    assert sweep._run_job(_job(cwd=str(tmp_path))) == []
+    assert "sweep skipped: no runner" in hooks_log_text(hooks_log)
+
+
 def test_gate_logs_a_below_threshold_skip_with_every_count(tmp_path: Path) -> None:
     """Verify a skipped session explains itself: each measure against its floor."""
     hooks_log = _capture_log(tmp_path)
@@ -644,7 +708,7 @@ def test_gate_returns_none_on_an_unexpected_error(
         message = "boom"
         raise RuntimeError(message)
 
-    monkeypatch.setattr(sweep_mod.transcript, "window_since_compact", _raise)
+    monkeypatch.setattr(sweep_mod.transcript, "window_since_boundary", _raise)
 
     # When gating
     result = sweep._gate({"cwd": str(tmp_path), "transcript_path": str(t_file)})
@@ -694,7 +758,7 @@ def test_trigger_never_raises_when_the_gate_itself_blows_up(
         message = "boom"
         raise RuntimeError(message)
 
-    monkeypatch.setattr(sweep_mod.transcript, "window_since_compact", _raise)
+    monkeypatch.setattr(sweep_mod.transcript, "window_since_boundary", _raise)
 
     # When triggering
     sweep.trigger({"cwd": str(tmp_path), "transcript_path": str(t_file)})  # must not raise
