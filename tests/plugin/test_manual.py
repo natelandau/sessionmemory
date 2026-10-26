@@ -164,10 +164,11 @@ def test_finish_quarantines_a_malformed_learning(manual_factory, target: Target)
     assert any(note.startswith(f"malformed-quarantined: {bad.resolve()}") for note in notes)
 
 
-def test_finish_restores_local_md_from_before_begin(manual_factory, target: Target) -> None:
-    """Verify an edited CLAUDE.local.md is put back from bytes captured in the earlier process."""
-    # Given a person's CLAUDE.local.md, a started sweep, then an edit to it
-    local_md = target.project_dir / "CLAUDE.local.md"
+def test_finish_restores_local_from_before_begin(manual_factory, target: Target) -> None:
+    """Verify an edited file under local/ is put back from bytes captured in the earlier process."""
+    # Given a person's skill file under local/, a started sweep, then an edit to it
+    local_md = target.project_dir / "local" / "claude" / "skills" / "a" / "SKILL.md"
+    local_md.parent.mkdir(parents=True)
     local_md.write_text("private notes\n", encoding="utf-8")
     manual_factory().begin()
     local_md.write_text("edited by the sweep\n", encoding="utf-8")
@@ -189,6 +190,54 @@ def test_finish_removes_its_record(manual_factory) -> None:
     # When checking again / Then it is refused
     with pytest.raises(ManualSweepError):
         manual_factory().finish()
+
+
+@pytest.mark.parametrize("key", ["local", "local_md"])
+def test_started_load_reads_the_local_capture_under_either_key(
+    tmp_path: Path, target: Target, key: str
+) -> None:
+    """Verify a record holding its capture under `local` or the older `local_md` loads it."""
+    # Given a record whose capture sits under `key`
+    path = tmp_path / "manual-sweep.json"
+    captured = target.project_dir / "local" / "CLAUDE.local.md"
+    payload = {
+        "session_id": "s",
+        "target": {
+            "project_dir": str(target.project_dir),
+            "learnings": str(target.learnings_dir),
+            "backlog": str(target.backlog_path),
+            "logs": str(target.logs_dir),
+        },
+        "before": {},
+        key: {str(captured): "bm90ZXM="},
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    # When loading it
+    started = Started.load(path)
+
+    # Then the capture is read back
+    assert started is not None
+    assert started.local == {captured: b"notes"}
+
+
+def test_begin_skips_regenerable_and_foreign_trees_under_local(
+    manual_factory, target: Target, tmp_path: Path
+) -> None:
+    """Verify the capture leaves out files inside node_modules, .venv, venv, and .git."""
+    # Given a skill folder holding a real file beside regenerable and foreign trees
+    skill = target.project_dir / "local" / "claude" / "skills" / "a"
+    for folder in ("node_modules/pkg", ".venv/lib", "venv/bin", ".git/objects", "scripts"):
+        (skill / folder).mkdir(parents=True)
+        (skill / folder / "f.txt").write_text("x", encoding="utf-8")
+
+    # When starting a manual sweep
+    manual_factory().begin()
+
+    # Then only the skill's own file is in the recorded capture
+    started = Started.load(manual_factory().state_path)
+    assert started is not None
+    assert set(started.local) == {(skill / "scripts" / "f.txt").resolve()}
 
 
 @pytest.mark.parametrize("content", ["", "not json", '{"session_id": "s"}', "[]"])

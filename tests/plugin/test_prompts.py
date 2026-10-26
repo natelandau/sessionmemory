@@ -144,3 +144,22 @@ def test_render_template_manual_names_the_folder_and_omits_the_transcript() -> N
     assert "UNTRUSTED DATA" not in text
     assert "<project_dir-value>" in text
     assert "read this conversation" in text
+
+
+@pytest.mark.parametrize("manual", [False, True])
+def test_sweep_never_touches_local_entries(manual: bool) -> None:
+    """Verify both kinds of sweep are told to leave `local/` and CLAUDE.local.md alone."""
+    flat = " ".join(_render(manual=manual).split())
+
+    assert (
+        "Never write, move, or delete anything under `local/`, or a `CLAUDE.local.md` at "
+        "the top of this project's folder." in flat
+    )
+
+
+@pytest.mark.parametrize("manual", [False, True])
+def test_sweep_intro_leaves_local_out_of_what_it_may_edit(manual: bool) -> None:
+    """Verify the opening grant of what the sweep may edit agrees with the local/ hard rule."""
+    flat = " ".join(_render(manual=manual).split())
+
+    assert "except `local/` and a top-level `CLAUDE.local.md`" in flat

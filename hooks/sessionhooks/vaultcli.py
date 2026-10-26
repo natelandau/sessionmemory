@@ -374,13 +374,14 @@ class VaultCLI:
         return slug if isinstance(slug, str) and slug else None
 
     def link_local(self, *, cwd: Path, env: Mapping[str, str]) -> dict[str, Any] | None:
-        """Link this checkout's `CLAUDE.local.md` to the vault copy; the payload, or None.
+        """Link every local entry the vault holds into this checkout; the payload, or None.
 
-        The CLI owns every rule: where the link goes, what counts as a conflict, and
-        what it refuses. A conflict exits 1 and still prints its payload, which is
-        returned. A refusal exits 1 with no payload and reads as `{"status": "refused"}`,
-        so the hook can tell it from a CLI that could not run or answered nothing usable,
-        which reads as None.
+        The CLI owns every rule: which entries exist, where each link goes, what counts as
+        a conflict, and what it refuses. The payload is `{"entries": [...]}` with one
+        result per entry. Any conflict exits 1 and still prints the whole payload, which is
+        returned. A refusal exits 1 with nothing on stdout and reads as
+        `{"status": "refused"}`, so the hook can tell it from a CLI that could not run or
+        printed something without an `entries` list, which reads as None.
         """
         proc = self.run(
             ["local", "link", "--json", "--cwd", str(cwd)],
@@ -391,11 +392,11 @@ class VaultCLI:
         if proc is None or proc.returncode not in (EXIT_OK, EXIT_REFUSED):
             return None
         payload = _json_object(proc.stdout)
-        if proc.returncode == EXIT_OK:
+        if payload is not None and isinstance(payload.get("entries"), list):
             return payload
-        if payload is not None and isinstance(payload.get("status"), str):
-            return payload
-        return {"status": "refused"}
+        if proc.returncode == EXIT_REFUSED and not proc.stdout.strip():
+            return {"status": "refused"}
+        return None
 
     def commit(self, *, env: Mapping[str, str], note: str = "") -> CommitOutcome:
         """Commit the vault's outstanding changes and report what happened."""

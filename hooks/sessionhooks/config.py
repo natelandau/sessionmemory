@@ -62,7 +62,7 @@ class SessionMemoryConfig:
     # Where the hooks log. Empty means the XDG state root, which is the normal case.
     log_path: str = ""
     log_level: str = DEFAULT_LOG_LEVEL
-    # Link this checkout's CLAUDE.local.md to the vault copy at session start.
+    # Link this checkout's local entries (CLAUDE.local.md, skills, rules) to the vault at session start.
     local_link: bool = True
 
     @classmethod

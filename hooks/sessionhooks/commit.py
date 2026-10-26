@@ -118,12 +118,20 @@ def _local_md_paths(root: Path) -> list[str]:
     """List each project's regular-file CLAUDE.local.md, relative to `root`.
 
     A global gitignore commonly names the file, which hides it from `add -A` and from
-    `status --porcelain`, so these are force-staged. A symlink is skipped, since a vault
-    copy is a real file and a link at that path is not one.
+    `status --porcelain`, so these are force-staged. The vault's own `.gitignore`
+    re-includes all of `local/`, so this is a backstop for a vault missing those lines;
+    the copy still at the project folder's top, before the CLI moves it, is staged the
+    same way. A symlink is skipped, since a vault copy is a real file and a link at
+    that path is not one.
     """
+    projects = root / "projects"
+    found = [
+        *projects.glob(f"*/{shape.LOCAL_MD}"),
+        *projects.glob(f"*/{shape.LOCAL_DIR}/{shape.LOCAL_MD}"),
+    ]
     return [
         path.relative_to(root).as_posix()
-        for path in sorted((root / "projects").glob(f"*/{shape.LOCAL_MD}"))
+        for path in sorted(found)
         if path.is_file() and not path.is_symlink()
     ]
 
@@ -131,15 +139,21 @@ def _local_md_paths(root: Path) -> list[str]:
 def _has_changes(status: str, local_md: list[str], *, prefix: str | None) -> bool:
     """Report whether a `status --porcelain -z --ignored` listing holds anything to commit.
 
-    An ignored entry counts only when it is a CLAUDE.local.md the commit force-stages;
-    every other ignored file stays out of history. Porcelain paths are relative to the
+    An ignored entry counts only when it is a CLAUDE.local.md the commit force-stages, or
+    an ignored folder holding one, which git lists in place of the files under it; every
+    other ignored file stays out of history. Porcelain paths are relative to the
     repository's top, hence the vault's prefix.
     """
     forced = {f"{prefix or ''}{path}" for path in local_md}
     for entry in status.split("\0"):
         if not entry:
             continue
-        if not entry.startswith("!! ") or entry[3:] in forced:
+        if not entry.startswith("!! "):
+            return True
+        listed = entry[3:]
+        if listed in forced or (
+            listed.endswith("/") and any(path.startswith(listed) for path in forced)
+        ):
             return True
     return False
 

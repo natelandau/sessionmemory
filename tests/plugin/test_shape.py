@@ -9,7 +9,7 @@ from sessionhooks.shape import (  # ty: ignore[unresolved-import]
     UNREADABLE,
     is_debris,
     learning_problem,
-    local_md_problem,
+    local_problem,
     log_problem,
     nested_problem,
     stray_problem,
@@ -19,6 +19,10 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 GOOD = '---\ntitle: "A title"\nuuid: abc\nsummary: "What it says"\ncreated: "2026-10-04"\nupdated: "2026-10-04"\n---\n\nBody.\n'
+
+
+_LOCAL = "local/ is the person's, not the sweep's"
+_LEGACY = "CLAUDE.local.md is the person's, not the sweep's"
 
 
 def _write(path: Path, text: str) -> Path:
@@ -75,13 +79,24 @@ def test_stray_problem_flags_top_level_files_except_the_backlog(tmp_path: Path) 
     assert stray_problem(_write(project / "specs" / "a.md", "x"), project) is None
 
 
-def test_local_md_problem_flags_only_the_top_level_file(tmp_path: Path) -> None:
-    """Verify only CLAUDE.local.md directly in the project folder is the person's."""
+@pytest.mark.parametrize(
+    ("relative", "expected"),
+    [
+        pytest.param("local/CLAUDE.local.md", _LOCAL, id="local-md"),
+        pytest.param("local/claude/skills/a/SKILL.md", _LOCAL, id="skill-file"),
+        pytest.param("local/claude/rules/b.md", _LOCAL, id="rule"),
+        pytest.param("CLAUDE.local.md", _LEGACY, id="legacy-copy"),
+        pytest.param("learnings/CLAUDE.local.md", None, id="in-a-field"),
+        pytest.param("backlog.md", None, id="backlog"),
+        pytest.param("learnings/local/a.md", None, id="local-named-folder-elsewhere"),
+    ],
+)
+def test_local_problem_flags_everything_under_local(
+    tmp_path: Path, relative: str, expected: str | None
+) -> None:
+    """Verify every file under local/, and the legacy top-level copy, is the person's."""
     project = tmp_path / "x"
-    message = "CLAUDE.local.md is the person's, not the sweep's"
-    assert local_md_problem(_write(project / "CLAUDE.local.md", "x"), project) == message
-    assert local_md_problem(_write(project / "learnings" / "CLAUDE.local.md", "x"), project) is None
-    assert local_md_problem(_write(project / "backlog.md", "x"), project) is None
+    assert local_problem(_write(project / relative, "x"), project) == expected
 
 
 def test_learning_problem_reads_past_an_indented_fence(tmp_path: Path) -> None:

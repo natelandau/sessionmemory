@@ -629,43 +629,66 @@ def test_for_root_passes_the_version_timeout_to_the_handshake(tmp_path: Path, mo
     assert run.call_args.kwargs["timeout"] == 120
 
 
-def test_link_local_parses_json(marked_vault, stub_cli, tmp_path):
-    """Verify link_local() sends `local link --json --cwd` and returns the payload."""
+_ENTRIES = {
+    "entries": [
+        {
+            "kind": "local-md",
+            "name": "CLAUDE.local.md",
+            "status": "created",
+            "link": "/p/CLAUDE.local.md",
+            "target": "/v/t",
+        },
+        {
+            "kind": "skill",
+            "name": "skills/a",
+            "status": "conflict",
+            "link": "/p/.claude/skills/a",
+            "target": "/v/a",
+        },
+    ]
+}
+
+
+def _link_stub(stub_cli: Path, body: str) -> None:
     stub_cli.write_text(
         "#!/usr/bin/env python3\nimport json, sys, pathlib\n"
         "pathlib.Path(__file__).with_name('args.txt').write_text(' '.join(sys.argv[1:]))\n"
-        "print(json.dumps({'status': 'created', 'link': '/p/CLAUDE.local.md', 'target': '/v/t'}))\n",
+        f"{body}\n",
         encoding="utf-8",
     )
     stub_cli.chmod(0o755)
+
+
+@pytest.mark.parametrize("code", [0, 1], ids=["ok", "conflict"])
+def test_link_local_returns_the_whole_entries_payload(marked_vault, stub_cli, tmp_path, code):
+    """Verify link_local() sends `local link --json --cwd` and returns every entry, on exit 1 too."""
+    _link_stub(stub_cli, f"print(json.dumps({_ENTRIES!r}))\nsys.exit({code})")
     cli = VaultCLI.discover(env=_env(**{ROOT_ENV: str(marked_vault)}), configured=None)
 
     payload = cli.link_local(cwd=tmp_path, env=_env())
 
-    assert payload == {"status": "created", "link": "/p/CLAUDE.local.md", "target": "/v/t"}
+    assert payload == _ENTRIES
     sent = (stub_cli.parent / "args.txt").read_text(encoding="utf-8").split()
     assert sent[:2] == ["local", "link"]
     assert "--json" in sent
     assert sent[sent.index("--cwd") + 1] == str(tmp_path)
 
 
-def _link_stub(stub_cli: Path, body: str) -> None:
-    stub_cli.write_text(f"#!/usr/bin/env python3\nimport json, sys\n{body}\n", encoding="utf-8")
-    stub_cli.chmod(0o755)
-
-
-def test_link_local_returns_a_conflict_payload(marked_vault, stub_cli, tmp_path):
-    """Verify a conflict, which exits 1 and still prints its payload, is returned."""
-    _link_stub(
-        stub_cli,
-        "print(json.dumps({'status': 'conflict', 'link': '/p/CLAUDE.local.md'}))\nsys.exit(1)",
-    )
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param("print(json.dumps({'status': 'created', 'target': '/v/t'}))", id="ok"),
+        pytest.param("print(json.dumps({'status': 'conflict'}))\nsys.exit(1)", id="exit-1"),
+        pytest.param("print(json.dumps({'entries': 'x'}))\nsys.exit(1)", id="not-a-list"),
+        pytest.param("print('not json')\nsys.exit(1)", id="exit-1-not-json"),
+    ],
+)
+def test_link_local_none_without_an_entries_list(marked_vault, stub_cli, tmp_path, body):
+    """Verify output lacking an `entries` list reads as unavailable, whatever the exit."""
+    _link_stub(stub_cli, body)
     cli = VaultCLI.discover(env=_env(**{ROOT_ENV: str(marked_vault)}), configured=None)
 
-    assert cli.link_local(cwd=tmp_path, env=_env()) == {
-        "status": "conflict",
-        "link": "/p/CLAUDE.local.md",
-    }
+    assert cli.link_local(cwd=tmp_path, env=_env()) is None
 
 
 def test_link_local_reads_a_bare_refusal_as_refused(marked_vault, stub_cli, tmp_path):

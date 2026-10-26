@@ -648,7 +648,7 @@ class Sweep:
                 state_dir=self.store.state_dir,
                 vault_root=self.vault.root if self.vault else None,
             )
-            guard.capture_local_md(target)
+            guard.capture_local(target)
             before = snapshot.take(target.project_dir)
             result = self.runner.run(
                 prompt,

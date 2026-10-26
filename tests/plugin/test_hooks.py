@@ -1284,7 +1284,10 @@ def _local_repo(tmp_path: Path, canary: str = "CANARY-LOCAL") -> tuple[Path, Pat
     ):
         subprocess.run(["git", *args], cwd=proj, check=True, capture_output=True, env=git_env)
     vault = _fake_vault(tmp_path, proj)
-    (vault / "projects" / proj.name / "CLAUDE.local.md").write_text(canary, encoding="utf-8")
+    (vault / "projects" / proj.name / "local").mkdir(parents=True, exist_ok=True)
+    (vault / "projects" / proj.name / "local" / "CLAUDE.local.md").write_text(
+        canary, encoding="utf-8"
+    )
     return proj, vault
 
 
@@ -1337,12 +1340,13 @@ def test_sessionstart_logs_a_local_conflict(tmp_path: Path) -> None:
     (proj / "CLAUDE.local.md").write_text("mine", encoding="utf-8")
     _start(tmp_path, proj, vault)
     logged = _hooks_log(tmp_path)
-    assert f"local conflict: {proj.resolve() / 'CLAUDE.local.md'}" in logged
+    assert f"local conflict: CLAUDE.local.md at {proj.resolve() / 'CLAUDE.local.md'}" in logged
+    assert "local conflict 1" in logged
     assert "local unavailable" not in logged
 
 
-def test_sessionstart_logs_a_local_refusal(tmp_path: Path) -> None:
-    """Verify a CLAUDE.local.md git tracks, which the CLI refuses, is logged as refused."""
+def test_sessionstart_logs_a_tracked_local_md(tmp_path: Path) -> None:
+    """Verify a CLAUDE.local.md git tracks is logged as tracked and left alone."""
     proj, vault = _local_repo(tmp_path)
     (proj / "CLAUDE.local.md").write_text("committed", encoding="utf-8")
     subprocess.run(
@@ -1354,7 +1358,7 @@ def test_sessionstart_logs_a_local_refusal(tmp_path: Path) -> None:
     )
     _start(tmp_path, proj, vault)
     logged = _hooks_log(tmp_path)
-    assert "local refused" in logged
+    assert "local tracked" in logged
     assert not (proj / "CLAUDE.local.md").is_symlink()
 
 
@@ -1380,7 +1384,7 @@ def test_sessionstart_links_a_linked_worktree_at_its_own_top_level(tmp_path: Pat
 
     link = worktree / "CLAUDE.local.md"
     assert link.is_symlink()
-    assert link.readlink() == vault / "projects" / proj.name / "CLAUDE.local.md"
+    assert link.readlink() == vault / "projects" / proj.name / "local" / "CLAUDE.local.md"
     assert not (sub / "CLAUDE.local.md").exists()
     assert not (proj / "CLAUDE.local.md").is_symlink()
     shared = proj / ".git" / "info" / "exclude"
@@ -1391,7 +1395,7 @@ def test_sessionstart_links_a_linked_worktree_at_its_own_top_level(tmp_path: Pat
 def test_sessionstart_logs_local_unreadable_and_injects_no_block(tmp_path: Path) -> None:
     """Verify a linked copy the hook cannot read is logged and adds no block."""
     proj, vault = _local_repo(tmp_path)
-    target = vault / "projects" / proj.name / "CLAUDE.local.md"
+    target = vault / "projects" / proj.name / "local" / "CLAUDE.local.md"
     target.chmod(0)
     try:
         context = _start(tmp_path, proj, vault)
@@ -1401,21 +1405,112 @@ def test_sessionstart_logs_local_unreadable_and_injects_no_block(tmp_path: Path)
     assert "linked from the vault" not in context
 
 
-def test_local_block_treats_a_payload_without_a_status_as_unavailable(tmp_path: Path) -> None:
-    """Verify a successful payload lacking a string status logs `local unavailable`."""
+def test_sessionstart_links_skills_and_rules_and_names_them(tmp_path: Path) -> None:
+    """Verify skills and rules are linked and named, and only CLAUDE.local.md is injected."""
+    # Given a vault holding CLAUDE.local.md, one skill, and one rule
+    proj, vault = _local_repo(tmp_path)
+    claude = vault / "projects" / proj.name / "local" / "claude"
+    (claude / "skills" / "a").mkdir(parents=True)
+    (claude / "skills" / "a" / "SKILL.md").write_text("SKILL-BODY", encoding="utf-8")
+    (claude / "rules").mkdir(parents=True)
+    (claude / "rules" / "b.md").write_text("RULE-BODY", encoding="utf-8")
 
-    class _Vault:
-        def link_local(self, **_kwargs: object) -> dict[str, object]:
-            return {"link": "x", "status": None}
+    # When the first session starts
+    context = _start(tmp_path, proj, vault)
 
+    # Then every entry is linked
+    assert (proj / "CLAUDE.local.md").is_symlink()
+    assert (proj / ".claude" / "skills" / "a").is_symlink()
+    assert (proj / ".claude" / "rules" / "b.md").is_symlink()
+    # And CLAUDE.local.md is injected under its note, but no skill or rule body is
+    assert f"{sessionstart.LOCAL_LINKED_NOTE}\n\nCANARY-LOCAL" in context
+    assert "SKILL-BODY" not in context
+    assert "RULE-BODY" not in context
+    # And one line names both, when they load, and the import approval a rule waits on
+    line = next(x for x in context.splitlines() if "skills/a" in x)
+    assert "rules/b.md" in line
+    assert "next session" in line
+    assert "Allow external CLAUDE.md file imports?" in line
+    assert "local created 3" in _hooks_log(tmp_path)
+
+
+class _LinkVault:
+    """A VaultCLI stand-in whose `local link` payload is fixed."""
+
+    def __init__(self, payload: dict[str, object] | None) -> None:
+        self.payload = payload
+
+    def link_local(self, **_kwargs: object) -> dict[str, object] | None:
+        return self.payload
+
+
+def _local_block(payload: dict[str, object] | None, tmp_path: Path) -> tuple[list[str], list[str]]:
     clauses: list[str] = []
     blocks = sessionstart._local_block(
-        _Vault(),
+        _LinkVault(payload),
         SessionMemoryConfig(),
         cwd=tmp_path,
         clauses=clauses,
-        log=logging.getLogger("test"),
+        log=logging.getLogger("test.local"),
     )
+    return blocks, clauses
+
+
+def _entry(name: str, status: str, kind: str = "skill") -> dict[str, str]:
+    return {"kind": kind, "name": name, "status": status, "link": f"/p/{name}", "target": "/v"}
+
+
+@pytest.mark.parametrize(
+    ("payload", "clause"),
+    [
+        pytest.param(None, "local unavailable", id="no-answer"),
+        pytest.param({"link": "x", "status": "created"}, "local unavailable", id="no-entries"),
+        pytest.param({"entries": "x"}, "local unavailable", id="entries-not-a-list"),
+        pytest.param({"status": "refused"}, "local refused", id="refused"),
+        pytest.param({"entries": []}, "local none", id="nothing-to-report"),
+    ],
+)
+def test_local_block_names_a_payload_with_nothing_linked(
+    tmp_path: Path, payload: dict[str, object] | None, clause: str
+) -> None:
+    """Verify a payload that links nothing adds no block and one clause saying why."""
+    blocks, clauses = _local_block(payload, tmp_path)
 
     assert blocks == []
-    assert clauses == ["local unavailable"]
+    assert clauses == [clause]
+
+
+def test_local_block_counts_statuses_in_a_fixed_order(tmp_path: Path, caplog) -> None:
+    """Verify the clause counts each status in order, omits zeros, and logs each conflict."""
+    # Given a payload listing statuses out of order, with nothing newly created
+    payload = {
+        "entries": [
+            _entry("rules/c.md", "conflict", kind="rule"),
+            _entry("skills/b", "removed"),
+            _entry("skills/a", "present"),
+            _entry("CLAUDE.local.md", "tracked", kind="local-md"),
+            _entry("skills/d", "present"),
+            _entry("skills/e", "conflict"),
+        ]
+    }
+
+    # When building the block
+    with caplog.at_level(logging.INFO, logger="test.local"):
+        blocks, clauses = _local_block(payload, tmp_path)
+
+    # Then nothing is injected and the counts read in the fixed order
+    assert blocks == []
+    assert clauses == ["local present 2, tracked 1, removed 1, conflict 2"]
+    assert "local conflict: rules/c.md at /p/rules/c.md" in caplog.messages
+    assert "local conflict: skills/e at /p/skills/e" in caplog.messages
+
+
+def test_local_block_names_only_skills_when_no_rule_was_created(tmp_path: Path) -> None:
+    """Verify a created skill alone gets the next-session line without the import approval."""
+    blocks, clauses = _local_block({"entries": [_entry("skills/a", "created")]}, tmp_path)
+
+    assert len(blocks) == 1
+    assert "skills/a" in blocks[0]
+    assert "next session" in blocks[0]
+    assert "Allow external CLAUDE.md file imports?" not in blocks[0]
+    assert clauses == ["local created 1"]

@@ -63,11 +63,11 @@ says nothing about it.
 Three hooks, and every one of them fails open. An error exits 0 rather than wedging your
 session.
 
-| Event          | What happens                                                            |
-| -------------- | ----------------------------------------------------------------------- |
-| `SessionStart` | Commits the vault, consumes any handoff, injects this project's memory, links `CLAUDE.local.md` |
-| `SessionEnd`   | Triggers the sweep, then commits the vault                              |
-| `PreCompact`   | Triggers the sweep before compaction discards the context it reads      |
+| Event          | What happens                                                                              |
+| -------------- | ----------------------------------------------------------------------------------------- |
+| `SessionStart` | Commits the vault, consumes any handoff, injects this project's memory, links local files |
+| `SessionEnd`   | Triggers the sweep, then commits the vault                                                |
+| `PreCompact`   | Triggers the sweep before compaction discards the context it reads                        |
 
 ### SessionStart
 
@@ -123,40 +123,53 @@ project root 5s, reading the head commit 5s, two version handshakes 10s, the vau
 `sessionmemory inject` 25s, which is 105 seconds in all. Injection reads no index and
 loads no model, so a first session never waits on the embedding model download.
 
-#### Linking `CLAUDE.local.md`
+#### Linking local files
 
 After it registers the project and injects the memory block, the hook runs
-`sessionmemory local link --json` for the current directory. If the vault holds a
-`CLAUDE.local.md` for the project and the checkout has no file there, the command creates
-the link. A new git worktree, a fresh
-clone, and a second machine therefore receive the file without any action from you. The
-hook runs in any git work tree, whatever starts the session, so a `/clear` in a worktree
-that you created during a session links that worktree too.
+`sessionmemory local link --json` for the current directory. The command links each
+`CLAUDE.local.md`, skill, and rule that the vault holds for the project and that the
+checkout does not have yet (see [Local files](concepts.md#local-files)). A new git
+worktree, a fresh clone, and a second machine therefore receive them without any action
+from you. The hook runs in any git work tree, whatever starts the session, so a `/clear`
+in a worktree that you created during a session links that worktree too.
 
-The hook never replaces a file that holds content. A regular `CLAUDE.local.md` in the
-checkout stays where it is until you run `sessionmemory local adopt`. See
-[`sessionmemory local`](cli.md#sessionmemory-local) for the states and the commands.
+The hook never replaces a file or folder that holds content. A real `CLAUDE.local.md`,
+skill, or rule in the checkout stays where it is until you run `sessionmemory local adopt`.
+See [`sessionmemory local`](cli.md#sessionmemory-local) for the states and the commands.
 
-Claude Code reads its memory files before `SessionStart` runs. A link that the hook
-creates therefore takes effect from the next session. To cover the session that made the
-link, the hook adds the file's content once, in a block after the memory block, under this line:
+Claude Code reads its memory files and skills before `SessionStart` runs. A link that the
+hook creates therefore takes effect from the next session. To cover the session that made
+the link, the hook adds the content of a newly linked `CLAUDE.local.md` once, in a block
+after the memory block, under this line:
 
 ```
 This checkout's CLAUDE.local.md was linked from the vault during this session start, so Claude Code did not load it for this session. It loads on its own from the next session. Its content follows.
 ```
 
 This is the one place where the content of a file enters the block. The file is not a page
-and not memory. It is the file that Claude Code would have loaded itself. Every other
-outcome adds nothing to the block and writes one clause to the start's log line:
+and not memory. It is the file that Claude Code would have loaded itself.
 
-| Clause                   | Meaning                                                                                                                        |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
-| `local present`          | The checkout already links to the vault copy                                                                                   |
-| `local none`             | The vault holds no copy for the project                                                                                        |
-| `local conflict: <path>` | A file or another link is in the way at `<path>`                                                                               |
-| `local refused`          | The command exited 1 without a JSON object that names a status, for example because git tracks the file                        |
-| `local unavailable`      | The command could not start, ran out of time, exited with a code other than 0 or 1, or exited 0 without printing a JSON object |
-| `local unreadable`       | The link was made, but the hook could not read the vault copy                                                                  |
+A newly linked skill or rule is named, not injected, since its body would cost context
+that the session can leave unused:
+
+```
+Linked from the vault during this session start: skills/deploy-check, rules/style.md. They load from the next session; a linked rule loads only after the one-time Claude Code approval "Allow external CLAUDE.md file imports?".
+```
+
+Claude Code treats a linked rule as an external import. Until you approve that dialog once
+in an interactive session in the checkout, the rule does not load, and a headless session
+skips it. A linked skill needs no approval.
+
+The hook writes one clause to the start's log line that counts each status, such as
+`local created 2, present 1, conflict 1`, and logs each conflict on its own line with the
+entry name and path. The other clauses are these:
+
+| Clause              | Meaning                                                                                                                        |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `local none`        | The vault holds nothing for the project                                                                                        |
+| `local refused`     | The command exited 1 and printed nothing, for example because the directory is not inside git                                  |
+| `local unavailable` | The command could not start, ran out of time, exited with a code other than 0 or 1, or printed no `entries` list               |
+| `local unreadable`  | The `CLAUDE.local.md` link was made, but the hook could not read the vault copy                                                |
 
 The hook links even when `inject.enabled` is false. Set `link = false` under `[local]` to
 stop it. The setting does not affect the `sessionmemory local` commands.
@@ -189,11 +202,16 @@ Nothing is committed here, and the timeout is 10 seconds.
 A commit stages everything under the vault except the derived index files and each
 project's `plans/` folder, and writes one message that says what changed.
 
-The commit also force-stages each project's `CLAUDE.local.md`. A global gitignore commonly
-lists that name, and it applies inside the vault repository too. Git hides an ignored file
-from the check that decides whether anything changed, so the hook looks for that file
-itself and does not skip the commit as clean. A vault created by `sessionmemory init` also
-re-includes the file with `!projects/*/CLAUDE.local.md` in its `.gitignore`.
+A global gitignore applies inside the vault repository too, and it can name a project's
+`local/` folder or a file in it: `local/`, `CLAUDE.local.md`, or a skill's `env/` or
+`*.log`. The vault's own `.gitignore` takes precedence. It re-includes the
+`projects/*/local/` folder itself, because git cannot re-include a file under an ignored
+folder, and then every file under it. Then it drops `.DS_Store`, `__pycache__/`,
+`node_modules/`, `.venv/`, and `venv/`. `sessionmemory init` writes these lines, and the
+`local` commands add any that an older vault lacks. The commit also force-stages each
+project's `CLAUDE.local.md` as a backstop. Git hides an ignored file, or the ignored
+folder that holds it, from the check that decides whether anything changed. The hook
+looks for that file itself, so it does not skip the commit as clean.
 
 Plans are scratch for the session that writes them, so they stay out of history even when the
 vault's `.gitignore` predates that rule. A plan already tracked stays tracked, but the
@@ -323,11 +341,15 @@ new or not, since its content is unknown and a file git cannot read would stop t
 commit. Files a sync tool, an editor, or the operating system leaves behind, such as
 `.DS_Store`, a Syncthing conflict copy, or a name ending in `~`, are left alone.
 
-A modified `CLAUDE.local.md` in the project folder is put back to the content it had
-when the pass started, because the file belongs to you and the pass has no reason to edit
-it. Edits you had not committed yet survive. The content the pass displaces is first
-copied into the quarantine directory and the log note names the copy. A deleted one is
-restored the same way. A new one is stray, as above.
+Every file under the project's `local/` folder belongs to you, and the sweep prompt tells
+the pass never to write, move, or delete anything there. A file that the pass modified is
+put back to the content it had when the pass started, so edits you had not committed yet
+survive. The content the pass displaces is first copied into the quarantine directory,
+and the log note names the copy. A deleted file is restored the same way. A file that
+appeared during the pass and is not in the vault's git history stays in place, and the
+log note names it. The pass cannot be told apart from a `local adopt` in another session,
+and removing the file can delete the only copy of an entry. The secret scrub skips
+`local/`, so the restored bytes are exactly yours.
 
 A Bash write elsewhere in the vault, a sibling project's folder foremost, is caught by
 neither backstop, and the next commit records it. This is a real control against a
@@ -390,20 +412,20 @@ Every key is optional, and omitting the file uses the defaults below. A file tha
 be read or parsed is ignored with a warning, so a broken configuration never wedges a
 session.
 
-| Key                       | Default             | What it does                                                       |
-| ------------------------- | ------------------- | ------------------------------------------------------------------ |
-| `vault.root`              | unset               | Where the vault is, for the hooks and the CLI, when `SESSIONMEMORY_VAULT` is not exported |
-| `inject.enabled`          | `true`              | Set false to stop memory injection at session start                 |
-| `sweep.enabled`           | `true`              | Set false to stop the end-of-session pass                           |
-| `sweep.model`             | `claude-sonnet-4-6` | The model the pass runs on                                          |
-| `sweep.min_exchanges`     | `10`                | Skip the pass below this many real messages, yours and the agent's  |
-| `sweep.min_user_messages` | `3`                 | Skip the pass below this many messages from you                     |
-| `sweep.min_user_chars`    | `200`               | Skip the pass below this many characters from you, in total         |
-| `sweep.timeout`           | `600`               | Seconds the pass may run before it is killed                        |
-| `sweep.save_transcript`   | `true`              | Save the pass's own session, so its API usage is auditable          |
-| `local.link`              | `true`              | Set false to stop the session start from linking `CLAUDE.local.md`  |
-| `log.path`                | `~/.local/state/sessionmemory/hooks.log` | Where every hook on this machine logs; `hooks/vault-path.py --log` prints it |
-| `log.level`               | `info`              | `debug`, `info`, `warning`, `error`, or `off`                       |
+| Key                       | Default                                  | What it does                                                                              |
+| ------------------------- | ---------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `vault.root`              | unset                                    | Where the vault is, for the hooks and the CLI, when `SESSIONMEMORY_VAULT` is not exported |
+| `inject.enabled`          | `true`                                   | Set false to stop memory injection at session start                                       |
+| `sweep.enabled`           | `true`                                   | Set false to stop the end-of-session pass                                                 |
+| `sweep.model`             | `claude-sonnet-4-6`                      | The model the pass runs on                                                                |
+| `sweep.min_exchanges`     | `10`                                     | Skip the pass below this many real messages, yours and the agent's                        |
+| `sweep.min_user_messages` | `3`                                      | Skip the pass below this many messages from you                                           |
+| `sweep.min_user_chars`    | `200`                                    | Skip the pass below this many characters from you, in total                               |
+| `sweep.timeout`           | `600`                                    | Seconds the pass may run before it is killed                                              |
+| `sweep.save_transcript`   | `true`                                   | Save the pass's own session, so its API usage is auditable                                |
+| `local.link`              | `true`                                   | Set false to stop the session start from linking local files                              |
+| `log.path`                | `~/.local/state/sessionmemory/hooks.log` | Where every hook on this machine logs; `hooks/vault-path.py --log` prints it              |
+| `log.level`               | `info`                                   | `debug`, `info`, `warning`, `error`, or `off`                                             |
 
 `hooks/sessionmemory.toml.example` in this repository holds the same table as a file
 you can copy.
@@ -427,13 +449,13 @@ still reaches git.
 The automatic pass adds and refines. Deciding that a page is wrong, finished, or
 redundant is a judgment, so curation is yours to start.
 
-| Command                           | What it does                                                                |
-| --------------------------------- | --------------------------------------------------------------------------- |
+| Command                  | What it does                                                                  |
+| ------------------------ | ----------------------------------------------------------------------------- |
 | `/sessionmemory:review`  | Curates the learnings: sharpens weak titles, retires stale or redundant pages |
-| `/sessionmemory:backlog` | Triages `backlog.md`, then ranks what is left by impact and effort           |
-| `/sessionmemory:handoff` | Writes a consume-once handoff of the current task, for the next session      |
+| `/sessionmemory:backlog` | Triages `backlog.md`, then ranks what is left by impact and effort            |
+| `/sessionmemory:handoff` | Writes a consume-once handoff of the current task, for the next session       |
 | `/sessionmemory:sweep`   | Records this session into the vault now, in this session                      |
-| `/sessionmemory:cli`    | The command surface, loaded when a session needs to read or write the vault  |
+| `/sessionmemory:cli`     | The command surface, loaded when a session needs to read or write the vault   |
 
 `cli` is the one skill a session can reach on its own. The other four run only
 when you ask for them. [Sweeping by hand](#sweeping-by-hand) describes `sweep`.
@@ -459,8 +481,8 @@ receives it and deletes it. Run it before a `/compact` or a `/clear`.
 `review` and `backlog` dispatch read-only reviewer subagents, which judge and
 never write. The skill collects their verdicts and applies the changes itself.
 
-| Agent                          | What it judges                                                     |
-| ------------------------------ | ------------------------------------------------------------------ |
+| Agent                          | What it judges                                                      |
+| ------------------------------ | ------------------------------------------------------------------- |
 | `memory-entry-reviewer`        | Whether a page is correct, at the right altitude, and worth keeping |
 | `redundancy-reviewer`          | Which pages in one field overlap enough to merge                    |
 | `backlog-validity-reviewer`    | Whether a backlog item is done, obsolete, drifted, or still valid   |
