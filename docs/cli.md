@@ -400,34 +400,44 @@ replaces a link to nothing, and deletes a link whose vault entry is gone. Nothin
 moves or overwrites your files happens without your choice: adopting an entry needs
 `--adopt`, and copying settings needs `--keep-settings`.
 
-On a terminal with no options, the command links, then shows a checklist with one row per
-entry it can adopt and one row per settings copy you can keep. Tick the rows with the
-space bar, then press Enter. A summary of the settings difference prints above the list.
-If you tick both settings rows, the command keeps neither, says so, and exits 1. An empty
-selection does only the linking.
+On a terminal with no options, the command links, then asks one question per pending
+item. Each answer says what it does, and a no or a cancel leaves the file alone:
+
+- An entry only in the checkout: `Track .claude/skills/deploy-check in the vault?` Yes
+  moves it into the vault and links it back.
+- Settings only in the checkout: `Track .claude/settings.local.json in the vault?` Yes
+  copies it into the vault, and the checkout keeps its copy.
+- Settings only in the vault: `The vault has a .claude/settings.local.json for this
+  project, but this checkout has none. Copy it into this checkout?`
+- Settings that differ: `.claude/settings.local.json differs between this checkout and
+  the vault. Which copy wins?`
+
+For differing settings, the answers are this checkout's copy, the vault's copy, or
+neither. Each copy's answer shows its modification time, and a summary of what each copy
+has that the other lacks prints above the question.
 
 Off a terminal with no options, the command never prompts. It links, then names each
 pending item and the command that resolves it, and exits 0:
 
 ```
-! not in the vault yet: CLAUDE.local.md, skills/deploy-check, rules/style.md
-  └─ Adopt them with: sessionmemory local sync --adopt CLAUDE.local.md --adopt skills/deploy-check --adopt rules/style.md --cwd .
-! settings.local.json: checkout only
-  └─ Keep the checkout's copy with: sessionmemory local sync --keep-settings checkout --cwd .
+! not tracked in the vault yet: CLAUDE.local.md, .claude/skills/deploy-check, .claude/rules/style.md
+  └─ Track them in the vault with: sessionmemory local sync --adopt CLAUDE.local.md --adopt skills/deploy-check --adopt rules/style.md --cwd .
+! .claude/settings.local.json is not tracked in the vault yet
+  └─ Track it in the vault with: sessionmemory local sync --keep-settings checkout --cwd .
 ```
 
 When the settings differ, the warning lists what each copy has that the other lacks:
 
 ```
-! settings.local.json: differs
+! .claude/settings.local.json differs between this checkout and the vault
   ├─ permissions.allow: 1 only in the checkout (Bash(just docs))
   ├─ enabledPlugins: only in the checkout
-  ├─ Keep the checkout's copy with: sessionmemory local sync --keep-settings checkout --cwd .
-  └─ Keep the vault's copy with: sessionmemory local sync --keep-settings vault --cwd .
+  ├─ Copy this checkout's over the vault's with: sessionmemory local sync --keep-settings checkout --cwd .
+  └─ Copy the vault's over this checkout's with: sessionmemory local sync --keep-settings vault --cwd .
 ```
 
 Lists such as `permissions.allow` compare item by item, in any order. The modification
-time of each copy is in the JSON output and in the checklist. It is a hint, not a rule:
+time of each copy is in the JSON output and in the question. It is a hint, not a rule:
 a vault copy that arrived through `git pull` carries the time of the pull.
 
 The command prints each path it wrote on stdout and nothing else. Adopting all three
@@ -452,8 +462,8 @@ In a second worktree, the same command links the entries and asks about the sett
 ~/repos/invoice-api-pdf/CLAUDE.local.md
 ~/repos/invoice-api-pdf/.claude/skills/deploy-check
 ~/repos/invoice-api-pdf/.claude/rules/style.md
-! settings.local.json: vault only
-  └─ Keep the vault's copy with: sessionmemory local sync --keep-settings vault --cwd .
+! the vault has a .claude/settings.local.json that this checkout lacks
+  └─ Copy it into this checkout with: sessionmemory local sync --keep-settings vault --cwd .
 ```
 
 `--keep-settings vault` writes the vault copy into `.claude/settings.local.json`, creates

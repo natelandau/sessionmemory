@@ -1545,11 +1545,40 @@ def test_local_block_asks_about_pending_work(tmp_path: Path) -> None:
     assert "2026-10-25T09:40:00Z" in block
     assert "permissions.allow: 3 only in the checkout" in block
     assert "ask the person" in block
-    assert "`/opt/plugin/bin/sessionmemory local sync --adopt" in block
-    assert "--adopt" in block
+    assert '"Track .claude/rules/r.md in the vault?"' in block
+    assert "Which copy wins?" in block
+    assert "`/opt/plugin/bin/sessionmemory local sync --cwd .`" in block
+    assert "--adopt rules/r.md" in block
     assert "--keep-settings" in block
     assert "new session" in block
     assert clauses == ["local none, pending 2"]
+
+
+@pytest.mark.parametrize(
+    ("state", "question", "flag"),
+    [
+        (
+            "checkout only",
+            '"Track .claude/settings.local.json in the vault?"',
+            "--keep-settings checkout",
+        ),
+        ("vault only", "Copy it into this checkout?", "--keep-settings vault"),
+    ],
+)
+def test_local_block_asks_one_sided_settings(
+    tmp_path: Path, state: str, question: str, flag: str
+) -> None:
+    """Verify settings on one side only become a yes-or-no question naming its flag."""
+    payload = {
+        "entries": [],
+        "pending": {"adopt": [], "settings": {"state": state, "summary": []}},
+    }
+
+    blocks, _ = _local_block(payload, tmp_path)
+
+    assert question in blocks[0]
+    assert flag in blocks[0]
+    assert "Which copy wins?" not in blocks[0]
 
 
 def test_local_block_without_pending_adds_no_ask(tmp_path: Path) -> None:

@@ -106,18 +106,19 @@ LOCAL_LINKED_NOTE = (
 )
 
 LOCAL_PENDING_NOTE = (
-    "This checkout has local entries waiting on the person. Before other work, ask the "
-    "person whether to adopt each entry below into the vault, and which copy of "
-    "settings.local.json to keep. Adopt or overwrite nothing until they answer."
+    "Local files in this checkout are waiting on a decision about the vault. Before other "
+    "work, ask the person each question below, one at a time, in these words. Copy or "
+    "overwrite nothing until they answer; a no leaves the file alone."
 )
 
 LOCAL_PENDING_COMMAND = (
-    "Then run `{command} local sync --adopt <name> --keep-settings checkout|vault "
-    "--cwd .` with their answers, repeating --adopt per entry and leaving out what they "
-    "declined. After the vault's settings copy is written into the checkout, tell the "
-    "person to start a new session before approving anything, since Claude Code read its "
-    "settings before this ran."
+    "Then run `{command} local sync --cwd .` with the flag shown for each yes, repeating "
+    "--adopt per entry. After the vault's settings copy is written into the checkout, "
+    "tell the person to start a new session before approving anything, since Claude Code "
+    "read its settings before this ran."
 )
+
+SETTINGS_PATH = ".claude/settings.local.json"
 
 # The order the log clause counts `local sync` statuses in, whatever order the CLI lists.
 LOCAL_STATUSES = ("created", "present", "tracked", "removed", "conflict")
@@ -278,16 +279,44 @@ def _local_block(
     return blocks
 
 
+def _relpath(name: str) -> str:
+    """The checkout path of an entry the CLI names relative to `.claude/`."""
+    return name if name == "CLAUDE.local.md" else f".claude/{name}"
+
+
 def _settings_lines(settings: dict[str, Any]) -> list[str]:
-    """Describe a pending settings difference: its state, each side's time, and the summary."""
-    lines = [f"- settings.local.json: {settings.get('state')}"]
+    """Phrase the one settings question that fits its state, with what each answer writes."""
+    state = settings.get("state")
+    mtimes: dict[str, object] = {}
     for side in ("checkout", "vault"):
         copy = settings.get(side)
-        mtime = copy.get("mtime") if isinstance(copy, dict) else None
-        lines.append(f"  - the {side}'s copy: {mtime or 'missing'}")
+        mtimes[side] = copy.get("mtime") if isinstance(copy, dict) else None
+    if state == "checkout only":
+        return [
+            (
+                f'- "Track {SETTINGS_PATH} in the vault?" Yes copies it into the vault, and '
+                "this checkout keeps its copy. (--keep-settings checkout)"
+            )
+        ]
+    if state == "vault only":
+        return [
+            (
+                f'- "The vault has a {SETTINGS_PATH} for this project, but this checkout has '
+                'none. Copy it into this checkout?" (--keep-settings vault)'
+            )
+        ]
+    lines = [
+        (
+            f'- "{SETTINGS_PATH} differs between this checkout and the vault. Which copy wins?" '
+            f"Offer this checkout's (modified {mtimes['checkout']}), copied over the vault's "
+            f"(--keep-settings checkout); the vault's (modified {mtimes['vault']}), copied "
+            "over this checkout's (--keep-settings vault); or neither, leaving both alone."
+        )
+    ]
     summary = settings.get("summary")
-    if isinstance(summary, list):
-        lines.extend(f"  - {line}" for line in summary if isinstance(line, str))
+    if isinstance(summary, list) and summary:
+        lines.append("  - What each copy has that the other lacks:")
+        lines.extend(f"    - {line}" for line in summary if isinstance(line, str))
     return lines
 
 
@@ -305,7 +334,8 @@ def _pending_block(pending: dict[str, Any], *, command: str) -> tuple[str | None
         return None, 0
     lines = [LOCAL_PENDING_NOTE, ""]
     lines.extend(
-        f"- adopt {name}: only in this checkout, not in the vault yet (--adopt {shlex.quote(name)})"
+        f'- "Track {_relpath(name)} in the vault?" Yes moves it into the vault and links it '
+        f"back here. (--adopt {shlex.quote(name)})"
         for name in adopt
     )
     if settings:

@@ -140,20 +140,21 @@ for the states and the commands.
 
 When an entry waits to be adopted, or the two copies of `settings.local.json` differ or
 exist on one side only, the hook adds a block that tells the agent to ask you before
-other work. The block lists each entry, the settings state, the modification time of each
-settings copy, and what each copy has that the other lacks:
+other work. The block gives the agent one plain question per item, the same question that
+`local sync` asks on a terminal, and the flag that a yes maps to. For differing settings,
+it also gives the modification time of each copy and what each copy has that the other
+lacks:
 
 ```
-This checkout has local entries waiting on the person. Before other work, ask the person whether to adopt each entry below into the vault, and which copy of settings.local.json to keep. Adopt or overwrite nothing until they answer.
+Local files in this checkout are waiting on a decision about the vault. Before other work, ask the person each question below, one at a time, in these words. Copy or overwrite nothing until they answer; a no leaves the file alone.
 
-- adopt rules/tickets.md: only in this checkout, not in the vault yet (--adopt rules/tickets.md)
-- settings.local.json: differs
-  - the checkout's copy: 2026-10-26T17:09:47Z
-  - the vault's copy: 2026-10-26T17:09:23Z
-  - permissions.allow: 1 only in the checkout (Bash(just docs))
-  - enabledPlugins: only in the checkout
+- "Track .claude/rules/tickets.md in the vault?" Yes moves it into the vault and links it back here. (--adopt rules/tickets.md)
+- ".claude/settings.local.json differs between this checkout and the vault. Which copy wins?" Offer this checkout's (modified 2026-10-26T17:09:47Z), copied over the vault's (--keep-settings checkout); the vault's (modified 2026-10-26T17:09:23Z), copied over this checkout's (--keep-settings vault); or neither, leaving both alone.
+  - What each copy has that the other lacks:
+    - permissions.allow: 1 only in the checkout (Bash(just docs))
+    - enabledPlugins: only in the checkout
 
-Then run `sessionmemory local sync --adopt <name> --keep-settings checkout|vault --cwd .` with their answers, repeating --adopt per entry and leaving out what they declined. After the vault's settings copy is written into the checkout, tell the person to start a new session before approving anything, since Claude Code read its settings before this ran.
+Then run `sessionmemory local sync --cwd .` with the flag shown for each yes, repeating --adopt per entry. After the vault's settings copy is written into the checkout, tell the person to start a new session before approving anything, since Claude Code read its settings before this ran.
 ```
 
 The agent adopts and copies nothing until you answer. Every session start asks again

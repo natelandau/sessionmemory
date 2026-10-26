@@ -15,6 +15,7 @@ from sessionmemory.commands import local as local_commands
 from sessionmemory.lib import localmd
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
 runner = CliRunner()
@@ -71,7 +72,7 @@ def _checkout_rule(repo: Path, name: str, text: str = "be kind\n") -> Path:
 
 
 def _fail_prompt(*_args: object, **_kwargs: object) -> NoReturn:
-    msg = "the checklist must not be shown"
+    msg = "no question may be asked"
     raise AssertionError(msg)
 
 
@@ -122,7 +123,7 @@ def test_adopt_without_a_file_is_refused(workspace):
 def test_adopt_with_no_candidates_exits_0(workspace, monkeypatch):
     """Verify a bare adopt with nothing waiting exits 0 without prompting."""
     monkeypatch.setattr(local_commands, "_interactive", lambda: True)
-    monkeypatch.setattr(local_commands.ask, "choose_multiple_from_list", _fail_prompt)
+    monkeypatch.setattr(local_commands.ask, "choose_one_from_list", _fail_prompt)
 
     result = runner.invoke(app, ["local", "sync"])
 
@@ -130,27 +131,39 @@ def test_adopt_with_no_candidates_exits_0(workspace, monkeypatch):
     assert "nothing" in result.stdout
 
 
-def test_adopt_checklist_adopts_selected(workspace, monkeypatch):
-    """Verify the checklist offers every candidate and adopts the ticked ones."""
+def _answer(answers: dict[str, str], asked: list[str]) -> Callable[..., object]:
+    """A stand-in prompt that picks the choice whose title starts with the mapped answer."""
+
+    def choose(choices: list[tuple[str, object]], message: str) -> object:
+        asked.append(message)
+        for fragment, answer in answers.items():
+            if fragment in message:
+                return next(value for title, value in choices if title.startswith(answer))
+        msg = f"unexpected question: {message}"
+        raise AssertionError(msg)
+
+    return choose
+
+
+def test_sync_asks_one_question_per_entry(workspace, monkeypatch):
+    """Verify each candidate gets its own question and only a yes is adopted."""
     vault, repo = workspace
     (repo / "CLAUDE.local.md").write_text("notes\n")
     _checkout_skill(repo, "a")
     _checkout_skill(repo, "b")
-    offered: list[list[str]] = []
-
-    def choose(choices: list[tuple[str, object]], message: str) -> list[object]:
-        offered.append([title for title, _ in choices])
-        assert message
-        wanted = {"adopt CLAUDE.local.md", "adopt skills/b"}
-        return [value for title, value in choices if title in wanted]
-
+    asked: list[str] = []
+    answers = {"CLAUDE.local.md": "Yes", "skills/a": "No", "skills/b": "Yes"}
     monkeypatch.setattr(local_commands, "_interactive", lambda: True)
-    monkeypatch.setattr(local_commands.ask, "choose_multiple_from_list", choose)
+    monkeypatch.setattr(local_commands.ask, "choose_one_from_list", _answer(answers, asked))
 
     result = runner.invoke(app, ["local", "sync"])
 
     assert result.exit_code == 0
-    assert offered == [["adopt CLAUDE.local.md", "adopt skills/a", "adopt skills/b"]]
+    assert asked == [
+        "Track CLAUDE.local.md in the vault?",
+        "Track .claude/skills/a in the vault?",
+        "Track .claude/skills/b in the vault?",
+    ]
     assert result.stdout.splitlines() == [
         str(_local(vault) / "CLAUDE.local.md"),
         str(_local(vault) / "claude" / "skills" / "b"),
@@ -160,12 +173,12 @@ def test_adopt_checklist_adopts_selected(workspace, monkeypatch):
     assert not (repo / ".claude" / "skills" / "a").is_symlink()
 
 
-def test_adopt_checklist_empty_selection_exits_0(workspace, monkeypatch):
-    """Verify ticking nothing, or cancelling, adopts nothing and exits 0."""
+def test_sync_cancelled_question_adopts_nothing(workspace, monkeypatch):
+    """Verify cancelling a question counts as no and exits 0."""
     _, repo = workspace
     (repo / "CLAUDE.local.md").write_text("notes\n")
     monkeypatch.setattr(local_commands, "_interactive", lambda: True)
-    monkeypatch.setattr(local_commands.ask, "choose_multiple_from_list", lambda *_a, **_k: None)
+    monkeypatch.setattr(local_commands.ask, "choose_one_from_list", lambda *_a, **_k: None)
 
     result = runner.invoke(app, ["local", "sync"])
 
@@ -179,7 +192,7 @@ def test_sync_off_terminal_lists_candidates_and_exits_0(workspace, monkeypatch):
     _, repo = workspace
     _checkout_skill(repo, "a")
     _checkout_rule(repo, "style.md")
-    monkeypatch.setattr(local_commands.ask, "choose_multiple_from_list", _fail_prompt)
+    monkeypatch.setattr(local_commands.ask, "choose_one_from_list", _fail_prompt)
 
     result = runner.invoke(app, ["local", "sync"])
 
@@ -639,7 +652,7 @@ def test_adopt_off_terminal_quotes_names_in_the_command(workspace, monkeypatch):
     """Verify the suggested command shell-quotes an entry name holding a space."""
     _, repo = workspace
     _checkout_rule(repo, "my style.md")
-    monkeypatch.setattr(local_commands.ask, "choose_multiple_from_list", _fail_prompt)
+    monkeypatch.setattr(local_commands.ask, "choose_one_from_list", _fail_prompt)
 
     result = runner.invoke(app, ["local", "sync"])
 
@@ -649,7 +662,7 @@ def test_adopt_off_terminal_quotes_names_in_the_command(workspace, monkeypatch):
 
 def test_adopt_off_terminal_with_no_candidates_exits_0(workspace, monkeypatch):
     """Verify a bare adopt off a terminal with nothing waiting exits 0 without prompting."""
-    monkeypatch.setattr(local_commands.ask, "choose_multiple_from_list", _fail_prompt)
+    monkeypatch.setattr(local_commands.ask, "choose_one_from_list", _fail_prompt)
 
     result = runner.invoke(app, ["local", "sync"])
 
@@ -825,7 +838,7 @@ def test_sync_keep_settings_refused_exits_1(workspace, tmp_path):
 def test_sync_off_terminal_reports_pending_and_exits_0(workspace, monkeypatch):
     """Verify sync off a terminal never prompts and names the command for each pending item."""
     vault, repo = workspace
-    monkeypatch.setattr(local_commands.ask, "choose_multiple_from_list", _fail_prompt)
+    monkeypatch.setattr(local_commands.ask, "choose_one_from_list", _fail_prompt)
     _checkout_rule(repo, "r.md")
     _settings(repo, vault, checkout='{"a": 1}', theirs='{"a": 2}')
 
@@ -838,48 +851,88 @@ def test_sync_off_terminal_reports_pending_and_exits_0(workspace, monkeypatch):
     assert "--keep-settings vault" in result.stderr
 
 
-def test_sync_checklist_adopts_and_keeps(workspace, monkeypatch):
-    """Verify the checklist's adopt and settings rows are both acted on."""
+def test_sync_asks_to_track_checkout_only_settings(workspace, monkeypatch):
+    """Verify settings missing from the vault are offered as a yes-or-no to track them."""
     vault, repo = workspace
+    _settings(repo, vault, checkout='{"a": 1}', theirs=None)
+    asked: list[str] = []
+    answers = {"Track .claude/settings.local.json in the vault?": "Yes"}
     monkeypatch.setattr(local_commands, "_interactive", lambda: True)
-    _checkout_rule(repo, "r.md")
-    _settings(repo, vault, checkout='{"a": 1}', theirs='{"a": 2}')
-    seen: list[str] = []
-
-    def choose(choices: list[tuple[str, object]], message: str) -> list[object]:
-        assert message
-        seen.extend(title for title, _ in choices)
-        return [value for title, value in choices if "r.md" in title or "checkout" in title]
-
-    monkeypatch.setattr(local_commands.ask, "choose_multiple_from_list", choose)
+    monkeypatch.setattr(local_commands.ask, "choose_one_from_list", _answer(answers, asked))
 
     result = runner.invoke(app, ["local", "sync"])
 
     assert result.exit_code == 0, result.output
-    assert len(seen) == 3
-    assert (repo / ".claude" / "rules" / "r.md").is_symlink()
+    assert asked == ["Track .claude/settings.local.json in the vault?"]
     assert (_local(vault) / "claude" / "settings.local.json").read_text() == '{"a": 1}'
+    assert (repo / ".claude" / "settings.local.json").read_text() == '{"a": 1}'
 
 
-def test_sync_checklist_both_settings_rows_refused(workspace, monkeypatch):
-    """Verify choosing both settings rows changes no settings but still adopts."""
+def test_sync_declining_settings_leaves_both_alone(workspace, monkeypatch):
+    """Verify a no to the settings question writes nothing."""
     vault, repo = workspace
+    _settings(repo, vault, checkout='{"a": 1}', theirs=None)
+    asked: list[str] = []
     monkeypatch.setattr(local_commands, "_interactive", lambda: True)
-    _checkout_rule(repo, "r.md")
-    _settings(repo, vault, checkout='{"a": 1}', theirs='{"a": 2}')
     monkeypatch.setattr(
-        local_commands.ask,
-        "choose_multiple_from_list",
-        lambda choices, message: [value for _, value in choices],
+        local_commands.ask, "choose_one_from_list", _answer({"settings": "No"}, asked)
     )
 
     result = runner.invoke(app, ["local", "sync"])
 
-    assert result.exit_code == 1
-    assert "both" in result.stderr
+    assert result.exit_code == 0, result.output
+    assert not (_local(vault) / "claude" / "settings.local.json").exists()
+
+
+def test_sync_asks_to_copy_vault_only_settings(workspace, monkeypatch):
+    """Verify settings only in the vault are offered for copying into the checkout."""
+    vault, repo = workspace
+    _settings(repo, vault, checkout=None, theirs='{"a": 2}')
+    asked: list[str] = []
+    monkeypatch.setattr(local_commands, "_interactive", lambda: True)
+    monkeypatch.setattr(
+        local_commands.ask, "choose_one_from_list", _answer({"Copy it into": "Yes"}, asked)
+    )
+
+    result = runner.invoke(app, ["local", "sync"])
+
+    assert result.exit_code == 0, result.output
+    assert asked == [
+        (
+            "The vault has a .claude/settings.local.json for this project, but this checkout "
+            "has none. Copy it into this checkout?"
+        )
+    ]
+    assert (repo / ".claude" / "settings.local.json").read_text() == '{"a": 2}'
+
+
+@pytest.mark.parametrize(
+    ("answer", "checkout", "theirs"),
+    [
+        ("This checkout's", '{"a": 1}', '{"a": 1}'),
+        ("The vault's", '{"a": 2}', '{"a": 2}'),
+        ("Neither", '{"a": 1}', '{"a": 2}'),
+    ],
+)
+def test_sync_differing_settings_asks_which_wins(workspace, monkeypatch, answer, checkout, theirs):
+    """Verify differing settings ask which copy wins, and neither leaves both alone."""
+    vault, repo = workspace
+    _checkout_rule(repo, "r.md")
+    _settings(repo, vault, checkout='{"a": 1}', theirs='{"a": 2}')
+    asked: list[str] = []
+    answers = {"r.md": "Yes", "differs": answer}
+    monkeypatch.setattr(local_commands, "_interactive", lambda: True)
+    monkeypatch.setattr(local_commands.ask, "choose_one_from_list", _answer(answers, asked))
+
+    result = runner.invoke(app, ["local", "sync"])
+
+    assert result.exit_code == 0, result.output
+    assert asked[-1] == (
+        ".claude/settings.local.json differs between this checkout and the vault. Which copy wins?"
+    )
     assert (repo / ".claude" / "rules" / "r.md").is_symlink()
-    assert (repo / ".claude" / "settings.local.json").read_text() == '{"a": 1}'
-    assert (_local(vault) / "claude" / "settings.local.json").read_text() == '{"a": 2}'
+    assert (repo / ".claude" / "settings.local.json").read_text() == checkout
+    assert (_local(vault) / "claude" / "settings.local.json").read_text() == theirs
 
 
 @pytest.mark.parametrize("command", ["adopt", "link"])

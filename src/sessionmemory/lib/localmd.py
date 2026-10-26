@@ -1217,6 +1217,7 @@ class SettingsPending:
     """A settings difference waiting for the person to choose which copy to keep."""
 
     state: CopyState
+    relpath: str
     checkout: Path
     vault: Path
     checkout_mtime: str | None
@@ -1264,6 +1265,7 @@ def settings_pending(co: Checkout, *, tracked: bool) -> SettingsPending | None:
     summary = _settings_summary(item) if current is CopyState.DIFFERS else ()
     return SettingsPending(
         state=current,
+        relpath=item.relpath,
         checkout=item.link,
         vault=item.target,
         checkout_mtime=_mtime(item.link),

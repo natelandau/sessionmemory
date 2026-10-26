@@ -98,7 +98,6 @@ class _Plan:
 
     adopt: list[str] = field(default_factory=list)
     keep: Side | None = None
-    refused: bool = False
 
 
 def _pending_settings(
@@ -137,42 +136,68 @@ def _waiting(co: localmd.Checkout, tracked: set[str]) -> tuple[list[localmd.Entr
     return [], False
 
 
-def _settings_rows(pending: localmd.SettingsPending) -> list[tuple[str, tuple[str, str]]]:
-    """Offer one row per side that holds a copy, so a missing side is never chosen."""
-    rows = []
-    for side, mtime in (("checkout", pending.checkout_mtime), ("vault", pending.vault_mtime)):
-        if mtime is not None:
-            rows.append((f"keep the {side}'s settings.local.json ({mtime})", ("keep", side)))
-    return rows
+_LEAVE = "No, leave it alone"
 
 
-def _checklist(waiting: list[localmd.Entry], pending: localmd.SettingsPending | None) -> _Plan:
-    """Ask the person which pending items to act on, refusing both settings copies at once."""
-    rows: list[tuple[str, tuple[str, str]]] = [
-        (f"adopt {item.name}", ("adopt", item.name)) for item in waiting
-    ]
-    if pending is not None:
-        if pending.summary:
-            pp.info(
-                "settings.local.json differs from the vault copy", details=list(pending.summary)
-            )
-        rows.extend(_settings_rows(pending))
-    if not rows:
-        return _Plan()
-    chosen = (
-        ask.choose_multiple_from_list(
-            choices=rows, message="Choose what to adopt or which settings copy to keep"
-        )
-        or []
+def _confirm(question: str, yes: str) -> bool:
+    """Ask one yes-or-no question whose answers say what each choice does.
+
+    Returns:
+        bool: True only when the person chose yes; cancelling counts as no.
+    """
+    return ask.choose_one_from_list(choices=[(yes, "yes"), (_LEAVE, "no")], message=question) == (
+        "yes"
     )
-    plan = _Plan(adopt=[name for action, name in chosen if action == "adopt"])
-    sides = [side for action, side in chosen if action == "keep"]
-    if len(sides) > 1:
-        pp.error("both settings copies were chosen, so neither was kept")
-        plan.refused = True
-    elif sides:
-        plan.keep = "checkout" if sides[0] == "checkout" else "vault"
-    return plan
+
+
+def _ask_settings(pending: localmd.SettingsPending) -> Side | None:
+    """Ask the one question that fits the settings state, naming what each answer writes.
+
+    Returns:
+        Side | None: The copy to keep, or None to leave both copies alone.
+    """
+    if pending.state is localmd.CopyState.CHECKOUT_ONLY:
+        question = f"Track {pending.relpath} in the vault?"
+        yes = "Yes, copy it into the vault (this checkout keeps its copy)"
+        return "checkout" if _confirm(question=question, yes=yes) else None
+    if pending.state is localmd.CopyState.VAULT_ONLY:
+        question = (
+            f"The vault has a {pending.relpath} for this project, but this checkout has none. "
+            "Copy it into this checkout?"
+        )
+        return "vault" if _confirm(question=question, yes="Yes, copy it here") else None
+    if pending.summary:
+        pp.info(
+            f"What each copy of {pending.relpath} has that the other lacks:",
+            details=list(pending.summary),
+        )
+    choices: list[tuple[str, Side | Literal["neither"]]] = [
+        (
+            f"This checkout's (modified {pending.checkout_mtime}): copy it over the vault's",
+            "checkout",
+        ),
+        (f"The vault's (modified {pending.vault_mtime}): copy it over this checkout's", "vault"),
+        ("Neither: leave both as they are", "neither"),
+    ]
+    side = ask.choose_one_from_list(
+        choices=choices,
+        message=f"{pending.relpath} differs between this checkout and the vault. Which copy wins?",
+    )
+    return side if side in {"checkout", "vault"} else None
+
+
+def _ask(waiting: list[localmd.Entry], pending: localmd.SettingsPending | None) -> _Plan:
+    """Ask the person about each pending item in turn, one plain question per item."""
+    adopt = [
+        item.name
+        for item in waiting
+        if _confirm(
+            question=f"Track {item.relpath} in the vault?",
+            yes="Yes, move it into the vault and link it back here",
+        )
+    ]
+    keep = _ask_settings(pending) if pending is not None else None
+    return _Plan(adopt=adopt, keep=keep)
 
 
 def _entries(co: localmd.Checkout, names: list[str]) -> tuple[list[localmd.Entry], bool]:
@@ -306,20 +331,31 @@ def _report_pending(waiting: list[localmd.Entry], pending: localmd.SettingsPendi
     if waiting:
         adopt = " ".join(f"--adopt {shlex.quote(item.name)}" for item in waiting)
         pp.warning(
-            f"not in the vault yet: {', '.join(item.name for item in waiting)}",
-            details=[f"Adopt them with: sessionmemory local sync {adopt} --cwd ."],
+            f"not tracked in the vault yet: {', '.join(item.relpath for item in waiting)}",
+            details=[f"Track them in the vault with: sessionmemory local sync {adopt} --cwd ."],
         )
-    if pending is not None:
-        details = [*pending.summary]
-        details.extend(
-            f"Keep the {side}'s copy with: sessionmemory local sync --keep-settings {side} --cwd ."
-            for side, mtime in (
-                ("checkout", pending.checkout_mtime),
-                ("vault", pending.vault_mtime),
-            )
-            if mtime is not None
+    if pending is None:
+        return
+    keep = "sessionmemory local sync --keep-settings {side} --cwd ."
+    if pending.state is localmd.CopyState.CHECKOUT_ONLY:
+        pp.warning(
+            f"{pending.relpath} is not tracked in the vault yet",
+            details=[f"Track it in the vault with: {keep.format(side='checkout')}"],
         )
-        pp.warning(f"settings.local.json: {pending.state}", details=details)
+    elif pending.state is localmd.CopyState.VAULT_ONLY:
+        pp.warning(
+            f"the vault has a {pending.relpath} that this checkout lacks",
+            details=[f"Copy it into this checkout with: {keep.format(side='vault')}"],
+        )
+    else:
+        pp.warning(
+            f"{pending.relpath} differs between this checkout and the vault",
+            details=[
+                *pending.summary,
+                f"Copy this checkout's over the vault's with: {keep.format(side='checkout')}",
+                f"Copy the vault's over this checkout's with: {keep.format(side='vault')}",
+            ],
+        )
 
 
 def _settings_payload(pending: localmd.SettingsPending | None) -> dict[str, object] | None:
@@ -391,7 +427,7 @@ class _Report:
     "sync",
     help=(
         "Link the vault's entries into this checkout, then adopt entries and keep a settings "
-        "copy as asked. With no flags on a terminal, choose from a checklist."
+        "copy as asked. With no flags on a terminal, answer one question per pending item."
     ),
 )
 def sync_command(
@@ -420,7 +456,7 @@ def sync_command(
     waiting, listed = _waiting(co, tracked) if not flagged else ([], True)
     pending, compared = _pending_settings(co, tracked) if not flagged else (None, True)
     if not flagged and not as_json and _interactive():
-        plan = _checklist(waiting=waiting, pending=pending)
+        plan = _ask(waiting=waiting, pending=pending)
 
     adopted, failed = (
         _adopt_all(co=co, names=plan.adopt, tracked=tracked) if plan.adopt else ([], False)
@@ -430,7 +466,7 @@ def sync_command(
         changed and plan.keep == "checkout"
     ):
         pp.warning("the hooks commit the vault copy to the vault's git remote")
-    failed = failed or plan.refused or (plan.keep is not None and kept is None)
+    failed = failed or (plan.keep is not None and kept is None)
     # Linking runs first, so an entry adopted by this run was in its way.
     done = {result.entry.name for result in adopted}
     results = [r for r in results if not (r.status == "conflict" and r.entry.name in done)]
