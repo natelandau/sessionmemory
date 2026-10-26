@@ -74,6 +74,14 @@ def test_the_prompt_searches_the_repo_docs_before_a_learning():
     assert text.index("grep -rnis") < command
 
 
+def test_capture_criteria_carries_the_value_test():
+    """Verify the sweep prompt makes a candidate prove its value before a page is written."""
+    text = " ".join(_rendered_prompt().split())
+
+    assert "trivial to remediate" in text
+    assert "rare but severe" in text
+
+
 def test_the_prompt_does_not_count_a_commit_message_as_a_record():
     """Verify a commit message is not listed among the things that already state a fact."""
     text = " ".join(_rendered_prompt().split())

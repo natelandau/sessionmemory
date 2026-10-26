@@ -25,6 +25,23 @@ leave it out: clutter is expensive to remove.
    that states it is proof the gate fails. The session's own
    commits are where a candidate most often already lives, since the session
    that learned a fact usually wrote it down in the code as it went.
+
+   **A candidate that passes this gate must still prove it is worth a page.**
+   Its value is how likely it is to come up again times what it costs when it
+   does. This is a judgment about the candidate alone, so it needs no search
+   beyond the one above. Write a page only when one of these holds:
+
+   - It is likely and costly. It comes up in normal work on this repository, and
+     hitting it unwarned costs real time or causes real damage.
+   - It is rare but severe. It seldom comes up, but when it does the damage is
+     large: data loss, a broken release, a silent wrong result.
+
+   A page whose mistake is trivial to remediate fails, however often it comes
+   up: an error message that names its own fix, a one-line retry, or a mistake a
+   test or linter catches at once. A preference or coding standard passes only
+   when no tool enforces it and missing it costs the user a correction each
+   time. To pass, name the concrete mistake a future agent would make without
+   the page and what it would cost. If you cannot name both, skip it.
 3. **Placement.** Would a comment beside the code, or a line in the project's
    committed `CLAUDE.md`, serve the next agent better than a page they have to
    search for? A fact that every session needs, about how the repository is
