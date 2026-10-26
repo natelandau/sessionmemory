@@ -24,13 +24,23 @@ def write_text(path: Path, text: str) -> None:
         path (Path): The destination file. Its parent directory is created if needed.
         text (str): The complete contents to write.
     """
+    write_bytes(path, text.encode("utf-8"))
+
+
+def write_bytes(path: Path, data: bytes) -> None:
+    """Write `data` to `path`, replacing it in a single rename.
+
+    Args:
+        path (Path): The destination file. Its parent directory is created if needed.
+        data (bytes): The complete contents to write.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
 
     handle, name = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
     temporary = Path(name)
     try:
-        with os.fdopen(handle, "w", encoding="utf-8") as file:
-            file.write(text)
+        with os.fdopen(handle, "wb") as file:
+            file.write(data)
         # mkstemp creates the file mode 0600; match the umask default so a CLI-written
         # file is indistinguishable from one made by hand, since Path.replace preserves
         # the source file's mode across the rename.

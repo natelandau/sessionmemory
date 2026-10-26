@@ -1,10 +1,15 @@
 """Link a checkout's local entries to the copies kept in the vault.
 
 An entry is one thing a person keeps out of the project's git history but wants in every
-checkout: `CLAUDE.local.md`, a skill folder under `.claude/skills/`, or a rule under
-`.claude/rules/`. This is the one place the states of an entry's link are known. The vault
-holds each entry under the project's `local/` folder so it survives a lost machine and is
-shared by every checkout of a project, and each checkout holds a symlink to it.
+checkout: `CLAUDE.local.md`, a skill folder under `.claude/skills/`, a rule under
+`.claude/rules/`, or `.claude/settings.local.json`. This is the one place the states of an
+entry are known. The vault holds each entry under the project's `local/` folder so it
+survives a lost machine and is shared by every checkout of a project.
+
+Every entry but the settings file is linked: each checkout holds a symlink to the vault
+copy. Claude Code refuses to write through a symlinked settings file, so that one is
+copied instead, and only ever in the direction the person chooses. It is never part of
+`entries`, so no link operation can reach it.
 
 Entries are discovered from both sides rather than configured, and a hidden name is never
 an entry, so a `.DS_Store` or a set-aside folder left by a crash is skipped.
@@ -22,6 +27,7 @@ worktree of a repository.
 
 from __future__ import annotations
 
+import datetime as dt
 import enum
 import os
 import re
@@ -30,19 +36,21 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from sessionmemory.lib import bootstrap, gitinfo, localtree, paths
+from sessionmemory.lib import atomic, bootstrap, gitinfo, localtree, paths, settingsdiff
 
 if TYPE_CHECKING:
     import subprocess
     from collections.abc import Iterable
 
-Kind = Literal["local-md", "skill", "rule"]
+Kind = Literal["local-md", "skill", "rule", "settings"]
+Mode = Literal["link", "copy"]
+SETTINGS_NAME = "settings.local.json"
 # Folders adopt refuses inside a skill or rule: installed dependencies, virtualenvs, and
 # repositories.
 KEPT_OUT_FOLDERS = frozenset({"node_modules", ".venv", "venv", ".git"})
 LinkStatus = Literal["created", "present", "conflict", "tracked", "removed"]
 
-_KIND_ORDER: dict[Kind, int] = {"local-md": 0, "skill": 1, "rule": 2}
+_KIND_ORDER: dict[Kind, int] = {"local-md": 0, "skill": 1, "rule": 2, "settings": 3}
 # Each folder kind's directory name, shared by the checkout's `.claude/` and the vault's
 # `claude/`, so a checkout path maps to a vault path by swapping one prefix.
 _KIND_DIRS: dict[Kind, str] = {"skill": "skills", "rule": "rules"}
@@ -51,16 +59,17 @@ SHAPES: dict[Kind, str] = {
     "local-md": "regular file",
     "skill": "folder",
     "rule": "file or a folder",
+    "settings": "regular file",
 }
 _CHECKOUT_CLAUDE = ".claude"
 # No leading dot, since Finder, Obsidian, and `ls` hide dot-folders in the vault.
 _VAULT_CLAUDE = "claude"
 
 # For two vault copies, where deleting either leaves one for link to use.
-KEEP_ONE = "Keep one of them, delete the other, then run local link."
+KEEP_ONE = "Keep one of them, delete the other, then run local sync."
 # For a checkout copy beside the vault copy, where only the vault copy survives a link.
 REPLACE_VAULT_COPY = (
-    "copy the newer one over the vault copy, delete the checkout copy, and run local link"
+    "copy the newer one over the vault copy, delete the checkout copy, and run local sync"
 )
 
 _FENCE = re.compile(r"^\s*(```|~~~)")
@@ -100,6 +109,21 @@ class State(enum.StrEnum):
     FOREIGN_LINK = "foreign link"
     DANGLING = "dangling"
     NONE = "none"
+
+
+class CopyState(enum.StrEnum):
+    """How the checkout's copy of a copied entry relates to the vault copy."""
+
+    SAME = "same"
+    DIFFERS = "differs"
+    CHECKOUT_ONLY = "checkout only"
+    VAULT_ONLY = "vault only"
+    LINKED = "linked"
+    TRACKED = "tracked"
+    BLOCKED = "blocked"
+
+
+_PENDING_STATES = frozenset({CopyState.DIFFERS, CopyState.CHECKOUT_ONLY, CopyState.VAULT_ONLY})
 
 
 def _git_safe_env() -> dict[str, str]:
@@ -153,6 +177,11 @@ class Entry:
     target: Path
 
     @property
+    def mode(self) -> Mode:
+        """How the entry reaches a checkout: a symlink, or a copy for the settings file."""
+        return "copy" if self.kind == "settings" else "link"
+
+    @property
     def relpath(self) -> str:
         """The link path relative to the work tree's top level, as git names it."""
         if self.kind == "local-md":
@@ -202,6 +231,13 @@ def entry(co: Checkout, name: str) -> Entry:
     """
     if name == paths.LOCAL_MD_FILE:
         return Entry(kind="local-md", name=name, link=co.worktree / name, target=co.local / name)
+    if name == SETTINGS_NAME:
+        return Entry(
+            kind="settings",
+            name=name,
+            link=co.worktree / _CHECKOUT_CLAUDE / name,
+            target=co.local / _VAULT_CLAUDE / name,
+        )
     prefix, sep, child = name.partition("/")
     kind = next((k for k, folder in _KIND_DIRS.items() if folder == prefix), None)
     if kind is None or not sep or not child or "/" in child or child.startswith("."):
@@ -227,7 +263,7 @@ def _visible_children(folder: Path) -> list[str]:
 
 def _present(path: Path, kind: Kind) -> bool:
     """Report whether `path` holds something of the shape `kind` expects."""
-    if kind == "local-md":
+    if kind in {"local-md", "settings"}:
         return path.is_file()
     if kind == "skill":
         return path.is_dir()
@@ -413,7 +449,12 @@ def blocked(co: Checkout, item: Entry) -> bool:
     Returns:
         bool: True when nothing may be linked, adopted, or asked of git for the entry.
     """
-    return item.kind != "local-md" and _blocked_folders(co, item.kind)
+    if item.kind == "local-md":
+        return False
+    if item.kind == "settings":
+        claude = co.worktree / _CHECKOUT_CLAUDE
+        return claude.is_symlink() or (claude.exists() and not claude.is_dir())
+    return _blocked_folders(co, item.kind)
 
 
 def tracked_names(co: Checkout, items: list[Entry]) -> set[str]:
@@ -597,12 +638,12 @@ def _conflict_reason(co: Checkout, item: Entry, current: State) -> tuple[str, st
         folder = _kind_folder(co, item.kind)
         return (
             f"{folder} or its parent is a symlink or not a folder, so {item.name} was not linked",
-            "Replace it with a real folder, then run local link.",
+            "Replace it with a real folder, then run local sync.",
         )
     if current is State.FOREIGN_LINK:
         return (
             f"{item.link} is a symlink to {item.link.resolve()}, not to the vault copy",
-            "Remove it and run local link to link the vault copy, or run local status to compare.",
+            "Remove it and run local sync to link the vault copy, or run local status to compare.",
         )
     if current is State.DIVERGED:
         try:
@@ -612,7 +653,7 @@ def _conflict_reason(co: Checkout, item: Entry, current: State) -> tuple[str, st
         if match is True:
             return (
                 f"{item.link} is a copy identical to the vault copy",
-                f"Run local adopt {item.name} to replace it with the link.",
+                f"Run local sync --adopt {item.name} to replace it with the link.",
             )
         return (
             f"{item.link} differs from the vault copy at {item.target}",
@@ -716,7 +757,28 @@ def _safe_state(item: Entry) -> State:
         return State.NONE
 
 
-def link_all(co: Checkout) -> list[LinkResult]:
+def tracked_all(co: Checkout) -> set[str]:
+    """Name every entry git tracks, on either side and the settings file, in one git call.
+
+    A caller that links, offers, and compares in one run passes this set to each step, so
+    the run lists git's index once.
+
+    Args:
+        co (Checkout): The checkout to inspect.
+
+    Returns:
+        set[str]: The names of the entries git tracks.
+
+    Raises:
+        LocalMdError: When git cannot list the index.
+    """
+    names = {item.name: item for item in entries(co)}
+    for name in (paths.LOCAL_MD_FILE, SETTINGS_NAME):
+        names.setdefault(name, entry(co, name))
+    return tracked_names(co, list(names.values()))
+
+
+def link_all(co: Checkout, *, tracked: set[str] | None = None) -> list[LinkResult]:
     """Link every entry the vault holds, after moving a legacy `CLAUDE.local.md` copy.
 
     One entry's failure never stops the others, so a malformed vault entry or a link
@@ -724,6 +786,7 @@ def link_all(co: Checkout) -> list[LinkResult]:
 
     Args:
         co (Checkout): The checkout to link.
+        tracked (set[str] | None): The tracked names from `tracked_all`, or None to ask git.
 
     Returns:
         list[LinkResult]: One result per vault-side entry, misshapen ones included, then
@@ -745,7 +808,8 @@ def link_all(co: Checkout) -> list[LinkResult]:
     except OSError as err:
         msg = f"could not read {co.local}: {err}"
         raise LocalMdError(msg) from err
-    tracked = tracked_names(co, items)
+    if tracked is None:
+        tracked = tracked_names(co, items)
     results: list[LinkResult] = []
     for item in _sorted([*items, *(entry(co, name) for name in odd)]):
         if item.name in odd:
@@ -755,7 +819,7 @@ def link_all(co: Checkout) -> list[LinkResult]:
                     "conflict",
                     _safe_state(item),
                     reason=shape_problem(item),
-                    remedy="Fix or remove it in the vault, then run local link.",
+                    remedy="Fix or remove it in the vault, then run local sync.",
                 )
             )
         elif item.kind == "local-md" and legacy is not None:
@@ -798,18 +862,20 @@ def _offerable(item: Entry) -> bool:
         return False
 
 
-def candidates(co: Checkout) -> list[Entry]:
+def candidates(co: Checkout, *, tracked: set[str] | None = None) -> list[Entry]:
     """List the entries `adopt` may offer: untracked, and unadopted or identical.
 
     Args:
         co (Checkout): The checkout to inspect.
+        tracked (set[str] | None): The tracked names from `tracked_all`, or None to ask git.
 
     Returns:
         list[Entry]: Untracked entries whose state is unadopted, or diverged with
             matching contents, which adopt finishes by linking.
     """
     pool = [item for item in entries(co) if not blocked(co, item) and _offerable(item)]
-    tracked = tracked_names(co, pool)
+    if tracked is None:
+        tracked = tracked_names(co, pool)
     return [item for item in pool if item.name not in tracked]
 
 
@@ -1075,3 +1141,184 @@ def adopt(co: Checkout, item: Entry, *, tracked: bool) -> AdoptResult:
     ensure_ignored(co, item)
     localtree.place_link(item.link, item.target)
     return result(imports=relative_imports(text) if text is not None else [])
+
+
+def settings_entry(co: Checkout) -> Entry:
+    """Return the checkout's `.claude/settings.local.json` entry, which is kept by copy.
+
+    Args:
+        co (Checkout): The checkout the entry belongs to.
+
+    Returns:
+        Entry: The settings entry with its checkout and vault paths.
+    """
+    return entry(co, SETTINGS_NAME)
+
+
+def _same_settings(item: Entry) -> bool:
+    """Compare two settings copies as parsed JSON, or as bytes when either is not JSON.
+
+    Parsed equality means a reformat or a reordered key never asks the person to choose.
+    """
+    ours, theirs = settingsdiff.load(item.link), settingsdiff.load(item.target)
+    if settingsdiff.INVALID in (ours, theirs):
+        return item.link.read_bytes() == item.target.read_bytes()
+    return settingsdiff.same(ours, theirs)
+
+
+def _irregular_copy(item: Entry) -> bool:
+    """Report a folder in place of either copy, or a symlink in place of the vault copy.
+
+    A vault symlink would be read through to wherever it points, so it is never copied.
+    A checkout symlink is reported as `linked` instead.
+    """
+    vault_odd = item.target.is_symlink() or (item.target.exists() and not item.target.is_file())
+    checkout_odd = not item.link.is_symlink() and item.link.exists() and not item.link.is_file()
+    return vault_odd or checkout_odd
+
+
+def copy_state(co: Checkout, item: Entry, *, tracked: bool) -> CopyState | None:
+    """Classify the checkout's copy of a copied entry against the vault copy.
+
+    Args:
+        co (Checkout): The checkout holding the entry.
+        item (Entry): The settings entry.
+        tracked (bool): Whether git tracks the entry's path, from `tracked_names`.
+
+    Returns:
+        CopyState | None: The state, or None when neither side has a copy.
+    """
+    if not (
+        item.link.is_symlink()
+        or item.link.exists()
+        or item.target.is_symlink()
+        or item.target.exists()
+    ):
+        return None
+    if blocked(co, item) or _irregular_copy(item):
+        return CopyState.BLOCKED
+    if tracked:
+        return CopyState.TRACKED
+    if item.link.is_symlink():
+        return CopyState.LINKED
+    one_sided: dict[tuple[bool, bool], CopyState | None] = {
+        (False, False): None,
+        (True, False): CopyState.CHECKOUT_ONLY,
+        (False, True): CopyState.VAULT_ONLY,
+    }
+    sides = (item.link.is_file(), item.target.is_file())
+    if sides in one_sided:
+        return one_sided[sides]
+    return CopyState.SAME if _same_settings(item) else CopyState.DIFFERS
+
+
+@dataclass(frozen=True)
+class SettingsPending:
+    """A settings difference waiting for the person to choose which copy to keep."""
+
+    state: CopyState
+    checkout: Path
+    vault: Path
+    checkout_mtime: str | None
+    vault_mtime: str | None
+    summary: tuple[str, ...]
+
+
+def _mtime(path: Path) -> str | None:
+    """Return a file's modification time as ISO-8601 UTC, or None when it is absent."""
+    if not path.is_file():
+        return None
+    stamp = dt.datetime.fromtimestamp(path.stat().st_mtime, tz=dt.UTC)
+    return stamp.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _settings_summary(item: Entry) -> tuple[str, ...]:
+    ours, theirs = settingsdiff.load(item.link), settingsdiff.load(item.target)
+    if ours is settingsdiff.INVALID and theirs is settingsdiff.INVALID:
+        return ("neither copy is valid JSON",)
+    if ours is settingsdiff.INVALID:
+        return ("the checkout's copy is not valid JSON",)
+    if theirs is settingsdiff.INVALID:
+        return ("the vault's copy is not valid JSON",)
+    # Lists compare as sets in the summary, so order or repeats alone leave it empty.
+    return tuple(settingsdiff.summarize(ours, theirs)) or (
+        "the copies differ only in the order or repetition of list items",
+    )
+
+
+def settings_pending(co: Checkout, *, tracked: bool) -> SettingsPending | None:
+    """Describe the settings difference the person must resolve, if there is one.
+
+    Args:
+        co (Checkout): The checkout to inspect.
+        tracked (bool): Whether git tracks the settings path.
+
+    Returns:
+        SettingsPending | None: The difference when the copies differ or only one side
+            has a copy, else None.
+    """
+    item = settings_entry(co)
+    current = copy_state(co, item, tracked=tracked)
+    if current not in _PENDING_STATES:
+        return None
+    summary = _settings_summary(item) if current is CopyState.DIFFERS else ()
+    return SettingsPending(
+        state=current,
+        checkout=item.link,
+        vault=item.target,
+        checkout_mtime=_mtime(item.link),
+        vault_mtime=_mtime(item.target),
+        summary=summary,
+    )
+
+
+def keep_settings(co: Checkout, side: Literal["checkout", "vault"], *, tracked: bool) -> Path:
+    """Write the chosen settings copy over the other one, as the person decided.
+
+    Args:
+        co (Checkout): The checkout whose settings to sync.
+        side (Literal["checkout", "vault"]): The copy to keep.
+        tracked (bool): Whether git tracks the settings path.
+
+    Returns:
+        Path: The path that now holds the kept copy's content.
+
+    Raises:
+        LocalMdError: When the entry is tracked, behind a blocked `.claude/`, a symlink,
+            or the chosen side has no copy.
+    """
+    item = settings_entry(co)
+    current = copy_state(co, item, tracked=tracked)
+    if current is CopyState.TRACKED:
+        msg = f"{item.link} is tracked by git, so it is never copied"
+        raise LocalMdError(msg, [f"Run git rm --cached {item.relpath} to keep it private."])
+    if current is CopyState.BLOCKED and blocked(co, item):
+        msg = f"{item.link.parent} is a symlink or not a folder, so nothing was copied"
+        raise LocalMdError(msg, ["Replace it with a real folder, then run local sync."])
+    if current is CopyState.BLOCKED:
+        msg = f"a copy of {SETTINGS_NAME} is a folder or a symlink, so nothing was copied"
+        raise LocalMdError(
+            msg, [f"Make {item.link} and {item.target} regular files, then run local sync."]
+        )
+    if current is CopyState.LINKED:
+        msg = f"{item.link} is a symlink, which Claude Code cannot write through"
+        raise LocalMdError(msg, ["Replace it with a regular file, then run local sync."])
+    source, dest = (item.link, item.target) if side == "checkout" else (item.target, item.link)
+    if not source.is_file():
+        msg = f"the {side} has no {SETTINGS_NAME} to keep"
+        raise LocalMdError(msg, [f"Nothing is at {source}."])
+    if current is CopyState.SAME:
+        return dest
+    data = source.read_bytes()
+    # The replacement takes the umask default, and the file can hold `env` secrets, so a
+    # new copy takes the source's mode rather than a world-readable one.
+    mode = (dest if dest.is_file() else source).stat().st_mode & 0o777
+    if side == "checkout":
+        bootstrap.ensure_local_ignore(co.vault)
+    else:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+    # Before the write, so the checkout's copy never exists unignored.
+    ensure_ignored(co, item)
+    atomic.write_bytes(dest, data)
+    dest.chmod(mode)
+    return dest
