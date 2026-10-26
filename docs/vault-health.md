@@ -40,7 +40,7 @@ A clean vault says so:
 ]
 ```
 
-## The ten checks
+## The eleven checks
 
 Each finding names the check that produced it.
 
@@ -168,6 +168,30 @@ This run covers a vault holding one spec of each kind and one healthy spec:
 
 A spec with `superseded_by` set and no `status: superseded` is not reported. A spec with
 no frontmatter block at all is current and is not reported.
+
+### `commits`
+
+A session log lists a commit in its `## Changes` section that no local branch,
+remote-tracking ref, or tag contains. Squashing or rebasing a branch replaces its commits,
+so the log then names commits that no longer exist. One finding names the log and counts
+those commits:
+
+```
+1 suggestion
+  └─ commits: ~/repos/my-vault/projects/invoice-api/logs/2026-10-20-ubl-export.md: lists 1 commit no branch contains; run: sessionmemory reconcile
+```
+
+Run `sessionmemory reconcile --dry-run` to see how many lines it would replace or drop,
+then run `sessionmemory reconcile` to rewrite the lists (see
+[`reconcile`](cli.md#sessionmemory-reconcile)).
+
+The check reads only the local repository. It never fetches and never calls GitHub. It skips
+a project whose registered root is missing or is not the top-level directory of a
+repository, and a project where git fails. A short sha that matches more than one object is not counted, because the commit can
+be on the trunk. It also skips a shallow clone, because a commit can be older than the
+clone's history, and a clone whose `origin` does not fetch every branch, as one made with
+`--single-branch`, because a commit can be on a branch the clone never fetches. In both
+cases `reconcile` leaves such commits unchecked.
 
 ### `index`
 

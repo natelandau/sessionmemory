@@ -14,7 +14,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from sessionmemory.lib import field, fieldindex, localmd, localtree, paths, registry, specs
+from sessionmemory.lib import (
+    changes,
+    commits,
+    field,
+    fieldindex,
+    localmd,
+    localtree,
+    paths,
+    registry,
+    specs,
+)
 from sessionmemory.lib.frontmatter import (
     FrontmatterError,
     MissingFrontmatterError,
@@ -415,6 +425,72 @@ def local_instructions(vault: Path, _embedder: Embedder) -> list[Finding]:
     return findings
 
 
+def _log_shas(logs: Path) -> dict[Path, list[str]]:
+    """Map each log that lists commits to its shas."""
+    found: dict[Path, list[str]] = {}
+    for log in field.iter_pages(logs):
+        try:
+            _meta, body = parse(log.read_text(encoding="utf-8", errors="replace"))
+        except FrontmatterError:
+            # malformed_frontmatter reports it.
+            continue
+        shas = [line.sha for line in changes.parse(body)]
+        if shas:
+            found[log] = shas
+    return found
+
+
+def orphaned_commits(vault: Path, _embedder: Embedder) -> list[Finding]:
+    """Report logs that list commits no branch, remote-tracking ref, or tag contains.
+
+    Local only: no fetch and no `gh`. A project whose root is missing or is not a
+    repository's top-level directory, or where git cannot answer, is skipped. So is a
+    shallow clone or one with a narrowed fetch refspec, since commits below the cut or on
+    an unfetched branch may still exist and reconcile leaves them unchecked. An ambiguous
+    short sha may be on trunk, so it is not counted.
+    """
+    try:
+        projects = registry.load(vault)
+    except registry.RegistryError:
+        # dead_projects reports an unreadable registry.
+        return []
+    findings = []
+    for slug in paths.iter_project_slugs(vault):
+        project = projects.get(slug)
+        root = Path(project.root) if project and project.root else None
+        if root is None or not root.is_dir():
+            continue
+        listed = _log_shas(paths.logs_dir(vault, slug))
+        if not listed:
+            continue
+        repo = commits.Repository(root)
+        try:
+            if not repo.is_repository() or repo.is_shallow():
+                continue
+            if repo.origin_url() is not None and not repo.fetches_all_branches():
+                continue
+            expansion = repo.expand({sha for shas in listed.values() for sha in shas})
+            reachable = repo.ref_commits()
+        except commits.CommitsError:
+            continue
+        for log, shas in listed.items():
+            count = sum(
+                1
+                for sha in shas
+                if sha not in expansion.ambiguous and expansion.full.get(sha) not in reachable
+            )
+            if count:
+                plural = "s" if count != 1 else ""
+                findings.append(
+                    Finding(
+                        "commits",
+                        str(log),
+                        f"lists {count} commit{plural} no branch contains; run: sessionmemory reconcile",
+                    )
+                )
+    return findings
+
+
 def _is_stale(directory: Path, embedder: Embedder) -> str | None:
     index = fieldindex.index_path(directory, embedder)
     if not index.is_file():
@@ -460,6 +536,7 @@ CHECKS: tuple[Callable[[Path, Embedder], list[Finding]], ...] = (
     dangling_references,
     spec_statuses,
     local_instructions,
+    orphaned_commits,
     stale_indexes,
 )
 
