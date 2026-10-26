@@ -8,6 +8,8 @@ import typer
 from nclutils import pp
 
 from sessionmemory.commands._common import (
+    CWD_OPTION,
+    VersionedGroup,
     emit_json,
     fail,
     report_malformed_registry,
@@ -21,19 +23,21 @@ from sessionmemory.lib.ids import slugify
 from sessionmemory.lib.resolve import Resolution
 from sessionmemory.lib.resolve import resolve as resolve_project
 
-CWD_OPTION = typer.Option(None, "--cwd", help="Directory to resolve. Defaults to the shell's.")
+app = typer.Typer(
+    cls=VersionedGroup,
+    invoke_without_command=True,
+    help="Show this directory's project, or register it.",
+)
+
 JSON_OPTION = typer.Option(False, "--json", help="Emit JSON instead of prose.")  # noqa: FBT003
-SLUG_OPTION = typer.Option(None, "--slug", help="Override the derived slug.")
-REGISTER_OPTION = typer.Option(
-    False,  # noqa: FBT003
-    "--register",
-    help="Create this directory's registry entry.",
+SLUG_OPTION = typer.Option(
+    None, "--slug", help="Name the project instead of deriving it from the remote or directory."
 )
-MARK_REVIEWED_OPTION = typer.Option(
-    False,  # noqa: FBT003
-    "--mark-reviewed",
-    help="Record that this project's learnings were reviewed today.",
-)
+# The flag forms predate the subcommands. They stay, hidden, because a plugin older than
+# the CLI on PATH still calls them.
+DEPRECATED_SLUG_OPTION = typer.Option(None, "--slug", hidden=True)
+DEPRECATED_REGISTER_OPTION = typer.Option(False, "--register", hidden=True)  # noqa: FBT003
+DEPRECATED_MARK_REVIEWED_OPTION = typer.Option(False, "--mark-reviewed", hidden=True)  # noqa: FBT003
 
 
 def _target(cwd: Path | None) -> Path:
@@ -211,7 +215,7 @@ def _report(
     else:
         pp.error(
             f"{target} is not a registered project",
-            details=["run: sessionmemory project --register"],
+            details=["run: sessionmemory project register"],
         )
 
     if not result.registered:
@@ -322,39 +326,79 @@ def _register(
         )
 
 
+@app.callback()
 def project_command(
+    ctx: typer.Context,
     cwd: Path | None = CWD_OPTION,
-    slug: str | None = SLUG_OPTION,
     *,
-    register: bool = REGISTER_OPTION,
-    mark_reviewed: bool = MARK_REVIEWED_OPTION,
     as_json: bool = JSON_OPTION,
+    slug: str | None = DEPRECATED_SLUG_OPTION,
+    register: bool = DEPRECATED_REGISTER_OPTION,
+    mark_reviewed: bool = DEPRECATED_MARK_REVIEWED_OPTION,
 ) -> None:
-    """Report this directory's project, or create its registry entry.
+    """Show which project this directory belongs to, and exit 1 when it has none.
 
     Raises:
-        Exit: When `--mark-reviewed` is combined with `--register` or `--slug`, when
-            `--slug` is given without `--register`, when `--register` names a
-            directory that does not exist, is a bare repository, or is already
-            registered, or with code 1 when the directory has no project.
+        Exit: When the deprecated flags are combined in a way their subcommands do not
+            allow, or with code 1 when the directory has no project.
     """
+    if ctx.invoked_subcommand is not None:
+        # The subcommand never sees these, and registering the shell's directory in
+        # place of a misplaced --cwd would file notes under a permanent wrong slug.
+        if cwd is not None or as_json or slug is not None or register or mark_reviewed:
+            fail(
+                f"options for {ctx.invoked_subcommand!r} go after it",
+                [f"run: sessionmemory project {ctx.invoked_subcommand} --cwd <dir> ..."],
+            )
+        return
     if mark_reviewed and (register or slug is not None):
         fail("--mark-reviewed cannot be combined with --register or --slug")
     if slug is not None and not register:
         fail("--slug applies only with --register", ["a slug is permanent once notes carry it"])
+    if register:
+        pp.warning("--register is deprecated; run: sessionmemory project register")
+        register_command(cwd=cwd, slug=slug, as_json=as_json)
+    elif mark_reviewed:
+        pp.warning("--mark-reviewed is deprecated; run: sessionmemory project mark-reviewed")
+        mark_reviewed_command(cwd=cwd, as_json=as_json)
+    else:
+        _report(require_vault(), _target(cwd), None, as_json=as_json)
+
+
+@app.command("register")
+def register_command(
+    cwd: Path | None = CWD_OPTION,
+    slug: str | None = SLUG_OPTION,
+    *,
+    as_json: bool = JSON_OPTION,
+) -> None:
+    """Register this directory as a project, so it can hold pages.
+
+    Raises:
+        Exit: When the directory does not exist, is a bare repository, is already
+            registered, or its slug is taken or cannot be derived.
+    """
+    vault = require_vault()
+    target = _target(cwd)
+    _register(vault, target, slug)
+    _report(vault, target, "registered", as_json=as_json)
+
+
+@app.command("mark-reviewed")
+def mark_reviewed_command(cwd: Path | None = CWD_OPTION, *, as_json: bool = JSON_OPTION) -> None:
+    """Record today as the day this project's learnings were reviewed.
+
+    Raises:
+        Exit: With code 1 when the directory has no project.
+    """
     vault = require_vault()
     target = _target(cwd)
     action: str | None = None
-    resolved: Resolution | None = None
-    if register:
-        _register(vault, target, slug)
-        action = "registered"
-    elif mark_reviewed:
-        try:
-            resolved = resolve_project(vault, target)
-            if resolved.registered and resolved.slug:
-                registry.mark_reviewed(vault, resolved.slug, today())
-                action = "reviewed"
-        except registry.RegistryError as error:
-            report_malformed_registry(vault, error)
+    try:
+        resolved = resolve_project(vault, target)
+    except registry.RegistryError as error:
+        report_malformed_registry(vault, error)
+    if resolved.registered and resolved.slug:
+        registry.mark_reviewed(vault, resolved.slug, today())
+        action = "reviewed"
     _report(vault, target, action, as_json=as_json, resolved=resolved)

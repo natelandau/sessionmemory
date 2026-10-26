@@ -7,11 +7,16 @@ from pathlib import Path
 import typer
 from nclutils import pp
 
-from sessionmemory.commands._common import emit_json, fail, require_project, require_vault
+from sessionmemory.commands._common import (
+    CWD_OPTION,
+    emit_json,
+    fail,
+    require_project,
+    require_vault,
+)
 from sessionmemory.lib import reconcile, registry
 from sessionmemory.lib.commits import CommitsError, Repository
 
-CWD = typer.Option(None, "--cwd", help="Directory to resolve the project from.")
 DRY_RUN = typer.Option(
     False,  # noqa: FBT003
     "--dry-run",
@@ -21,7 +26,7 @@ JSON = typer.Option(False, "--json", help="Emit JSON instead of prose.")  # noqa
 
 
 def reconcile_command(
-    cwd: Path | None = CWD, *, dry_run: bool = DRY_RUN, as_json: bool = JSON
+    cwd: Path | None = CWD_OPTION, *, dry_run: bool = DRY_RUN, as_json: bool = JSON
 ) -> None:
     """Bring this project's logs in line with what landed on the trunk.
 

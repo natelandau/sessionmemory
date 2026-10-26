@@ -9,6 +9,7 @@ import typer
 from nclutils import pp
 
 from sessionmemory.commands._common import (
+    CWD_OPTION,
     build_embedder,
     emit_json,
     fail,
@@ -17,13 +18,12 @@ from sessionmemory.commands._common import (
 )
 from sessionmemory.lib import fieldindex, paths
 
-CWD = typer.Option(None, "--cwd", help="Directory to resolve the project from.")
 ALL = typer.Option(False, "--all", help="Reindex every project in the vault.")  # noqa: FBT003
 JSON = typer.Option(False, "--json", help="Emit JSON instead of prose.")  # noqa: FBT003
 
 
 def reindex_command(
-    cwd: Path | None = CWD, *, all_projects: bool = ALL, as_json: bool = JSON
+    cwd: Path | None = CWD_OPTION, *, all_projects: bool = ALL, as_json: bool = JSON
 ) -> None:
     """Bring this project's learnings, logs, and specs indexes up to date, or every project's.
 

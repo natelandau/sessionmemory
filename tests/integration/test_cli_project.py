@@ -38,7 +38,7 @@ def repo(tmp_path):
 
 def test_project_register_then_view(vault, repo):
     """Register a project, then resolve it by remote."""
-    registered = runner.invoke(app, ["project", "--register", "--cwd", str(repo)])
+    registered = runner.invoke(app, ["project", "register", "--cwd", str(repo)])
     assert registered.exit_code == 0
 
     result = runner.invoke(app, ["project", "--cwd", str(repo), "--json"])
@@ -52,8 +52,8 @@ def test_project_register_then_view(vault, repo):
 
 def test_project_is_idempotent(vault, repo):
     """Refuse a second registration rather than creating a duplicate."""
-    runner.invoke(app, ["project", "--register", "--cwd", str(repo)])
-    second = runner.invoke(app, ["project", "--register", "--cwd", str(repo)])
+    runner.invoke(app, ["project", "register", "--cwd", str(repo)])
+    second = runner.invoke(app, ["project", "register", "--cwd", str(repo)])
     assert second.exit_code != 0
     # pp.error writes to stderr; .output is the combined stream a user would see.
     assert "already registered" in second.output
@@ -61,14 +61,14 @@ def test_project_is_idempotent(vault, repo):
 
 def test_project_accepts_an_explicit_slug(vault, repo):
     """Let the caller override the slug derived from the remote."""
-    runner.invoke(app, ["project", "--register", "--cwd", str(repo), "--slug", "custom"])
+    runner.invoke(app, ["project", "register", "--cwd", str(repo), "--slug", "custom"])
     payload = json.loads(runner.invoke(app, ["project", "--cwd", str(repo), "--json"]).stdout)
     assert payload["slug"] == "custom"
 
 
 def test_worktree_resolves_to_the_parent_project(vault, repo, tmp_path):
     """Resolve a worktree to the project its main checkout registered."""
-    runner.invoke(app, ["project", "--register", "--cwd", str(repo)])
+    runner.invoke(app, ["project", "register", "--cwd", str(repo)])
 
     worktree = tmp_path / "feature"
     _run("worktree", "add", "-q", str(worktree), "-b", "feature", cwd=repo)
@@ -80,7 +80,7 @@ def test_worktree_resolves_to_the_parent_project(vault, repo, tmp_path):
 
 def test_project_prose_reports_registered_project(vault, repo):
     """Print a human-readable summary when --json is not requested."""
-    runner.invoke(app, ["project", "--register", "--cwd", str(repo)])
+    runner.invoke(app, ["project", "register", "--cwd", str(repo)])
     result = runner.invoke(app, ["project", "--cwd", str(repo)])
     assert result.exit_code == 0
     assert "demo" in result.output
@@ -95,14 +95,14 @@ def test_project_prose_reports_unregistered_directory(vault, repo):
 
 def test_project_refuses_a_slug_already_in_use(vault, repo, tmp_path):
     """Refuse a colliding slug from an unrelated repository rather than overwrite it."""
-    runner.invoke(app, ["project", "--register", "--cwd", str(repo)])
+    runner.invoke(app, ["project", "register", "--cwd", str(repo)])
 
     other = tmp_path / "other"
     other.mkdir()
     _run("init", "-q", ".", cwd=other)
     _run("commit", "-q", "--allow-empty", "-m", "init", cwd=other)
 
-    result = runner.invoke(app, ["project", "--register", "--cwd", str(other), "--slug", "demo"])
+    result = runner.invoke(app, ["project", "register", "--cwd", str(other), "--slug", "demo"])
     assert result.exit_code != 0
     assert "already in use" in result.output
 
@@ -114,7 +114,7 @@ def test_project_falls_back_to_directory_name_without_a_remote(vault, tmp_path):
     _run("init", "-q", ".", cwd=root)
     _run("commit", "-q", "--allow-empty", "-m", "init", cwd=root)
 
-    result = runner.invoke(app, ["project", "--register", "--cwd", str(root)])
+    result = runner.invoke(app, ["project", "register", "--cwd", str(root)])
     assert result.exit_code == 0
 
     payload = json.loads(runner.invoke(app, ["project", "--cwd", str(root), "--json"]).stdout)
@@ -133,7 +133,7 @@ def test_project_skips_a_remote_that_normalizes_to_no_name(vault, tmp_path):
     _run("remote", "add", "upstream", "https://example.org/team/other-repo.git", cwd=root)
 
     # When registering the project
-    result = runner.invoke(app, ["project", "--register", "--cwd", str(root)])
+    result = runner.invoke(app, ["project", "register", "--cwd", str(root)])
 
     # Then registration succeeds and the slug is derived from the remote that yields a name
     assert result.exit_code == 0
@@ -146,7 +146,7 @@ def test_project_register_and_view_a_directory_outside_git(vault, tmp_path):
     plain = tmp_path / "notes-dir"
     plain.mkdir()
 
-    registered = runner.invoke(app, ["project", "--register", "--cwd", str(plain)])
+    registered = runner.invoke(app, ["project", "register", "--cwd", str(plain)])
     assert registered.exit_code == 0
 
     payload = json.loads(runner.invoke(app, ["project", "--cwd", str(plain), "--json"]).stdout)
@@ -160,7 +160,7 @@ def test_project_from_a_subdirectory_of_a_directory_outside_git(vault, tmp_path)
     plain = tmp_path / "notes-dir"
     deep = plain / "a" / "b" / "c"
     deep.mkdir(parents=True)
-    runner.invoke(app, ["project", "--register", "--cwd", str(plain)])
+    runner.invoke(app, ["project", "register", "--cwd", str(plain)])
 
     payload = json.loads(runner.invoke(app, ["project", "--cwd", str(deep), "--json"]).stdout)
     assert payload["slug"] == "notes-dir"
@@ -170,9 +170,9 @@ def test_project_refuses_a_second_registration_of_the_same_directory(vault, tmp_
     """Refuse a directory outside git that is already registered."""
     plain = tmp_path / "notes-dir"
     plain.mkdir()
-    runner.invoke(app, ["project", "--register", "--cwd", str(plain)])
+    runner.invoke(app, ["project", "register", "--cwd", str(plain)])
 
-    second = runner.invoke(app, ["project", "--register", "--cwd", str(plain)])
+    second = runner.invoke(app, ["project", "register", "--cwd", str(plain)])
     assert second.exit_code != 0
     assert "already registered" in second.output
 
@@ -182,8 +182,8 @@ def test_the_deepest_registered_directory_wins(vault, tmp_path):
     outer = tmp_path / "outer"
     inner = outer / "nested" / "inner"
     inner.mkdir(parents=True)
-    runner.invoke(app, ["project", "--register", "--cwd", str(outer)])
-    runner.invoke(app, ["project", "--register", "--cwd", str(inner)])
+    runner.invoke(app, ["project", "register", "--cwd", str(outer)])
+    runner.invoke(app, ["project", "register", "--cwd", str(inner)])
 
     payload = json.loads(runner.invoke(app, ["project", "--cwd", str(inner), "--json"]).stdout)
     assert payload["slug"] == "inner"
@@ -203,8 +203,8 @@ def test_a_repository_inside_a_registered_directory_resolves_as_itself(vault, tm
     _run("commit", "-q", "--allow-empty", "-m", "init", cwd=nested)
     _run("remote", "add", "origin", "ssh://git@gitea.example.org/nate/nested.git", cwd=nested)
 
-    runner.invoke(app, ["project", "--register", "--cwd", str(outer)])
-    runner.invoke(app, ["project", "--register", "--cwd", str(nested)])
+    runner.invoke(app, ["project", "register", "--cwd", str(outer)])
+    runner.invoke(app, ["project", "register", "--cwd", str(nested)])
 
     payload = json.loads(runner.invoke(app, ["project", "--cwd", str(nested), "--json"]).stdout)
     assert payload["slug"] == "nested"
@@ -223,7 +223,7 @@ def test_an_unregistered_repository_is_never_absorbed_by_a_registered_ancestor(v
     _run("init", "-q", ".", cwd=nested)
     _run("commit", "-q", "--allow-empty", "-m", "init", cwd=nested)
 
-    runner.invoke(app, ["project", "--register", "--cwd", str(outer)])
+    runner.invoke(app, ["project", "register", "--cwd", str(outer)])
 
     resolved = runner.invoke(app, ["project", "--cwd", str(nested), "--json"])
     assert resolved.exit_code != 0
@@ -239,7 +239,7 @@ def test_a_subdirectory_of_a_repository_is_never_absorbed_either(vault, tmp_path
     _run("init", "-q", ".", cwd=nested)
     _run("commit", "-q", "--allow-empty", "-m", "init", cwd=nested)
 
-    runner.invoke(app, ["project", "--register", "--cwd", str(outer)])
+    runner.invoke(app, ["project", "register", "--cwd", str(outer)])
 
     resolved = runner.invoke(app, ["project", "--cwd", str(deep), "--json"])
     assert resolved.exit_code != 0
@@ -253,7 +253,7 @@ def test_project_refuses_a_bare_repository(vault, tmp_path):
     bare = container / "thing.git"
     _run("init", "--bare", "-q", str(bare), cwd=container)
 
-    result = runner.invoke(app, ["project", "--register", "--cwd", str(bare)])
+    result = runner.invoke(app, ["project", "register", "--cwd", str(bare)])
     assert result.exit_code != 0
     assert "bare repository" in result.output
     assert not (vault / "_system" / "registry.toml").exists()
@@ -266,7 +266,7 @@ def test_a_bare_repository_inside_a_registered_directory_reports_unregistered(va
     bare = outer / "bare.git"
     _run("init", "--bare", "-q", str(bare), cwd=outer)
 
-    runner.invoke(app, ["project", "--register", "--cwd", str(outer)])
+    runner.invoke(app, ["project", "register", "--cwd", str(outer)])
 
     resolved = runner.invoke(app, ["project", "--cwd", str(bare), "--json"])
     assert resolved.exit_code != 0
@@ -276,7 +276,7 @@ def test_a_bare_repository_inside_a_registered_directory_reports_unregistered(va
 def test_project_refuses_a_path_that_does_not_exist(vault, tmp_path):
     """Refuse a mistyped --cwd instead of registering a directory nobody has."""
     result = runner.invoke(
-        app, ["project", "--register", "--cwd", str(tmp_path / "does-not-exist-typo")]
+        app, ["project", "register", "--cwd", str(tmp_path / "does-not-exist-typo")]
     )
     assert result.exit_code != 0
     assert "not a directory" in result.output
@@ -288,7 +288,7 @@ def test_project_refuses_a_file(vault, tmp_path):
     note = tmp_path / "afile.md"
     note.write_text("x", encoding="utf-8")
 
-    result = runner.invoke(app, ["project", "--register", "--cwd", str(note)])
+    result = runner.invoke(app, ["project", "register", "--cwd", str(note)])
     assert result.exit_code != 0
     assert "not a directory" in result.output
     assert not (vault / "_system" / "registry.toml").exists()
@@ -314,7 +314,7 @@ def test_an_unregistered_repository_is_not_absorbed_when_git_cannot_answer(
     nested.mkdir(parents=True)
     _run("init", "-q", ".", cwd=nested)
     _run("commit", "-q", "--allow-empty", "-m", "init", cwd=nested)
-    runner.invoke(app, ["project", "--register", "--cwd", str(outer)])
+    runner.invoke(app, ["project", "register", "--cwd", str(outer)])
 
     _hide_git(tmp_path, monkeypatch)
 
@@ -335,7 +335,7 @@ def test_project_refuses_when_git_cannot_answer(vault, tmp_path, monkeypatch):
 
     _hide_git(tmp_path, monkeypatch)
 
-    result = runner.invoke(app, ["project", "--register", "--cwd", str(root)])
+    result = runner.invoke(app, ["project", "register", "--cwd", str(root)])
     assert result.exit_code != 0
     assert "cannot tell whether" in result.output
     assert not (vault / "_system" / "registry.toml").exists()
@@ -362,7 +362,7 @@ def test_project_reports_a_malformed_registry(vault, repo):
 def test_project_register_reports_a_malformed_registry(vault, repo):
     """Report the offending file and exit non-zero instead of crashing."""
     _write_malformed_registry(vault)
-    result = runner.invoke(app, ["project", "--register", "--cwd", str(repo)])
+    result = runner.invoke(app, ["project", "register", "--cwd", str(repo)])
     assert result.exit_code != 0
     assert "registry.toml" in result.output
     assert "malformed" in result.output
@@ -388,7 +388,7 @@ def test_project_reports_a_syntactically_invalid_registry(vault, repo):
 def test_project_register_reports_a_syntactically_invalid_registry(vault, repo):
     """Report a clean message and exit non-zero rather than a raw traceback."""
     _write_syntactically_invalid_registry(vault)
-    result = runner.invoke(app, ["project", "--register", "--cwd", str(repo)])
+    result = runner.invoke(app, ["project", "register", "--cwd", str(repo)])
     assert result.exit_code != 0
     assert "Traceback" not in result.output
     assert "registry.toml" in result.output
@@ -397,7 +397,7 @@ def test_project_register_reports_a_syntactically_invalid_registry(vault, repo):
 
 def test_project_refuses_an_empty_slug(vault, repo):
     """Reject a blank --slug explicitly rather than silently deriving one instead."""
-    result = runner.invoke(app, ["project", "--register", "--cwd", str(repo), "--slug", "  "])
+    result = runner.invoke(app, ["project", "register", "--cwd", str(repo), "--slug", "  "])
     assert result.exit_code != 0
     assert "must not be empty" in result.output
 
@@ -405,7 +405,7 @@ def test_project_refuses_an_empty_slug(vault, repo):
 def test_project_refuses_a_slug_that_would_escape_the_vault(vault, repo):
     """Reject a slug carrying path separators before it can name a directory."""
     result = runner.invoke(
-        app, ["project", "--register", "--cwd", str(repo), "--slug", "../../pwned"]
+        app, ["project", "register", "--cwd", str(repo), "--slug", "../../pwned"]
     )
     assert result.exit_code != 0
     assert "lowercase letters" in result.output
@@ -415,14 +415,14 @@ def test_project_refuses_a_slug_that_would_escape_the_vault(vault, repo):
 
 def test_project_refuses_a_slug_that_is_not_kebab_case(vault, repo):
     """Reject rather than quietly rewrite a slug, and name the acceptable form."""
-    result = runner.invoke(app, ["project", "--register", "--cwd", str(repo), "--slug", "My Repo"])
+    result = runner.invoke(app, ["project", "register", "--cwd", str(repo), "--slug", "My Repo"])
     assert result.exit_code != 0
     assert "--slug my-repo" in result.output
 
 
 def test_project_refuses_a_slug_with_no_usable_characters(vault, repo):
     """Reject a slug that normalizes to nothing rather than suggesting an empty form."""
-    result = runner.invoke(app, ["project", "--register", "--cwd", str(repo), "--slug", "???"])
+    result = runner.invoke(app, ["project", "register", "--cwd", str(repo), "--slug", "???"])
     assert result.exit_code != 0
     assert "lowercase letters" in result.output
 
@@ -432,9 +432,9 @@ def test_project_warns_when_nesting_inside_another_project(vault, tmp_path):
     outer = tmp_path / "outer"
     inner = outer / "nested" / "inner"
     inner.mkdir(parents=True)
-    runner.invoke(app, ["project", "--register", "--cwd", str(outer)])
+    runner.invoke(app, ["project", "register", "--cwd", str(outer)])
 
-    result = runner.invoke(app, ["project", "--register", "--cwd", str(inner)])
+    result = runner.invoke(app, ["project", "register", "--cwd", str(inner)])
     assert result.exit_code == 0
     # pp.warning writes to stderr; .output is the combined stream a user would see.
     assert "sits inside project 'outer'" in result.output
@@ -448,11 +448,11 @@ def test_project_does_not_warn_outside_every_registered_project(vault, tmp_path)
     """Stay quiet for the ordinary case, so the warning keeps meaning something."""
     outer = tmp_path / "outer"
     outer.mkdir()
-    runner.invoke(app, ["project", "--register", "--cwd", str(outer)])
+    runner.invoke(app, ["project", "register", "--cwd", str(outer)])
 
     unrelated = tmp_path / "unrelated"
     unrelated.mkdir()
-    result = runner.invoke(app, ["project", "--register", "--cwd", str(unrelated)])
+    result = runner.invoke(app, ["project", "register", "--cwd", str(unrelated)])
     assert result.exit_code == 0
     assert "sits inside project" not in result.output
 
@@ -465,7 +465,7 @@ def test_project_slugifies_a_remote_derived_slug(vault, tmp_path):
     _run("commit", "-q", "--allow-empty", "-m", "init", cwd=root)
     _run("remote", "add", "origin", "git@github.com:n/My.Repo.git", cwd=root)
 
-    result = runner.invoke(app, ["project", "--register", "--cwd", str(root)])
+    result = runner.invoke(app, ["project", "register", "--cwd", str(root)])
     assert result.exit_code == 0
     assert "my-repo" in result.output
 
@@ -478,7 +478,7 @@ def test_project_slugifies_a_directory_derived_slug(vault, tmp_path):
     root = tmp_path / "My Notes Dir"
     root.mkdir()
 
-    result = runner.invoke(app, ["project", "--register", "--cwd", str(root)])
+    result = runner.invoke(app, ["project", "register", "--cwd", str(root)])
     assert result.exit_code == 0
     assert "my-notes-dir" in result.output
 
@@ -491,7 +491,7 @@ def test_project_reports_a_directory_name_that_yields_no_slug(vault, tmp_path):
     root = tmp_path / "???"
     root.mkdir()
 
-    result = runner.invoke(app, ["project", "--register", "--cwd", str(root)])
+    result = runner.invoke(app, ["project", "register", "--cwd", str(root)])
     assert result.exit_code != 0
     assert "Traceback" not in result.output
     assert "--slug" in result.output
@@ -500,7 +500,7 @@ def test_project_reports_a_directory_name_that_yields_no_slug(vault, tmp_path):
 
 def test_project_json_names_the_project_directory(vault, repo):
     """Report the folder every project-scoped location lives under."""
-    runner.invoke(app, ["project", "--register", "--cwd", str(repo)])
+    runner.invoke(app, ["project", "register", "--cwd", str(repo)])
 
     result = runner.invoke(app, ["project", "--cwd", str(repo), "--json"])
     payload = json.loads(result.stdout)
@@ -519,7 +519,7 @@ def test_project_json_has_no_project_directory_when_unregistered(vault, repo):
 
 def test_project_json_keeps_the_payload_the_hook_reads(vault, repo):
     """Hold the shape `hooks/sessionhooks/vaultcli.py` parses, field for field."""
-    runner.invoke(app, ["project", "--register", "--cwd", str(repo)])
+    runner.invoke(app, ["project", "register", "--cwd", str(repo)])
 
     payload = json.loads(runner.invoke(app, ["project", "--cwd", str(repo), "--json"]).stdout)
 
@@ -544,7 +544,7 @@ def test_project_reports_unregistered_and_exits_non_zero(vault, repo):
 
 def test_project_refuses_slug_without_register(vault, repo):
     """A slug is permanent once notes carry it, so it is set once and never edited."""
-    runner.invoke(app, ["project", "--register", "--cwd", str(repo)])
+    runner.invoke(app, ["project", "register", "--cwd", str(repo)])
 
     result = runner.invoke(app, ["project", "--cwd", str(repo), "--slug", "renamed"])
 
@@ -554,9 +554,9 @@ def test_project_refuses_slug_without_register(vault, repo):
 
 def test_project_register_refuses_a_second_registration(vault, repo):
     """Guard the accidental case, which looks exactly like the deliberate one."""
-    runner.invoke(app, ["project", "--register", "--cwd", str(repo)])
+    runner.invoke(app, ["project", "register", "--cwd", str(repo)])
 
-    result = runner.invoke(app, ["project", "--register", "--cwd", str(repo)])
+    result = runner.invoke(app, ["project", "register", "--cwd", str(repo)])
 
     assert result.exit_code != 0
     assert "already registered" in result.output
@@ -567,7 +567,7 @@ def test_project_prose_reports_the_registered_root_not_the_directory_asked_about
     plain = tmp_path / "notes-dir"
     deep = plain / "a" / "b"
     deep.mkdir(parents=True)
-    runner.invoke(app, ["project", "--register", "--cwd", str(plain)])
+    runner.invoke(app, ["project", "register", "--cwd", str(plain)])
 
     result = runner.invoke(app, ["project", "--cwd", str(deep)])
 
@@ -577,7 +577,7 @@ def test_project_prose_reports_the_registered_root_not_the_directory_asked_about
 
 def test_project_register_creates_the_project_folder_and_its_fields(vault, repo):
     """Create the folder at registration, since the sweep runs inside it before any page exists."""
-    result = runner.invoke(app, ["project", "--register", "--cwd", str(repo)])
+    result = runner.invoke(app, ["project", "register", "--cwd", str(repo)])
 
     assert result.exit_code == 0
     assert paths_lib.project_dir(vault, "demo").is_dir()
@@ -587,9 +587,9 @@ def test_project_register_creates_the_project_folder_and_its_fields(vault, repo)
 
 def test_project_mark_reviewed_records_today(vault, repo):
     """Verify --mark-reviewed stamps today's date on the resolved project."""
-    runner.invoke(app, ["project", "--register", "--cwd", str(repo)])
+    runner.invoke(app, ["project", "register", "--cwd", str(repo)])
 
-    result = runner.invoke(app, ["project", "--mark-reviewed", "--cwd", str(repo)])
+    result = runner.invoke(app, ["project", "mark-reviewed", "--cwd", str(repo)])
 
     assert result.exit_code == 0
     assert registry.load(vault)["demo"].reviewed == today()
@@ -598,9 +598,9 @@ def test_project_mark_reviewed_records_today(vault, repo):
 
 def test_project_mark_reviewed_json_reports_the_project(vault, repo):
     """Verify --mark-reviewed --json records the date and prints the project payload."""
-    runner.invoke(app, ["project", "--register", "--cwd", str(repo)])
+    runner.invoke(app, ["project", "register", "--cwd", str(repo)])
 
-    result = runner.invoke(app, ["project", "--mark-reviewed", "--json", "--cwd", str(repo)])
+    result = runner.invoke(app, ["project", "mark-reviewed", "--json", "--cwd", str(repo)])
 
     assert result.exit_code == 0
     assert registry.load(vault)["demo"].reviewed == today()
@@ -612,12 +612,12 @@ def test_project_mark_reviewed_json_reports_the_project(vault, repo):
 
 def test_register_keeps_another_projects_reviewed_date(vault, repo, tmp_path):
     """Verify registering a second project does not drop the first one's review date."""
-    runner.invoke(app, ["project", "--register", "--cwd", str(repo)])
-    runner.invoke(app, ["project", "--mark-reviewed", "--cwd", str(repo)])
+    runner.invoke(app, ["project", "register", "--cwd", str(repo)])
+    runner.invoke(app, ["project", "mark-reviewed", "--cwd", str(repo)])
     other = tmp_path / "other"
     other.mkdir()
 
-    result = runner.invoke(app, ["project", "--register", "--cwd", str(other)])
+    result = runner.invoke(app, ["project", "register", "--cwd", str(other)])
 
     assert result.exit_code == 0
     assert registry.load(vault)["demo"].reviewed == today()
@@ -628,7 +628,7 @@ def test_project_mark_reviewed_outside_a_project_fails(vault, tmp_path):
     stray = tmp_path / "stray"
     stray.mkdir()
 
-    result = runner.invoke(app, ["project", "--mark-reviewed", "--cwd", str(stray)])
+    result = runner.invoke(app, ["project", "mark-reviewed", "--cwd", str(stray)])
 
     assert result.exit_code == 1
     assert registry.load(vault) == {}
@@ -644,7 +644,7 @@ def test_project_mark_reviewed_with_register_fails(vault, repo):
 
 def test_project_mark_reviewed_with_slug_fails(vault, repo):
     """Verify --mark-reviewed cannot be combined with --slug."""
-    runner.invoke(app, ["project", "--register", "--cwd", str(repo)])
+    runner.invoke(app, ["project", "register", "--cwd", str(repo)])
     before = registry.load(vault)
 
     result = runner.invoke(app, ["project", "--mark-reviewed", "--slug", "x", "--cwd", str(repo)])
@@ -680,7 +680,7 @@ def test_register_saves_the_registry_under_the_lock(vault, tmp_path, monkeypatch
     project = tmp_path / "plain-dir"
     project.mkdir()
     # When registering a directory
-    result = runner.invoke(app, ["project", "--register", "--cwd", str(project)])
+    result = runner.invoke(app, ["project", "register", "--cwd", str(project)])
     # Then the registry was written under the lock
     assert result.exit_code == 0, result.output
     assert held == [True]
@@ -697,7 +697,7 @@ def slow_save(vault, projects):
     real_save(vault, projects)
 registry.save = slow_save
 from sessionmemory.cli import app
-app(["project", "--register", "--cwd", sys.argv[1]])
+app(["project", "register", "--cwd", sys.argv[1]])
 """
 
 
@@ -723,3 +723,57 @@ def test_concurrent_registrations_keep_both_entries(vault, tmp_path):
         assert proc.returncode == 0, stderr.decode()
     # Then the registry holds both
     assert sorted(registry.load(vault)) == ["first-project", "second-project"]
+
+
+def test_project_deprecated_register_flag_still_registers(vault, repo):
+    """Verify --register still registers and prints the payload, with a warning on stderr."""
+    result = runner.invoke(app, ["project", "--register", "--cwd", str(repo), "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["slug"] == "demo"
+    assert "project register" in result.stderr
+
+
+def test_project_deprecated_register_flag_takes_a_slug(vault, repo):
+    """Verify the deprecated --register keeps honoring --slug."""
+    runner.invoke(app, ["project", "--register", "--slug", "custom", "--cwd", str(repo)])
+
+    assert "custom" in registry.load(vault)
+
+
+def test_project_deprecated_mark_reviewed_flag_still_records_today(vault, repo):
+    """Verify --mark-reviewed still stamps today's date, with a warning on stderr."""
+    runner.invoke(app, ["project", "register", "--cwd", str(repo)])
+
+    result = runner.invoke(app, ["project", "--mark-reviewed", "--cwd", str(repo)])
+
+    assert result.exit_code == 0, result.output
+    assert registry.load(vault)["demo"].reviewed == today()
+    assert "project mark-reviewed" in result.stderr
+
+
+def test_project_register_takes_the_short_cwd_alias(vault, repo):
+    """Verify -C names the directory the way --cwd does."""
+    result = runner.invoke(app, ["project", "register", "-C", str(repo)])
+
+    assert result.exit_code == 0, result.output
+    assert "demo" in registry.load(vault)
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        pytest.param(["--cwd", "{repo}", "register"], id="cwd"),
+        pytest.param(["--json", "register", "--cwd", "{repo}"], id="json"),
+        pytest.param(["--cwd", "{repo}", "mark-reviewed"], id="mark-reviewed"),
+    ],
+)
+def test_project_refuses_group_options_before_a_subcommand(vault, repo, arguments):
+    """Verify an option placed before a subcommand fails rather than being dropped."""
+    argv = [arg.format(repo=repo) for arg in arguments]
+
+    result = runner.invoke(app, ["project", *argv])
+
+    assert result.exit_code == 1
+    assert "go after it" in result.output
+    assert registry.load(vault) == {}

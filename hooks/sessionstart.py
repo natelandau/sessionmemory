@@ -159,7 +159,7 @@ def _unregistered_hint(vault: VaultCLI) -> str:
     """The line a session in an unregistered project receives instead of memory."""
     return (
         "This project is not registered with the vault, so it has no memory yet. "
-        f"Register it with: {vault.command} project --register"
+        f"Register it with: {vault.command} project register"
     )
 
 
@@ -310,7 +310,7 @@ def _settings_lines(settings: dict[str, Any]) -> list[str]:
     if state == "checkout only":
         return [
             (
-                f'- "Track {SETTINGS_PATH} in the vault?" Yes copies it into the vault, and '
+                f'- "Copy {SETTINGS_PATH} into the vault?" Yes copies it into the vault, and '
                 "this checkout keeps its copy. (--keep-settings checkout)"
             )
         ]
@@ -350,7 +350,7 @@ def _pending_block(pending: dict[str, Any], *, command: str) -> tuple[str | None
         return None, 0
     lines = [LOCAL_PENDING_NOTE, ""]
     lines.extend(
-        f'- "Track {_relpath(name)} in the vault?" Yes moves it into the vault and links it '
+        f'- "Adopt {_relpath(name)} into the vault?" Yes moves it into the vault and links it '
         f"back here. (--adopt {shlex.quote(name)})"
         for name in adopt
     )

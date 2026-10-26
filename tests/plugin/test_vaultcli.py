@@ -435,14 +435,14 @@ def test_resolve_refuses_output_it_cannot_trust(marked_vault, stub_cli, tmp_path
 def test_register_returns_the_slug_the_cli_filed_the_project_under(
     marked_vault, stub_cli, tmp_path
 ):
-    """Verify register() sends `project --register` for the directory and returns the slug."""
+    """Verify register() sends `project register` for the directory and returns the slug."""
     cli = VaultCLI.discover(env=_env(**{ROOT_ENV: str(marked_vault)}), configured=None)
 
     slug = cli.register(cwd=tmp_path, env=_env())
 
     assert slug == "demo"
     sent = (stub_cli.parent / "args.txt").read_text(encoding="utf-8").split()
-    assert sent[:2] == ["project", "--register"]
+    assert sent[:2] == ["project", "register"]
     assert sent[sent.index("--cwd") + 1] == str(tmp_path)
     assert "--json" in sent
 

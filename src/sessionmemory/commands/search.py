@@ -8,6 +8,7 @@ import typer
 from nclutils import pp
 
 from sessionmemory.commands._common import (
+    CWD_OPTION,
     build_embedder,
     emit_json,
     emit_value,
@@ -17,7 +18,7 @@ from sessionmemory.commands._common import (
 )
 from sessionmemory.lib import fieldindex, paths, specs
 
-QUERY = typer.Argument(..., help="What to look for, in plain words.")
+QUERY = typer.Argument(..., help="What to look for, in a few distinctive words.")
 LOGS = typer.Option(False, "--logs", help="Search past session logs instead of learnings.")  # noqa: FBT003
 SPECS = typer.Option(False, "--specs", help="Search specs instead of learnings.")  # noqa: FBT003
 INCLUDE_RETIRED = typer.Option(
@@ -25,7 +26,9 @@ INCLUDE_RETIRED = typer.Option(
     "--include-retired",
     help="With --specs, also show superseded and abandoned specs.",
 )
-LIMIT = typer.Option(10, "--limit", help="Maximum number of results.")
+LIMIT = typer.Option(10, "--limit", "-n", help="Maximum number of results.")
+# Hidden because the defaults were measured against labeled queries; these exist for
+# re-measuring them, not for loosening a search that found nothing.
 MAX_DISTANCE = typer.Option(
     None,
     "--max-distance",
@@ -36,6 +39,7 @@ MAX_DISTANCE = typer.Option(
         f"Default {fieldindex.DEFAULT_MAX_DISTANCE}, or {fieldindex.SPECS_MAX_DISTANCE} with --specs."
     ),
     show_default=False,
+    hidden=True,
 )
 MIN_MARGIN = typer.Option(
     None,
@@ -43,13 +47,13 @@ MIN_MARGIN = typer.Option(
     min=0.0,
     max=2.0,
     help=(
-        "How much nearer than the field's median page a hit must sit. 0 turns this off. "
+        "How much nearer than the median page searched a hit must sit. 0 turns this off. "
         f"Default {fieldindex.DEFAULT_MIN_MARGIN}, or {fieldindex.SPECS_MIN_MARGIN} with --specs."
     ),
     show_default=False,
+    hidden=True,
 )
 READ = typer.Option(False, "--read", help="Print each hit's whole file under its path.")  # noqa: FBT003
-CWD = typer.Option(None, "--cwd", help="Directory to resolve the project from.")
 JSON = typer.Option(False, "--json", help="Emit JSON instead of prose.")  # noqa: FBT003
 
 _NO_RESULTS = {
@@ -63,7 +67,7 @@ _NO_RESULTS = {
 
 
 def search_command(  # noqa: PLR0913
-    query: str = QUERY,
+    query: list[str] = QUERY,
     *,
     logs: bool = LOGS,
     specs_flag: bool = SPECS,
@@ -72,10 +76,11 @@ def search_command(  # noqa: PLR0913
     max_distance: float | None = MAX_DISTANCE,
     min_margin: float | None = MIN_MARGIN,
     read: bool = READ,
-    cwd: Path | None = CWD,
+    cwd: Path | None = CWD_OPTION,
     as_json: bool = JSON,
 ) -> None:
     """Find the pages nearest in meaning to the query, nearest first."""
+    text = " ".join(query)
     if limit < 1:
         fail("--limit must be at least 1")
     if specs_flag and logs:
@@ -98,7 +103,7 @@ def search_command(  # noqa: PLR0913
     hits = fieldindex.search(
         directory,
         build_embedder(),
-        query,
+        text,
         limit=limit,
         max_distance=default_distance if max_distance is None else max_distance,
         min_margin=default_margin if min_margin is None else min_margin,

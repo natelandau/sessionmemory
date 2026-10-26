@@ -37,7 +37,7 @@ def workspace(vault, tmp_path, monkeypatch):
     _git("commit", "-q", "--allow-empty", "-m", "init", cwd=repo)
     _git("remote", "add", "origin", str(origin), cwd=repo)
     _git("push", "-q", "-u", "origin", "main", cwd=repo)
-    assert runner.invoke(app, ["project", "--register", "--cwd", str(repo)]).exit_code == 0
+    assert runner.invoke(app, ["project", "register", "--cwd", str(repo)]).exit_code == 0
 
     log = paths.logs_dir(vault, SLUG) / "session.md"
     log.parent.mkdir(parents=True, exist_ok=True)
@@ -102,7 +102,7 @@ def test_reconcile_fails_when_root_is_not_a_repository(workspace, tmp_path):
     plain = tmp_path / "plain"
     plain.mkdir()
     _git("remote", "remove", "origin", cwd=repo)
-    registered = runner.invoke(app, ["project", "--register", "--cwd", str(plain)])
+    registered = runner.invoke(app, ["project", "register", "--cwd", str(plain)])
     assert registered.exit_code == 0, registered.output
 
     result = runner.invoke(app, ["reconcile", "--cwd", str(plain)])

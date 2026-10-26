@@ -128,8 +128,8 @@ loaded for you: the titles are what the vault holds, and each is one `{command} 
 away. The project's folder has `learnings/` and `logs/`, searched by meaning, beside
 `specs/`, `runbooks/`, `reference/`, and `backlog.md`, which are ordinary files you Read
 and Edit. `{command} path <kind>` prints one path, where kind is project, learnings,
-logs, specs, runbooks, reference, or backlog; `{command} project --json` prints
-them all for a script.
+logs, specs, runbooks, reference, or backlog; `{command} path --json` prints them
+all for a script.
 
   - Before assuming nothing was written down, search: `{command} search "<words>"`
     prints each hit's path, title, and summary, and `--read` prints every hit's whole

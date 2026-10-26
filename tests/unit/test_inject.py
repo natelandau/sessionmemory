@@ -151,7 +151,7 @@ def test_guidance_teaches_the_backlog_line_and_the_project_paths():
     assert "sessionmemory new backlog --kind <kind> --size <S|M|L>" in flat
     assert "# Backlog" not in flat
     assert "sessionmemory path <kind>" in flat
-    assert "project --json" in flat
+    assert "path --json" in flat
     assert "--logs" in flat
     assert "--read" in flat
     assert "remember" in flat

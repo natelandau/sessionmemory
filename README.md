@@ -130,7 +130,7 @@ yourself, run the command once:
 
 ```bash
 cd ~/repos/invoice-api
-sessionmemory project --register --cwd .
+sessionmemory project register --cwd .
 ```
 
 ```
@@ -206,8 +206,8 @@ loaded for you: the titles are what the vault holds, and each is one `sessionmem
 away. The project's folder has `learnings/` and `logs/`, searched by meaning, beside
 `specs/`, `runbooks/`, `reference/`, and `backlog.md`, which are ordinary files you Read
 and Edit. `sessionmemory path <kind>` prints one path, where kind is project, learnings,
-logs, specs, runbooks, reference, or backlog; `sessionmemory project --json` prints
-them all for a script.
+logs, specs, runbooks, reference, or backlog; `sessionmemory path --json` prints them
+all for a script.
 
   - Before assuming nothing was written down, search: `sessionmemory search "<words>"`
     prints each hit's path, title, and summary, and `--read` prints every hit's whole

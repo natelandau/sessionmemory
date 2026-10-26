@@ -33,6 +33,8 @@ if TYPE_CHECKING:
 
 EMBEDDER_ENV_VAR = "SESSIONMEMORY_EMBEDDER"
 
+CWD_OPTION = typer.Option(None, "--cwd", "-C", help="Directory to resolve the project from.")
+
 
 # The two ways to name the vault, offered together whenever neither is set.
 VAULT_FIX = [
@@ -257,7 +259,7 @@ def require_project(vault: Path, cwd: Path | None = None) -> str:
     if not result.registered or result.slug is None:
         pp.error(
             "this directory is not a registered project",
-            details=["run: sessionmemory project --register"],
+            details=["run: sessionmemory project register"],
         )
         raise typer.Exit(1)
     return result.slug

@@ -27,7 +27,7 @@ def workspace(vault, tmp_path, monkeypatch):
     _git("init", "-q", ".", cwd=repo)
     _git("commit", "-q", "--allow-empty", "-m", "init", cwd=repo)
     _git("remote", "add", "origin", "git@example.org:nate/demo.git", cwd=repo)
-    assert runner.invoke(app, ["project", "--register", "--cwd", str(repo)]).exit_code == 0
+    assert runner.invoke(app, ["project", "register", "--cwd", str(repo)]).exit_code == 0
     monkeypatch.chdir(repo)
     return vault, repo
 
@@ -312,3 +312,21 @@ def test_search_specs_honors_an_explicit_cutoff(workspace, mocker):
 
     assert search.call_args.kwargs["max_distance"] == 0.5
     assert search.call_args.kwargs["min_margin"] == 0
+
+
+def test_search_joins_an_unquoted_query(workspace, mocker):
+    """Verify several words on the command line are searched as one query."""
+    spy = mocker.spy(fieldindex, "search")
+
+    result = runner.invoke(app, ["search", "connection", "pool", "size"])
+
+    assert result.exit_code == 0, result.output
+    assert spy.call_args.args[2] == "connection pool size"
+
+
+def test_search_help_hides_the_measured_cutoffs(workspace):
+    """Verify --help leaves out the cutoffs that exist only for re-measuring."""
+    result = runner.invoke(app, ["search", "--help"])
+
+    assert "--max-distance" not in result.stdout
+    assert "--min-margin" not in result.stdout

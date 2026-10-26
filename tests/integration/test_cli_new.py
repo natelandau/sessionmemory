@@ -29,7 +29,7 @@ def workspace(vault, tmp_path, monkeypatch):
     _git("init", "-q", ".", cwd=repo)
     _git("commit", "-q", "--allow-empty", "-m", "init", cwd=repo)
     _git("remote", "add", "origin", "git@example.org:nate/demo.git", cwd=repo)
-    assert runner.invoke(app, ["project", "--register", "--cwd", str(repo)]).exit_code == 0
+    assert runner.invoke(app, ["project", "register", "--cwd", str(repo)]).exit_code == 0
     monkeypatch.chdir(repo)
     return vault, repo
 
@@ -98,6 +98,21 @@ def test_new_spec_writes_draft_status(workspace):
     meta, _ = parse(path.read_text(encoding="utf-8"))
     assert list(meta) == ["title", "created", "updated", "status"]
     assert meta["status"] == "draft"
+
+
+def test_new_spec_summary_goes_into_frontmatter(workspace):
+    """Verify --summary lands after the title, where search reads it first."""
+    vault, _ = workspace
+
+    result = runner.invoke(
+        app, ["new", "spec", "--title", "A Thing", "--summary", "Why it exists."]
+    )
+
+    assert result.exit_code == 0, result.output
+    path = vault / "projects" / "demo" / "specs" / f"{today()}-a-thing.md"
+    meta, _ = parse(path.read_text(encoding="utf-8"))
+    assert list(meta) == ["title", "summary", "created", "updated", "status"]
+    assert meta["summary"] == "Why it exists."
 
 
 def _old_spec(vault) -> Path:
@@ -306,7 +321,7 @@ def test_new_learning_outside_a_registered_project_fails(vault, tmp_path, monkey
     result = runner.invoke(app, ["new", "learning", "--title", "T", "--summary", "s"])
 
     assert result.exit_code == 1
-    assert "sessionmemory project --register" in result.output
+    assert "sessionmemory project register" in result.output
 
 
 def test_new_learning_with_unusable_title_fails(workspace):

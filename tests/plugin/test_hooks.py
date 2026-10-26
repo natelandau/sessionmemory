@@ -91,7 +91,7 @@ def _fake_vault(tmp_path: Path, proj: Path, *, title: str = TITLE) -> Path:
     initialize(vault)
     env = {**clean_environ(also_drop=_AMBIENT), ROOT_ENV: str(vault)}
     subprocess.run(
-        [str(HOOKS.parent / "bin" / "sessionmemory"), "project", "--register", "--cwd", str(proj)],
+        [str(HOOKS.parent / "bin" / "sessionmemory"), "project", "register", "--cwd", str(proj)],
         env=env,
         check=True,
         capture_output=True,
@@ -508,7 +508,7 @@ def test_an_unregistered_repository_is_registered_at_session_start(
     context = output["hookSpecificOutput"]["additionalContext"]
     assert f"'{proj.name}'" in context
     assert "## Using this vault" in context
-    assert "sessionmemory project --register" not in context
+    assert "sessionmemory project register" not in context
 
 
 def test_a_directory_outside_git_is_told_how_to_register(
@@ -521,7 +521,7 @@ def test_a_directory_outside_git_is_told_how_to_register(
     output = run_sessionstart(hook_payload)
     # Then nothing was registered, and the injected context names the command that would
     assert registry.load(unregistered_vault) == {}
-    assert "sessionmemory project --register" in output["hookSpecificOutput"]["additionalContext"]
+    assert "sessionmemory project register" in output["hookSpecificOutput"]["additionalContext"]
 
 
 def test_a_registration_the_cli_refuses_falls_back_to_the_hint(
@@ -537,7 +537,7 @@ def test_a_registration_the_cli_refuses_falls_back_to_the_hint(
         [
             str(HOOKS.parent / "bin" / "sessionmemory"),
             "project",
-            "--register",
+            "register",
             "--cwd",
             str(taken),
             "--slug",
@@ -551,7 +551,7 @@ def test_a_registration_the_cli_refuses_falls_back_to_the_hint(
     output = run_sessionstart(hook_payload)
     # Then the registry is unchanged and the hint is injected
     assert registry.load(unregistered_vault)[proj.name].root == str(taken.resolve())
-    assert "sessionmemory project --register" in output["hookSpecificOutput"]["additionalContext"]
+    assert "sessionmemory project register" in output["hookSpecificOutput"]["additionalContext"]
 
 
 def test_a_registered_project_gets_no_hint(
@@ -563,9 +563,7 @@ def test_a_registered_project_gets_no_hint(
     # When SessionStart runs
     output = run_sessionstart(hook_payload)
     # Then no registration hint is present
-    assert (
-        "sessionmemory project --register" not in output["hookSpecificOutput"]["additionalContext"]
-    )
+    assert "sessionmemory project register" not in output["hookSpecificOutput"]["additionalContext"]
 
 
 def _fake_vault_cli(
@@ -1545,7 +1543,7 @@ def test_local_block_asks_about_pending_work(tmp_path: Path) -> None:
     assert "2026-10-25T09:40:00Z" in block
     assert "permissions.allow: 3 only in the checkout" in block
     assert "ask the person" in block
-    assert '"Track .claude/rules/r.md in the vault?"' in block
+    assert '"Adopt .claude/rules/r.md into the vault?"' in block
     assert "Which copy wins?" in block
     assert "`/opt/plugin/bin/sessionmemory local sync --cwd .`" in block
     assert "--adopt rules/r.md" in block
@@ -1559,7 +1557,7 @@ def test_local_block_asks_about_pending_work(tmp_path: Path) -> None:
     [
         (
             "checkout only",
-            '"Track .claude/settings.local.json in the vault?"',
+            '"Copy .claude/settings.local.json into the vault?"',
             "--keep-settings checkout",
         ),
         ("vault only", "Copy it into this checkout?", "--keep-settings vault"),

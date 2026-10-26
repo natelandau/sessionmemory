@@ -33,7 +33,7 @@ def workspace(vault, tmp_path, monkeypatch):
     _git("init", "-q", ".", cwd=repo)
     _git("commit", "-q", "--allow-empty", "-m", "init", cwd=repo)
     _git("remote", "add", "origin", "git@example.org:nate/demo.git", cwd=repo)
-    assert runner.invoke(app, ["project", "--register", "--cwd", str(repo)]).exit_code == 0
+    assert runner.invoke(app, ["project", "register", "--cwd", str(repo)]).exit_code == 0
     monkeypatch.chdir(repo)
     monkeypatch.setattr(local_commands, "_interactive", lambda: False)
     return vault, repo
@@ -160,9 +160,9 @@ def test_sync_asks_one_question_per_entry(workspace, monkeypatch):
 
     assert result.exit_code == 0
     assert asked == [
-        "Track CLAUDE.local.md in the vault?",
-        "Track .claude/skills/a in the vault?",
-        "Track .claude/skills/b in the vault?",
+        "Adopt CLAUDE.local.md into the vault?",
+        "Adopt .claude/skills/a into the vault?",
+        "Adopt .claude/skills/b into the vault?",
     ]
     assert result.stdout.splitlines() == [
         str(_local(vault) / "CLAUDE.local.md"),
@@ -551,6 +551,17 @@ def test_status_json_blocked_entry_has_unknown_ignore(workspace, tmp_path):
     assert only["ignored"] is None
 
 
+def test_status_prose_says_when_there_are_no_entries(workspace):
+    """Verify status names the empty case rather than printing only the folder."""
+    vault, _ = workspace
+
+    result = runner.invoke(app, ["local", "status"])
+
+    assert result.exit_code == 0, result.output
+    assert "no local entries" in result.stdout
+    assert result.stdout.splitlines()[-1] == f"local: {_local(vault)}"
+
+
 def test_status_prose_lists_state_and_contents(workspace):
     """Verify status prose gives one line per entry, the contents verdict, and the folder."""
     vault, repo = workspace
@@ -861,14 +872,14 @@ def test_sync_asks_to_track_checkout_only_settings(workspace, monkeypatch):
     vault, repo = workspace
     _settings(repo, vault, checkout='{"a": 1}', theirs=None)
     asked: list[str] = []
-    answers = {"Track .claude/settings.local.json in the vault?": "Yes"}
+    answers = {"Copy .claude/settings.local.json into the vault?": "Yes"}
     monkeypatch.setattr(local_commands, "_interactive", lambda: True)
     monkeypatch.setattr(local_commands.ask, "choose_one_from_list", _answer(answers, asked))
 
     result = runner.invoke(app, ["local", "sync"])
 
     assert result.exit_code == 0, result.output
-    assert asked == ["Track .claude/settings.local.json in the vault?"]
+    assert asked == ["Copy .claude/settings.local.json into the vault?"]
     assert (_local(vault) / "claude" / "settings.local.json").read_text() == '{"a": 1}'
     assert (repo / ".claude" / "settings.local.json").read_text() == '{"a": 1}'
 

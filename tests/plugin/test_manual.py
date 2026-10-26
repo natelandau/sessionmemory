@@ -291,7 +291,7 @@ def registered(tmp_path: Path) -> tuple[Path, Path]:
     initialize(vault)
     env = {**clean_environ(), "SESSIONMEMORY_VAULT": str(vault)}
     assert VaultCLI(root=vault).output(
-        ["project", "--register", "--cwd", str(proj)], cwd=proj, env=env
+        ["project", "register", "--cwd", str(proj)], cwd=proj, env=env
     )
     return proj, vault
 

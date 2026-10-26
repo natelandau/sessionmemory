@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 
@@ -27,7 +28,7 @@ def workspace(vault, tmp_path, monkeypatch):
     _git("init", "-q", ".", cwd=repo)
     _git("commit", "-q", "--allow-empty", "-m", "init", cwd=repo)
     _git("remote", "add", "origin", "git@example.org:nate/demo.git", cwd=repo)
-    assert runner.invoke(app, ["project", "--register", "--cwd", str(repo)]).exit_code == 0
+    assert runner.invoke(app, ["project", "register", "--cwd", str(repo)]).exit_code == 0
     monkeypatch.chdir(repo)
     return vault, repo
 
@@ -101,9 +102,43 @@ def test_path_fails_outside_a_registered_project(workspace, tmp_path):
 
     assert result.exit_code == 1
     assert result.stdout == ""
-    assert "project --register" in result.stderr
+    assert "project register" in result.stderr
 
 
 def test_path_rejects_an_unknown_kind(workspace):
     """Verify a kind outside the fixed set is a usage error."""
     assert runner.invoke(app, ["path", "notes"]).exit_code == 2
+
+
+def test_path_without_a_kind_prints_every_path_by_kind(workspace):
+    """Verify a bare path prints one aligned line per kind, in the payload's order."""
+    vault, _ = workspace
+
+    result = runner.invoke(app, ["path"])
+
+    assert result.exit_code == 0, result.output
+    lines = result.stdout.splitlines()
+    assert [line.split()[0] for line in lines] == [kind.value for kind in PathKind]
+    assert lines[0].split()[1] == str(vault / "projects/demo")
+    assert len({line.index("/") for line in lines}) == 1
+
+
+def test_path_json_maps_every_kind_to_its_path(workspace):
+    """Verify --json names the project folder `project`, the same word the argument takes."""
+    vault, _ = workspace
+
+    result = runner.invoke(app, ["path", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert list(payload) == [kind.value for kind in PathKind]
+    assert payload["project"] == str(vault / "projects/demo")
+
+
+def test_path_json_with_a_kind_holds_only_that_kind(workspace):
+    """Verify --json with a kind emits a one-entry mapping."""
+    vault, _ = workspace
+
+    result = runner.invoke(app, ["path", "backlog", "--json"])
+
+    assert json.loads(result.stdout) == {"backlog": str(vault / "projects/demo/backlog.md")}

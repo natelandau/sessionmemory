@@ -146,7 +146,7 @@ After the report, record today's date as this project's last review, so the
 session start stops nudging for one:
 
 ```bash
-"$CLI" project --mark-reviewed --cwd .
+"$CLI" project mark-reviewed --cwd .
 ```
 
 Say in the report that you did.

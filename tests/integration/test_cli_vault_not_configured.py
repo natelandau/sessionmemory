@@ -18,7 +18,7 @@ runner = CliRunner()
 
 COMMANDS = [
     ["project"],
-    ["project", "--register"],
+    ["project", "register"],
 ]
 
 
@@ -68,6 +68,6 @@ def test_config_file_alone_locates_the_vault(tmp_path, monkeypatch):
     path.write_text(f'[vault]\nroot = "{root}"\n', encoding="utf-8")
     monkeypatch.setattr(config, "CONFIG_FILE", path)
 
-    result = runner.invoke(app, ["project", "--register", "--cwd", str(tmp_path)])
+    result = runner.invoke(app, ["project", "register", "--cwd", str(tmp_path)])
     assert result.exit_code == 0, result.output
     assert (root / "_system" / "registry.toml").is_file()

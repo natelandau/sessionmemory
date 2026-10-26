@@ -69,7 +69,7 @@ def _registered_vault(tmp_path: Path, proj: Path) -> Path:
     initialize(root)
     cli = VaultCLI(root=root)
     env = {**clean_environ(), "SESSIONMEMORY_VAULT": str(root)}
-    assert cli.output(["project", "--register", "--cwd", str(proj)], cwd=proj, env=env) is not None
+    assert cli.output(["project", "register", "--cwd", str(proj)], cwd=proj, env=env) is not None
     return root
 
 

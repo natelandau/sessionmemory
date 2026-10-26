@@ -362,7 +362,7 @@ class VaultCLI:
         interpreted, since the hook's only fallback is to name the command.
         """
         raw = self.output(
-            ["project", "--register", "--cwd", str(cwd), "--json"],
+            ["project", "register", "--cwd", str(cwd), "--json"],
             cwd=cwd,
             env=env,
             timeout=RESOLVE_TIMEOUT,

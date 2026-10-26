@@ -12,6 +12,7 @@ import typer
 from nclutils import ask, pp
 
 from sessionmemory.commands._common import (
+    CWD_OPTION,
     VersionedGroup,
     emit_json,
     emit_value,
@@ -24,13 +25,9 @@ from sessionmemory.lib import localmanifest, localmd, paths
 app = typer.Typer(
     cls=VersionedGroup,
     no_args_is_help=True,
-    help=(
-        "Keep this project's CLAUDE.local.md, private skills and rules, and "
-        "settings.local.json in the vault and sync them with checkouts."
-    ),
+    help="Keep private files such as CLAUDE.local.md in the vault and sync them to checkouts.",
 )
 
-CWD = typer.Option(None, "--cwd", help="Directory to resolve the project from.")
 JSON = typer.Option(False, "--json", help="Emit JSON instead of prose.")  # noqa: FBT003
 ADOPT = typer.Option(
     None,
@@ -160,7 +157,7 @@ def _ask_settings(pending: localmd.SettingsPending) -> Side | None:
         Side | None: The copy to keep, or None to leave both copies alone.
     """
     if pending.state is localmd.CopyState.CHECKOUT_ONLY:
-        question = f"Track {pending.relpath} in the vault?"
+        question = f"Copy {pending.relpath} into the vault?"
         yes = "Yes, copy it into the vault (this checkout keeps its copy)"
         return "checkout" if _confirm(question=question, yes=yes) else None
     if pending.state is localmd.CopyState.VAULT_ONLY:
@@ -195,7 +192,7 @@ def _ask(waiting: list[localmd.Entry], pending: localmd.SettingsPending | None) 
         item.name
         for item in waiting
         if _confirm(
-            question=f"Track {item.relpath} in the vault?",
+            question=f"Adopt {item.relpath} into the vault?",
             yes="Yes, move it into the vault and link it back here",
         )
     ]
@@ -343,7 +340,7 @@ def _report_pending(waiting: list[localmd.Entry], pending: localmd.SettingsPendi
         adopt = " ".join(f"--adopt {shlex.quote(item.name)}" for item in waiting)
         pp.warning(
             f"not tracked in the vault yet: {', '.join(item.relpath for item in waiting)}",
-            details=[f"Track them in the vault with: sessionmemory local sync {adopt} --cwd ."],
+            details=[f"Adopt them into the vault with: sessionmemory local sync {adopt} --cwd ."],
         )
     if pending is None:
         return
@@ -351,7 +348,7 @@ def _report_pending(waiting: list[localmd.Entry], pending: localmd.SettingsPendi
     if pending.state is localmd.CopyState.CHECKOUT_ONLY:
         pp.warning(
             f"{pending.relpath} is not tracked in the vault yet",
-            details=[f"Track it in the vault with: {keep.format(side='checkout')}"],
+            details=[f"Copy it into the vault with: {keep.format(side='checkout')}"],
         )
     elif pending.state is localmd.CopyState.VAULT_ONLY:
         pp.warning(
@@ -447,7 +444,7 @@ def sync_command(
     adopt: list[str] | None = ADOPT,
     keep_settings: Side | None = KEEP_SETTINGS,
     as_json: bool = JSON,  # noqa: FBT001
-    cwd: Path | None = CWD,
+    cwd: Path | None = CWD_OPTION,
 ) -> None:
     """Link the vault's entries into this checkout, then adopt and keep settings as asked.
 
@@ -573,7 +570,7 @@ def _settings_row(
 
 
 @app.command("status", help="Report how each of this checkout's entries relates to the vault.")
-def status_command(cwd: Path | None = CWD, as_json: bool = JSON) -> None:  # noqa: FBT001
+def status_command(cwd: Path | None = CWD_OPTION, as_json: bool = JSON) -> None:  # noqa: FBT001
     """Report how each of this checkout's entries relates to the vault.
 
     Raises:
@@ -598,6 +595,8 @@ def status_command(cwd: Path | None = CWD, as_json: bool = JSON) -> None:  # noq
         emit_json({"local": str(co.local), "entries": rows})
         return
 
+    if not rows:
+        emit_value("no local entries in this checkout or the vault")
     for row in rows:
         flags = _flags(row)
         suffix = f"  ({', '.join(flags)})" if flags else ""

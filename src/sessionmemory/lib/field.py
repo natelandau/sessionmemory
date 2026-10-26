@@ -184,7 +184,14 @@ def new_page(directory: Path, *, title: str, summary: str, body: str, now: str) 
 
 
 def new_document(
-    directory: Path, *, title: str, body: str, now: str, day: str, status: str | None = None
+    directory: Path,
+    *,
+    title: str,
+    body: str,
+    now: str,
+    day: str,
+    status: str | None = None,
+    summary: str | None = None,
 ) -> Path:
     """Create a spec or plan: a titled, dated file that is not a memory page.
 
@@ -195,7 +202,10 @@ def new_document(
     Raises:
         PageError: If the title yields no slug or no name is free.
     """
-    meta = {"title": title, "created": now, "updated": now}
+    meta = {"title": title}
+    if summary:
+        meta["summary"] = summary
+    meta |= {"created": now, "updated": now}
     if status is not None:
         meta["status"] = status
     return _create(directory, meta, body, stem=dated_stem(title, day))

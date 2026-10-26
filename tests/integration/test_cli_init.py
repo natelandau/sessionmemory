@@ -108,7 +108,7 @@ def test_require_vault_names_force_without_the_run_imperative_for_a_non_empty_di
     whatever directory it happens to be pointed at. The message must still name
     `--force` so a human reading it knows what fixes the directory, but it must not
     carry the `run:` prefix that means "you, the caller, should do this next"
-    elsewhere in this codebase, such as in `run: sessionmemory project --register`.
+    elsewhere in this codebase, such as in `run: sessionmemory project register`.
     """
     monkeypatch.setenv("SESSIONMEMORY_VAULT", str(tmp_path))
     (tmp_path / "a-note.md").write_text(

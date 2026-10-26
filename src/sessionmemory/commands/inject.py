@@ -6,15 +6,22 @@ from pathlib import Path  # noqa: TC003
 
 import typer
 
-from sessionmemory.commands._common import emit_json, emit_value, require_project, require_vault
+from sessionmemory.commands._common import (
+    CWD_OPTION,
+    emit_json,
+    emit_value,
+    require_project,
+    require_vault,
+)
 from sessionmemory.lib import inject
 
-CWD = typer.Option(None, "--cwd", help="Directory to resolve the project from.")
 COMMAND = typer.Option("sessionmemory", "--command", help="How the guidance names this CLI.")
 JSON = typer.Option(False, "--json", help="Emit JSON instead of prose.")  # noqa: FBT003
 
 
-def inject_command(cwd: Path | None = CWD, command: str = COMMAND, *, as_json: bool = JSON) -> None:
+def inject_command(
+    cwd: Path | None = CWD_OPTION, command: str = COMMAND, *, as_json: bool = JSON
+) -> None:
     """Print what this project's session should start with."""
     vault = require_vault()
     slug = require_project(vault, cwd)

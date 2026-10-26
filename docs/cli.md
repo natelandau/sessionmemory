@@ -18,12 +18,12 @@ and says so:
 ```
 
 Every command except `init`, `delete`, and `doctor` resolves a project from the working
-directory, so each one accepts `--cwd` to name a different directory. A directory that no
+directory, so each one accepts `--cwd`, or `-C`, to name a different directory. A directory that no
 project owns exits 1:
 
 ```
 ✗ this directory is not a registered project
-  └─ run: sessionmemory project --register
+  └─ run: sessionmemory project register
 ```
 
 `sessionmemory project` prints the same refusal with the directory named, since reporting
@@ -31,16 +31,21 @@ on a directory is its whole job.
 
 ```
 ✗ ~/repos/invoice-api is not a registered project
-  └─ run: sessionmemory project --register
+  └─ run: sessionmemory project register
 ```
 
-| Flag              | What it does                                                           |
-| ----------------- | ---------------------------------------------------------------------- |
-| `--json`          | Print a machine-readable payload instead of prose. Never styled.       |
-| `--cwd <path>`    | Resolve the project from that directory instead of the shell's.        |
-| `-v`, `-vv`       | Increase output verbosity. Repeat for more.                            |
-| `--version`       | Print the installed version bare and exit. The plugin's hooks read it. |
-| `--body-file <p>` | Read a markdown body from a file, or from stdin for `-`.               |
+| Flag                   | What it does                                                           |
+| ---------------------- | ---------------------------------------------------------------------- |
+| `--json`               | Print a machine-readable payload instead of prose. Never styled.       |
+| `--cwd`, `-C <path>`   | Resolve the project from that directory instead of the shell's.        |
+| `--help`, `-h`         | Print the help for the command and exit.                               |
+| `--version`            | Print the installed version bare and exit. The plugin's hooks read it. |
+| `--body-file <p>`      | Read a markdown body from a file, or from stdin for `-`.               |
+| `--install-completion` | Install tab completion for your shell.                                 |
+
+`sessionmemory --help` groups the commands by who runs them. Everyday commands come first,
+then setup and maintenance. The last group, plugin internals, holds `inject` and `log`,
+which the plugin's hooks run for you.
 
 A command the installed version does not have names that version and the upgrade command,
 since a plugin newer than the tool on `PATH` is the usual cause:
@@ -106,18 +111,19 @@ file into `local/`.
 
 ## `sessionmemory project`
 
-Report which project a directory belongs to, or register it.
+Show which project a directory belongs to, register a directory as a project, or record a
+review.
 
-| Option            | What it does                                                    |
-| ----------------- | --------------------------------------------------------------- |
-| `--register`      | Create this directory's registry entry.                         |
-| `--slug`          | Override the derived slug. Applies only with `--register`.      |
-| `--mark-reviewed` | Record today as the day this project's learnings were reviewed. |
-| `--cwd`           | Directory to resolve. Defaults to the shell's.                  |
-| `--json`          | Emit JSON instead of prose.                                     |
+| Command                       | What it does                                                    |
+| ----------------------------- | --------------------------------------------------------------- |
+| `project`                     | Show the directory's project. Exits 1 when it has none.         |
+| `project register [--slug S]` | Register the directory as a project, so it can hold pages.      |
+| `project mark-reviewed`       | Record today as the day this project's learnings were reviewed. |
+
+Each one takes `--cwd` and `--json`.
 
 ```bash
-sessionmemory project --register --cwd .
+sessionmemory project register --cwd .
 sessionmemory project
 sessionmemory project --json
 ```
@@ -127,22 +133,21 @@ sessionmemory project --json
   └─ root: ~/repos/invoice-api
 ```
 
-`--register` reads the git remote and the repository root, derives the slug from the
+`project register` reads the git remote and the repository root, derives the slug from the
 remote name, and creates the project's folder with an empty `learnings/` and `logs/`
 inside it. It refuses a directory that is already registered, a bare repository, and a
 slug another project holds. A slug is permanent once pages carry it, so moving a project
 to a different slug is manual work. The plugin runs this command for a git repository at
 session start. By hand, it registers a directory outside git or applies a chosen `--slug`.
 
-With no `--register`, the command prints the entry as it stands and exits 1 when there is
-none:
+`project` alone prints the entry as it stands and exits 1 when there is none:
 
 ```
 ✓ invoice-api
   └─ root: ~/repos/invoice-api
 ```
 
-`--json` prints every path a caller needs:
+`--json` prints the entry and every path a caller needs:
 
 ```json
 {
@@ -165,7 +170,7 @@ none:
 }
 ```
 
-`--mark-reviewed` stores `reviewed = "YYYY-MM-DD"` on the project's entry in
+`project mark-reviewed` stores `reviewed = "YYYY-MM-DD"` on the project's entry in
 `_system/registry.toml`. `/sessionmemory:review` runs it when it finishes, and the session
 start stops nudging for a review until the date is more than 30 days old:
 
@@ -177,23 +182,20 @@ start stops nudging for a review until the date is more than 30 days old:
 A date edited in by hand may be written bare, as `reviewed = 2026-08-01`, and reads the
 same. Any other value reads as never reviewed rather than as a broken registry.
 
+The flags `project --register` and `project --mark-reviewed` are deprecated forms of the
+two subcommands. They still work, and they print a warning that names the subcommand.
+
 ## `sessionmemory path`
 
-Print one absolute path for this project and nothing else, so a script can use it
-directly.
+Print this project's vault paths and nothing else, so a script can use them directly.
 
-| Option   | What it does                                                                                                |
-| -------- | ----------------------------------------------------------------------------------------------------------- |
-| `<kind>` | `project`, `learnings`, `logs`, `specs`, `plans`, `runbooks`, `reference`, `backlog`, or `local`. Required. |
-| `--cwd`  | Directory to resolve the project from.                                                                      |
+| Option   | What it does                                                                                                       |
+| -------- | ------------------------------------------------------------------------------------------------------------------ |
+| `[kind]` | `project`, `learnings`, `logs`, `specs`, `plans`, `runbooks`, `reference`, `backlog`, or `local`. Omit it for all. |
+| `--cwd`  | Directory to resolve the project from.                                                                             |
+| `--json` | Print a mapping of kind to path.                                                                                   |
 
-```bash
-sessionmemory path specs --cwd .
-```
-
-```
-~/repos/my-vault/projects/invoice-api/specs
-```
+With a kind, the command prints one path:
 
 ```bash
 sessionmemory path backlog --cwd .
@@ -203,17 +205,43 @@ sessionmemory path backlog --cwd .
 ~/repos/my-vault/projects/invoice-api/backlog.md
 ```
 
+With no kind, it prints one line per kind:
+
 ```bash
-sessionmemory path local --cwd .
+sessionmemory path --cwd .
 ```
 
 ```
-~/repos/my-vault/projects/invoice-api/local
+project    ~/repos/my-vault/projects/invoice-api
+learnings  ~/repos/my-vault/projects/invoice-api/learnings
+logs       ~/repos/my-vault/projects/invoice-api/logs
+specs      ~/repos/my-vault/projects/invoice-api/specs
+plans      ~/repos/my-vault/projects/invoice-api/plans
+runbooks   ~/repos/my-vault/projects/invoice-api/runbooks
+reference  ~/repos/my-vault/projects/invoice-api/reference
+backlog    ~/repos/my-vault/projects/invoice-api/backlog.md
+local      ~/repos/my-vault/projects/invoice-api/local
+```
+
+`--json` prints the same mapping, keyed by the kind names that the argument takes:
+
+```json
+{
+  "project": "~/repos/my-vault/projects/invoice-api",
+  "learnings": "~/repos/my-vault/projects/invoice-api/learnings",
+  "logs": "~/repos/my-vault/projects/invoice-api/logs",
+  "specs": "~/repos/my-vault/projects/invoice-api/specs",
+  "plans": "~/repos/my-vault/projects/invoice-api/plans",
+  "runbooks": "~/repos/my-vault/projects/invoice-api/runbooks",
+  "reference": "~/repos/my-vault/projects/invoice-api/reference",
+  "backlog": "~/repos/my-vault/projects/invoice-api/backlog.md",
+  "local": "~/repos/my-vault/projects/invoice-api/local"
+}
 ```
 
 `local` is the folder that holds the project's entries for
 [`sessionmemory local`](#sessionmemory-local). The path is printed whether or not the file
-or folder exists yet. `sessionmemory project --json` prints every path at once.
+or folder exists yet.
 
 ## `sessionmemory local`
 
@@ -304,6 +332,13 @@ differs        settings.local.json
 local: ~/repos/my-vault/projects/invoice-api/local
 ```
 
+A project with no entries on either side reports that before the folder:
+
+```
+no local entries in this checkout or the vault
+local: ~/repos/my-vault/projects/invoice-api/local
+```
+
 A linked entry is in one of six states:
 
 | State          | Meaning                                                               |
@@ -318,14 +353,14 @@ A linked entry is in one of six states:
 `settings.local.json` is in one of seven states. It is left out when neither side has a
 copy:
 
-| State           | Meaning                                                                 |
-| --------------- | ----------------------------------------------------------------------- |
-| `same`          | Both copies hold the same settings                                      |
-| `differs`       | Both copies exist and hold different settings                           |
-| `checkout only` | The checkout has a copy, and the vault has none                         |
-| `vault only`    | The vault has a copy, and the checkout has none                         |
-| `linked`        | The checkout holds a symlink, which Claude Code cannot write through    |
-| `tracked`       | Git tracks the checkout's copy                                          |
+| State           | Meaning                                                                |
+| --------------- | ---------------------------------------------------------------------- |
+| `same`          | Both copies hold the same settings                                     |
+| `differs`       | Both copies exist and hold different settings                          |
+| `checkout only` | The checkout has a copy, and the vault has none                        |
+| `vault only`    | The vault has a copy, and the checkout has none                        |
+| `linked`        | The checkout holds a symlink, which Claude Code cannot write through   |
+| `tracked`       | Git tracks the checkout's copy                                         |
 | `blocked`       | `.claude/` is a symlink or not a folder, so nothing is read through it |
 
 Two settings copies are the same when they hold the same JSON, so a change of indent or
@@ -410,9 +445,9 @@ moves or overwrites your files happens without your choice: adopting an entry ne
 On a terminal with no options, the command links, then asks one question per pending
 item. Each answer says what it does, and a no or a cancel leaves the file alone:
 
-- An entry only in the checkout: `Track .claude/skills/deploy-check in the vault?` Yes
+- An entry only in the checkout: `Adopt .claude/skills/deploy-check into the vault?` Yes
   moves it into the vault and links it back.
-- Settings only in the checkout: `Track .claude/settings.local.json in the vault?` Yes
+- Settings only in the checkout: `Copy .claude/settings.local.json into the vault?` Yes
   copies it into the vault, and the checkout keeps its copy.
 - Settings only in the vault: `The vault has a .claude/settings.local.json for this
   project, but this checkout has none. Copy it into this checkout?`
@@ -428,9 +463,9 @@ pending item and the command that resolves it, and exits 0:
 
 ```
 ! not tracked in the vault yet: CLAUDE.local.md, .claude/skills/deploy-check, .claude/rules/style.md
-  └─ Track them in the vault with: sessionmemory local sync --adopt CLAUDE.local.md --adopt skills/deploy-check --adopt rules/style.md --cwd .
+  └─ Adopt them into the vault with: sessionmemory local sync --adopt CLAUDE.local.md --adopt skills/deploy-check --adopt rules/style.md --cwd .
 ! .claude/settings.local.json is not tracked in the vault yet
-  └─ Track it in the vault with: sessionmemory local sync --keep-settings checkout --cwd .
+  └─ Copy it into the vault with: sessionmemory local sync --keep-settings checkout --cwd .
 ```
 
 When the settings differ, the warning lists what each copy has that the other lacks:
@@ -725,16 +760,16 @@ in the note about entries that load from the next session.
 
 ## `sessionmemory new learning`
 
-Create a memory page in this project's learnings field.
+Create a learning: one fact this project should remember.
 
-| Option        | What it does                                     |
-| ------------- | ------------------------------------------------ |
-| `--title`     | The title. Required.                             |
-| `--summary`   | One sentence a search result shows. Required.    |
-| `--body`      | Markdown body.                                   |
-| `--body-file` | Read the body from a file, or stdin for `-`.     |
-| `--cwd`       | Directory to resolve the project from.           |
-| `--json`      | Emit JSON instead of prose.                      |
+| Option        | What it does                                  |
+| ------------- | --------------------------------------------- |
+| `--title`     | The title. Required.                          |
+| `--summary`   | One sentence a search result shows. Required. |
+| `--body`      | Markdown body.                                |
+| `--body-file` | Read the body from a file, or stdin for `-`.  |
+| `--cwd`       | Directory to resolve the project from.        |
+| `--json`      | Emit JSON instead of prose.                   |
 
 ```bash
 sessionmemory new learning \
@@ -769,19 +804,20 @@ one, so two pages with the same title never collide.
 
 ## `sessionmemory new spec`
 
-Create a spec for this project. A spec is a plain file, not a page: it has no summary
-field and no size limit. `sessionmemory search --specs` finds it by an embedding of its
-title, its opening paragraph, its headings, and its goal and decision sections, never by
-the whole body.
+Create a spec for this project. A spec is a plain file, not a page: it has no size limit,
+and its summary is optional. `sessionmemory search --specs` finds it by an embedding of
+its title, its opening paragraph, its summary, its headings, and its goal and decision
+sections, never by the whole body.
 
-| Option         | What it does                                                                  |
-| -------------- | ----------------------------------------------------------------------------- |
-| `--title`      | The title. Required.                                                          |
-| `--body`       | Markdown body.                                                                |
-| `--body-file`  | Read the body from a file, or stdin for `-`.                                  |
-| `--supersedes` | The spec this one replaces, by filename. The old spec is marked superseded.   |
-| `--cwd`        | Directory to resolve the project from.                                        |
-| `--json`       | Emit JSON instead of prose.                                                   |
+| Option         | What it does                                                                |
+| -------------- | --------------------------------------------------------------------------- |
+| `--title`      | The title. Required.                                                        |
+| `--summary`    | One sentence a search result shows. Defaults to the opening paragraph.      |
+| `--body`       | Markdown body.                                                              |
+| `--body-file`  | Read the body from a file, or stdin for `-`.                                |
+| `--supersedes` | The spec this one replaces, by filename. The old spec is marked superseded. |
+| `--cwd`        | Directory to resolve the project from.                                      |
+| `--json`       | Emit JSON instead of prose.                                                 |
 
 ```bash
 sessionmemory new spec --title "Export invoices as UBL 2.1 XML" --cwd .
@@ -976,7 +1012,8 @@ was finished.
 
 ## `sessionmemory log`
 
-Record this session's work in the one page that belongs to it.
+Write this session's log page. A session has one log page, and each call replaces its
+body. The plugin's sweep runs this command, so you rarely run it by hand.
 
 | Option         | What it does                                                                   |
 | -------------- | ------------------------------------------------------------------------------ |
@@ -1058,18 +1095,18 @@ that omits one never clears it.
 Find the pages nearest in meaning to the query, nearest first. This is the one read an
 agent cannot do with its own tools.
 
-| Option              | What it does                                                                                       |
-| ------------------- | -------------------------------------------------------------------------------------------------- |
-| `{query}`           | What to look for: a few distinctive words. Required.                                               |
-| `--logs`            | Search past session logs instead of learnings.                                                     |
-| `--specs`           | Search specs instead of learnings. Cannot be combined with `--logs`.                               |
-| `--include-retired` | With `--specs`, also return superseded and abandoned specs. Without `--specs` it is an error.      |
-| `--limit`           | Maximum number of results. Default 10.                                                             |
-| `--max-distance`    | Farthest cosine distance that still counts as a hit. Default 0.45, or 0.38 with `--specs`.         |
-| `--min-margin`      | How much nearer than the field's median page a hit must sit. Default 0.11, or 0.07 with `--specs`. |
-| `--read`            | Print each hit's whole file under its path.                                                        |
-| `--cwd`             | Directory to resolve the project from.                                                             |
-| `--json`            | Emit JSON instead of prose.                                                                        |
+| Option              | What it does                                                                                        |
+| ------------------- | --------------------------------------------------------------------------------------------------- |
+| `{query}...`        | What to look for: a few distinctive words. Quotes are optional. Required.                           |
+| `--logs`            | Search past session logs instead of learnings.                                                      |
+| `--specs`           | Search specs instead of learnings. Cannot be combined with `--logs`.                                |
+| `--include-retired` | With `--specs`, also return superseded and abandoned specs. Without `--specs` it is an error.       |
+| `--limit`, `-n`     | Maximum number of results. Default 10.                                                              |
+| `--max-distance`    | Farthest cosine distance that still counts as a hit. Default 0.45, or 0.38 with `--specs`.          |
+| `--min-margin`      | How much nearer than the median page searched a hit must sit. Default 0.11, or 0.07 with `--specs`. |
+| `--read`            | Print each hit's whole file under its path.                                                         |
+| `--cwd`             | Directory to resolve the project from.                                                              |
+| `--json`            | Emit JSON instead of prose.                                                                         |
 
 Search with a few distinctive words, such as names, identifiers, or error text, rather
 than a sentence. A paraphrase still matches, but keywords separate the page that answers
@@ -1133,6 +1170,9 @@ log, which covers a whole session, sits near every query about its project. Meas
 120 labeled queries across four real projects, a fixed cutoff of 0.45 returned hits for
 28 of 42 queries that had no answer. The margin returned a hit for 1 of them and missed
 3 of 78 answers. `--min-margin 0` turns the margin off and leaves only `--max-distance`.
+
+`--help` does not list `--max-distance` or `--min-margin`. They exist to measure the
+defaults again, not to loosen a search that found nothing.
 
 Search refreshes the field's index before it queries, so a page written moments ago is
 found without a `sessionmemory reindex` first. The first search on a machine downloads the
@@ -1253,8 +1293,8 @@ loaded for you: the titles are what the vault holds, and each is one `sessionmem
 away. The project's folder has `learnings/` and `logs/`, searched by meaning, beside
 `specs/`, `runbooks/`, `reference/`, and `backlog.md`, which are ordinary files you Read
 and Edit. `sessionmemory path <kind>` prints one path, where kind is project, learnings,
-logs, specs, runbooks, reference, or backlog; `sessionmemory project --json` prints
-them all for a script.
+logs, specs, runbooks, reference, or backlog; `sessionmemory path --json` prints them
+all for a script.
 
   - Before assuming nothing was written down, search: `sessionmemory search "<words>"`
     prints each hit's path, title, and summary, and `--read` prints every hit's whole
@@ -1347,9 +1387,9 @@ start reports them from `local sync` (see [SessionStart](plugin.md#sessionstart)
 
 ## `sessionmemory reconcile`
 
-Bring this project's session logs in line with what landed on the trunk. The command
-reads the commits each log lists under `## Changes` and fixes the ones that no longer
-exist. It rewrites only that section. The `## Summary` text and the log's `updated` date
+Update this project's session logs to match the commits on its default branch, called the
+trunk below. The command reads the commits each log lists under `## Changes` and fixes the
+ones that no longer exist. It rewrites only that section. The `## Summary` text and the log's `updated` date
 stay as they are.
 
 For each logged commit, the command decides in this order:
@@ -1426,11 +1466,11 @@ reason for each unchecked line.
 Bring this project's learnings, logs, and specs indexes up to date with the files beside
 them, or every project's with `--all`.
 
-| Option   | What it does                            |
-| -------- | --------------------------------------- |
-| `--cwd`  | Directory to resolve the project from.  |
-| `--all`  | Reindex every project in the vault.     |
-| `--json` | Emit JSON instead of prose.             |
+| Option   | What it does                           |
+| -------- | -------------------------------------- |
+| `--cwd`  | Directory to resolve the project from. |
+| `--all`  | Reindex every project in the vault.    |
+| `--json` | Emit JSON instead of prose.            |
 
 ```bash
 sessionmemory reindex --cwd .
@@ -1521,10 +1561,10 @@ With `--json`, the payload nests each field's counts under its project:
 
 Delete files from the vault permanently, dropping a page's index row with it.
 
-| Option       | What it does                 |
-| ------------ | ---------------------------- |
-| `{targets}`  | Files to delete. Required.   |
-| `--json`     | Emit JSON instead of prose.  |
+| Option      | What it does                |
+| ----------- | --------------------------- |
+| `{targets}` | Files to delete. Required.  |
+| `--json`    | Emit JSON instead of prose. |
 
 ```bash
 sessionmemory delete "~/repos/my-vault/projects/invoice-api/learnings/Bad Name.md" \
@@ -1574,14 +1614,15 @@ See [Vault health](vault-health.md) for the eleven checks and what to do about e
 
 ## `sessionmemory export`
 
-Write this project's field as a `.memoryfield.zip`, the format's archival transport.
+Write this project's learnings, or its logs, as a `.memoryfield.zip`, the format's
+archival transport.
 
-| Option     | What it does                                                                                                                    |
-| ---------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `--logs`   | Export the logs field instead of learnings.                                                                                     |
-| `--output` | Where to write the zip. Defaults to `<slug>.memoryfield.zip` in this directory, or `<slug>-logs.memoryfield.zip` with `--logs`. |
-| `--cwd`    | Directory to resolve the project from.                                                                                          |
-| `--json`   | Emit JSON instead of prose.                                                                                                     |
+| Option           | What it does                                                                                                                    |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `--logs`         | Export the logs instead of the learnings.                                                                                       |
+| `--output`, `-o` | Where to write the zip. Defaults to `<slug>.memoryfield.zip` in this directory, or `<slug>-logs.memoryfield.zip` with `--logs`. |
+| `--cwd`          | Directory to resolve the project from.                                                                                          |
+| `--json`         | Emit JSON instead of prose.                                                                                                     |
 
 ```bash
 cd ~/repos

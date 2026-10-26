@@ -9,6 +9,7 @@ import typer
 from nclutils import pp
 
 from sessionmemory.commands._common import (
+    CWD_OPTION,
     VersionedGroup,
     emit_json,
     emit_value,
@@ -33,9 +34,11 @@ Size = enum.Enum("Size", {size: size for size in backlog.SIZES}, type=str)
 
 TITLE = typer.Option(..., "--title", help="The title.")
 SUMMARY = typer.Option(..., "--summary", help="One sentence a search result shows.")
+SPEC_SUMMARY = typer.Option(
+    None, "--summary", help="One sentence a search result shows. Defaults to the opening paragraph."
+)
 BODY = typer.Option("", "--body", help="Markdown body.")
 BODY_FILE = typer.Option(None, "--body-file", help="Read the body from a file, or stdin for '-'.")
-CWD = typer.Option(None, "--cwd", help="Directory to resolve the project from.")
 JSON = typer.Option(False, "--json", help="Emit JSON instead of prose.")  # noqa: FBT003
 KIND = typer.Option(
     ...,
@@ -66,11 +69,11 @@ def new_learning(
     summary: str = SUMMARY,
     body: str = BODY,
     body_file: Path | None = BODY_FILE,
-    cwd: Path | None = CWD,
+    cwd: Path | None = CWD_OPTION,
     *,
     as_json: bool = JSON,
 ) -> None:
-    """Create a memory page in this project's learnings field."""
+    """Create a learning: one fact this project should remember."""
     body = resolve_body(body, body_file)
     vault = require_vault()
     slug = require_project(vault, cwd)
@@ -102,10 +105,11 @@ def _new_living_document(folder: Path, title: str, body: str, *, as_json: bool) 
 @app.command("spec", help="Create a spec for this project, optionally replacing an older one.")
 def new_spec(
     title: str = TITLE,
+    summary: str | None = SPEC_SUMMARY,
     body: str = BODY,
     body_file: Path | None = BODY_FILE,
     supersedes: str | None = SUPERSEDES,
-    cwd: Path | None = CWD,
+    cwd: Path | None = CWD_OPTION,
     *,
     as_json: bool = JSON,
 ) -> None:
@@ -130,7 +134,13 @@ def new_spec(
             fail(str(error))
     try:
         path = field.new_document(
-            folder, title=title, body=body, now=now(), day=today(), status="draft"
+            folder,
+            title=title,
+            body=body,
+            now=now(),
+            day=today(),
+            status="draft",
+            summary=summary,
         )
     except field.PageError as error:
         fail(str(error))
@@ -148,7 +158,7 @@ def new_plan(
     title: str = TITLE,
     body: str = BODY,
     body_file: Path | None = BODY_FILE,
-    cwd: Path | None = CWD,
+    cwd: Path | None = CWD_OPTION,
     *,
     as_json: bool = JSON,
 ) -> None:
@@ -165,7 +175,7 @@ def new_runbook(
     title: str = TITLE,
     body: str = BODY,
     body_file: Path | None = BODY_FILE,
-    cwd: Path | None = CWD,
+    cwd: Path | None = CWD_OPTION,
     *,
     as_json: bool = JSON,
 ) -> None:
@@ -182,7 +192,7 @@ def new_reference(
     title: str = TITLE,
     body: str = BODY,
     body_file: Path | None = BODY_FILE,
-    cwd: Path | None = CWD,
+    cwd: Path | None = CWD_OPTION,
     *,
     as_json: bool = JSON,
 ) -> None:
@@ -221,7 +231,7 @@ def new_backlog(
     size: Size = SIZE,
     title: str = DESCRIPTION,
     topic: str | None = TOPIC,
-    cwd: Path | None = CWD,
+    cwd: Path | None = CWD_OPTION,
     *,
     as_json: bool = JSON,
 ) -> None:

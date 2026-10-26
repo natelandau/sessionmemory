@@ -1,4 +1,4 @@
-"""The `log` command: record this session's work in one upserted page."""
+"""The `log` command: write this session's one log page, replacing its body."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from pathlib import Path  # noqa: TC003
 import typer
 
 from sessionmemory.commands._common import (
+    CWD_OPTION,
     emit_json,
     emit_value,
     fail,
@@ -29,7 +30,6 @@ BODY = typer.Option("", "--body", help="Markdown body. Replaces what is there.")
 BODY_FILE = typer.Option(None, "--body-file", help="Read the body from a file, or stdin for '-'.")
 TRANSCRIPT = typer.Option("", "--transcript", help="Path to this session's transcript on disk.")
 URL = typer.Option("", "--url", help="Where this session can be opened online.")
-CWD = typer.Option(None, "--cwd", help="Directory to resolve the project from.")
 JSON = typer.Option(
     False,  # noqa: FBT003
     "--json",
@@ -45,7 +45,7 @@ def log_command(  # noqa: PLR0913, PLR0917
     body_file: Path | None = BODY_FILE,
     transcript: str = TRANSCRIPT,
     url: str = URL,
-    cwd: Path | None = CWD,
+    cwd: Path | None = CWD_OPTION,
     *,
     as_json: bool = JSON,
 ) -> None:

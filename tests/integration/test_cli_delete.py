@@ -26,7 +26,7 @@ def workspace(vault, tmp_path, monkeypatch):
     _git("init", "-q", ".", cwd=repo)
     _git("commit", "-q", "--allow-empty", "-m", "init", cwd=repo)
     _git("remote", "add", "origin", "git@example.org:nate/demo.git", cwd=repo)
-    assert runner.invoke(app, ["project", "--register", "--cwd", str(repo)]).exit_code == 0
+    assert runner.invoke(app, ["project", "register", "--cwd", str(repo)]).exit_code == 0
     monkeypatch.chdir(repo)
     return vault, repo
 

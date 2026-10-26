@@ -53,18 +53,19 @@ Each hit is a path. Read it, or pass `--read` to get every hit's page in one cal
 `search` refreshes the index before it queries, so a page written a moment ago is
 already found. A hit has to stand out from the rest of its field. If nothing does,
 `search` returns no results rather than the nearest pages. No results means nothing
-is recorded. Do not loosen `--max-distance` or `--min-margin`.
+is recorded, not that the query needs loosening.
 
 ## Find this project's files
 
-The path command prints one absolute path per call:
+The path command prints one absolute path:
 
 ```bash
 "$CLI" path <kind> --cwd .
 ```
 
 `kind` is project, learnings, logs, specs, plans, runbooks, reference, or backlog.
-`"$CLI" project --cwd . --json` prints all of them at once, for a script.
+`"$CLI" path --cwd .` prints all of them, one per line, and `--json` prints them as a
+mapping for a script.
 
 `backlog.md`, specs, plans, runbooks, and reference docs are ordinary files. Read and Edit them directly.
 The CLI only adds to them.
@@ -177,6 +178,6 @@ A project must be registered before it can hold pages. Registration decides
 nothing else:
 
 ```bash
-"$CLI" project --register --cwd .
-"$CLI" project --cwd . --json     # every path, once registered
+"$CLI" project register --cwd .
+"$CLI" path --cwd . --json        # every path, once registered
 ```

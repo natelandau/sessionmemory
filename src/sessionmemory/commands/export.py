@@ -1,4 +1,4 @@
-"""The `export` command: write a project's field as a .memoryfield.zip."""
+"""The `export` command: write a project's learnings or logs as a .memoryfield.zip."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import typer
 from nclutils import pp
 
 from sessionmemory.commands._common import (
+    CWD_OPTION,
     build_embedder,
     emit_json,
     fail,
@@ -16,24 +17,27 @@ from sessionmemory.commands._common import (
 )
 from sessionmemory.lib import export, field, paths
 
-CWD = typer.Option(None, "--cwd", help="Directory to resolve the project from.")
 LOGS = typer.Option(False, "--logs", help="Export the logs field instead of learnings.")  # noqa: FBT003
 OUTPUT = typer.Option(
     None,
     "--output",
-    help="Where to write the zip. Defaults to <slug>.memoryfield.zip in the current directory.",
+    "-o",
+    help=(
+        "Where to write the zip. Defaults to <slug>.memoryfield.zip in the current "
+        "directory, which is usually the checkout."
+    ),
 )
 JSON = typer.Option(False, "--json", help="Emit JSON instead of prose.")  # noqa: FBT003
 
 
 def export_command(
-    cwd: Path | None = CWD,
+    cwd: Path | None = CWD_OPTION,
     *,
     logs: bool = LOGS,
     output: Path | None = OUTPUT,
     as_json: bool = JSON,
 ) -> None:
-    """Write this project's field as a .memoryfield.zip."""
+    """Write this project's learnings, or its logs, as a .memoryfield.zip."""
     vault = require_vault()
     slug = require_project(vault, cwd)
     embedder = build_embedder()

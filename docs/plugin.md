@@ -79,7 +79,7 @@ so the sweep finds it after a `/clear`, and the commit the repository was on, so
 session log reports the whole span.
 
 When the directory is a git working tree that the vault has never seen, the hook
-registers it through `sessionmemory project --register` before it injects. The block
+registers it through `sessionmemory project register` before it injects. The block
 then opens with the slug the repository was filed under:
 
 ```
@@ -94,7 +94,7 @@ never reviewed or was last reviewed more than 30 days ago:
 ```
 
 `/sessionmemory:review` records the date as its last step with
-`sessionmemory project --mark-reviewed`, which stores `reviewed = "YYYY-MM-DD"` on the
+`sessionmemory project mark-reviewed`, which stores `reviewed = "YYYY-MM-DD"` on the
 project's entry in `_system/registry.toml`. The nudge stops until the date is more than
 30 days old. The thresholds are fixed and are not settings.
 
@@ -104,7 +104,7 @@ project named after it in the vault. Such a directory, and a repository the CLI 
 to register, receive the command instead:
 
 ```
-This project is not registered with the vault, so it has no memory yet. Register it with: sessionmemory project --register
+This project is not registered with the vault, so it has no memory yet. Register it with: sessionmemory project register
 ```
 
 The hint spells the CLI the way the session can run it: by name when the tool on `PATH`
@@ -151,7 +151,7 @@ lacks:
 ```
 Local files in this checkout are waiting on a decision about the vault. Before other work, ask the person each question below, one at a time, in these words. Copy or overwrite nothing until they answer; a no leaves the file alone.
 
-- "Track .claude/rules/tickets.md in the vault?" Yes moves it into the vault and links it back here. (--adopt rules/tickets.md)
+- "Adopt .claude/rules/tickets.md into the vault?" Yes moves it into the vault and links it back here. (--adopt rules/tickets.md)
 - ".claude/settings.local.json differs between this checkout and the vault. Which copy wins?" Offer this checkout's (modified 2026-10-26T17:09:47Z), copied over the vault's (--keep-settings checkout); the vault's (modified 2026-10-26T17:09:23Z), copied over this checkout's (--keep-settings vault); or neither, leaving both alone.
   - What each copy has that the other lacks:
     - permissions.allow: 1 only in the checkout (Bash(just docs))
@@ -560,7 +560,7 @@ before the export was added, and any GUI launcher, starts sessions without it. S
 hint, run `sessionmemory project` in that repository. An unregistered directory exits 1
 and names the command that registers it. The hook registers a git repository on its own,
 so a repository that stays unregistered is one the CLI refused. Run
-`sessionmemory project --register --cwd .` by hand to see the reason, which is usually a
+`sessionmemory project register --cwd .` by hand to see the reason, which is usually a
 slug another project holds.
 
 **Search misses a page you can see.** The index is behind its pages. Run

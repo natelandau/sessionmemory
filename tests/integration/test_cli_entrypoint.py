@@ -115,3 +115,22 @@ def test_unknown_command_without_a_version_starts_its_own_sentence(mocker, argv,
     result = CliRunner().invoke(app, argv)
 
     assert _error_lines(result.output) == [*expected, "Upgrade with: uv tool upgrade sessionmemory"]
+
+
+@pytest.mark.parametrize(
+    "argv", [["-h"], ["new", "-h"], ["search", "-h"], ["project", "register", "-h"]]
+)
+def test_short_help_flag_works_at_every_level(argv):
+    """Verify -h is accepted wherever --help is, since subcommands inherit it."""
+    result = CliRunner().invoke(app, argv)
+
+    assert result.exit_code == 0, result.output
+    assert "Usage:" in result.stdout
+
+
+def test_help_lists_everyday_commands_before_plugin_internals():
+    """Verify the top-level help groups commands so a newcomer meets search first."""
+    out = CliRunner().invoke(app, ["--help"]).stdout
+
+    assert out.index("Everyday") < out.index("search") < out.index("Plugin internals")
+    assert out.index("Plugin internals") < out.index("inject")

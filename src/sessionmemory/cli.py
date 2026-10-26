@@ -22,7 +22,18 @@ from sessionmemory.commands import reindex as reindex_commands
 from sessionmemory.commands import search as search_commands
 from sessionmemory.commands._common import VersionedGroup, emit_value
 
-app = typer.Typer(cls=VersionedGroup, no_args_is_help=True, add_completion=False)
+app = typer.Typer(
+    cls=VersionedGroup,
+    no_args_is_help=True,
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
+
+# Panels order the top-level help by who runs a command, so a newcomer reads the
+# everyday commands first and the plugin's plumbing last.
+EVERYDAY = "Everyday"
+SETUP = "Setup"
+MAINTENANCE = "Maintenance"
+PLUGIN = "Plugin internals"
 
 
 def _print_version(value: bool) -> None:  # noqa: FBT001
@@ -49,37 +60,45 @@ def _root(
     pp.configure(verbosity=verbosity)
 
 
-app.command("delete", help="Delete files from the vault permanently.")(
+app.command(
+    "search", help="Search learnings by meaning, or logs or specs.", rich_help_panel=EVERYDAY
+)(search_commands.search_command)
+app.add_typer(new_commands.app, name="new", rich_help_panel=EVERYDAY)
+app.command("path", help="Print this project's vault paths.", rich_help_panel=EVERYDAY)(
+    path_commands.path_command
+)
+app.command("delete", help="Delete files from the vault permanently.", rich_help_panel=EVERYDAY)(
     delete_commands.delete_command
 )
-app.command("doctor", help="Report pages, projects, and indexes worth a look.")(
-    doctor_commands.doctor_command
+app.command("init", help="Create the files a new vault needs.", rich_help_panel=SETUP)(
+    init_commands.init
 )
-app.command("export", help="Write this project's field as a .memoryfield.zip.")(
-    export_commands.export_command
-)
-app.command("init", help="Create the files a new vault needs.")(init_commands.init)
-app.command("inject", help="Print what this project's session should start with.")(
+app.add_typer(project.app, name="project", rich_help_panel=SETUP)
+app.add_typer(local_commands.app, name="local", rich_help_panel=SETUP)
+app.command(
+    "doctor", help="Report pages, projects, and indexes worth a look.", rich_help_panel=MAINTENANCE
+)(doctor_commands.doctor_command)
+app.command(
+    "reindex",
+    help="Rebuild this project's search indexes, or every project's.",
+    rich_help_panel=MAINTENANCE,
+)(reindex_commands.reindex_command)
+app.command(
+    "reconcile",
+    help="Update this project's session logs to match the commits on its default branch.",
+    rich_help_panel=MAINTENANCE,
+)(reconcile_commands.reconcile_command)
+app.command(
+    "export",
+    help="Write this project's learnings or logs as a .memoryfield.zip.",
+    rich_help_panel=MAINTENANCE,
+)(export_commands.export_command)
+app.command("inject", help="Print the block a session starts with.", rich_help_panel=PLUGIN)(
     inject_commands.inject_command
 )
-app.command("log", help="Record this session's work in one upserted page.")(
-    log_commands.log_command
-)
-app.command("path", help="Print one of this project's vault paths.")(path_commands.path_command)
-app.command("project", help="Report this directory's project, or register it.")(
-    project.project_command
-)
-app.command("reconcile", help="Bring this project's logs in line with what landed on the trunk.")(
-    reconcile_commands.reconcile_command
-)
-app.command("reindex", help="Rebuild this project's search indexes, or every project's.")(
-    reindex_commands.reindex_command
-)
-app.command("search", help="Search this project's learnings by meaning, or its logs with --logs.")(
-    search_commands.search_command
-)
-app.add_typer(local_commands.app, name="local")
-app.add_typer(new_commands.app, name="new")
+app.command(
+    "log", help="Write this session's log page, replacing its body.", rich_help_panel=PLUGIN
+)(log_commands.log_command)
 
 
 def main() -> None:

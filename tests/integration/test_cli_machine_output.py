@@ -63,7 +63,7 @@ def colored(tmp_path):
         "SESSIONMEMORY_VAULT": str(vault),
         "SESSIONMEMORY_EMBEDDER": "stub",
     }
-    registered = _run(env, "project", "--register", "--cwd", str(project))
+    registered = _run(env, "project", "register", "--cwd", str(project))
     assert registered.returncode == 0
     assert ESCAPE in registered.stdout
 
@@ -184,12 +184,12 @@ def test_doctor_json_output_is_parseable_in_a_colored_shell(colored):
 
 
 def test_register_json_output_is_parseable_in_a_colored_shell(tmp_path):
-    """Emit --register's own --json payload parseable, even where color is forced.
+    """Emit `project register --json` parseable, even where color is forced.
 
-    `_register` takes `as_json` straight from `project_command`, and this write path has
+    `register_command` takes `as_json` straight from its option, and this write path has
     no other `--json` coverage.
     A fresh, unregistered directory is used rather than the `colored` fixture's project,
-    since that one is already registered and a second `--register` would refuse instead
+    since that one is already registered and a second registration would refuse instead
     of writing.
     """
     vault = tmp_path / "vault"
@@ -198,7 +198,7 @@ def test_register_json_output_is_parseable_in_a_colored_shell(tmp_path):
     project.mkdir()
     env = {**os.environ, **COLORED, "SESSIONMEMORY_VAULT": str(vault)}
 
-    result = _run(env, "project", "--register", "--cwd", str(project), "--json")
+    result = _run(env, "project", "register", "--cwd", str(project), "--json")
 
     assert result.returncode == 0
     assert ESCAPE not in result.stdout
@@ -209,7 +209,7 @@ def test_register_json_output_is_parseable_in_a_colored_shell(tmp_path):
 def test_prose_for_a_person_keeps_its_styling(colored):
     """Leave human output styled, so the fix is scoped to what a caller parses."""
     env, project = colored
-    result = _run(env, "project", "--register", "--cwd", str(project))
+    result = _run(env, "project", "register", "--cwd", str(project))
 
     assert result.returncode != 0
     assert ESCAPE in result.stdout + result.stderr
@@ -270,7 +270,7 @@ def colored_checkout(tmp_path):
         "SESSIONMEMORY_VAULT": str(vault),
         "SESSIONMEMORY_EMBEDDER": "stub",
     }
-    assert _run(env, "project", "--register", "--cwd", str(repo)).returncode == 0
+    assert _run(env, "project", "register", "--cwd", str(repo)).returncode == 0
     (vault / "projects" / repo.name / "local").mkdir(parents=True, exist_ok=True)
     (vault / "projects" / repo.name / "local" / "CLAUDE.local.md").write_text("notes\n")
     skill = vault / "projects" / repo.name / "local" / "claude" / "skills" / "deploy-check"
