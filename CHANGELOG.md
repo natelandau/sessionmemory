@@ -1,3 +1,12 @@
+## v0.14.0 (2026-10-26)
+
+### Feat
+
+- **local**: add local sync and keep settings in the vault by copy (#18)
+- reconcile log commits and add a value test for learnings (#17)
+- **plugin**: link skills and rules at session start and guard local/
+- **local**: keep private skills and rules in the vault
+
 ## v0.13.0 (2026-10-25)
 
 ### Feat
