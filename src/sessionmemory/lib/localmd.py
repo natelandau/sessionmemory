@@ -34,6 +34,7 @@ import datetime as dt
 import enum
 import os
 import re
+import shlex
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -109,10 +110,6 @@ class LocalMdError(Exception):
         super().__init__(message)
         self.message = message
         self.details = details or []
-
-
-class SettingsNotAdoptedError(LocalMdError):
-    """The settings file was named for adopt, though it is kept by copying one side."""
 
 
 class State(enum.StrEnum):
@@ -344,9 +341,9 @@ def _work_tree_path(co: Checkout, raw: str, cwd: Path) -> str:
 
 
 def resolve_adopt(co: Checkout, raw: str, cwd: Path) -> Entry:
-    """Turn what a person typed after `--adopt` into the entry it means.
+    """Turn what a person named for `local adopt` into the entry it means.
 
-    A name `--adopt` already knows (`CLAUDE.local.md`, `skills/<n>`, `rules/<n>`) keeps its
+    A name `local adopt` already knows (`CLAUDE.local.md`, `skills/<n>`, `rules/<n>`) keeps its
     meaning. Anything else is a path from `cwd`, and a path that lands on a known entry is
     that entry, so it keeps its kind's warnings.
 
@@ -367,8 +364,9 @@ def resolve_adopt(co: Checkout, raw: str, cwd: Path) -> Entry:
     relpath = _work_tree_path(co, raw, cwd)
     if relpath == f"{_CHECKOUT_CLAUDE}/{SETTINGS_NAME}":
         msg = f"{relpath} is kept by copy, not adopted"
-        raise SettingsNotAdoptedError(
-            msg, ["Choose a copy with --keep-settings checkout or --keep-settings vault."]
+        raise LocalMdError(
+            msg,
+            ["Choose a copy with local sync --keep-settings checkout, or --keep-settings vault."],
         )
     if relpath == paths.LOCAL_MD_FILE:
         return entry(co, relpath)
@@ -838,7 +836,7 @@ def _conflict_reason(co: Checkout, item: Entry, current: State) -> tuple[str, st
         if match is True:
             return (
                 f"{item.link} is a copy identical to the vault copy",
-                f"Run local sync --adopt {item.name} to replace it with the link.",
+                f"Run local adopt {shlex.quote(item.name)} to replace it with the link.",
             )
         return (
             f"{item.link} differs from the vault copy at {item.target}",

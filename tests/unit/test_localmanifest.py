@@ -24,7 +24,7 @@ def test_add_writes_sorted_list_and_reads_back(tmp_path: Path) -> None:
     assert localmanifest.add(tmp_path, ".claude/a.toml") is False
 
     assert localmanifest.read(tmp_path).paths == (".claude/a.toml", ".claude/z.toml")
-    assert "local sync --adopt" in (tmp_path / "entries.toml").read_text()
+    assert "local adopt" in (tmp_path / "entries.toml").read_text()
 
 
 def test_read_reports_bad_lines_and_keeps_good_ones(tmp_path: Path) -> None:
@@ -139,7 +139,7 @@ def test_name_problem_accepts(relpath: str) -> None:
     ],
 )
 def test_is_kind_name(relpath: str, expected: bool) -> None:
-    """Verify only the names `--adopt` already gives a meaning count as kind names."""
+    """Verify only the names `local adopt` already gives a meaning count as kind names."""
     assert localmanifest.is_kind_name(relpath) is expected
 
 

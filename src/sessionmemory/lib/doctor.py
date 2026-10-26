@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import shlex
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -258,7 +259,7 @@ def _diverged_message(item: localmd.Entry, *, ignored: bool) -> str | None:
     if match is None or ignored:
         return None
     return (
-        f"{item.name} is not ignored by git; run local sync --adopt {item.name} "
+        f"{item.name} is not ignored by git; run local adopt {shlex.quote(item.name)} "
         "to replace it with an ignored link"
     )
 

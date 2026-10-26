@@ -1545,8 +1545,9 @@ def test_local_block_asks_about_pending_work(tmp_path: Path) -> None:
     assert "ask the person" in block
     assert '"Adopt .claude/rules/r.md into the vault?"' in block
     assert "Which copy wins?" in block
-    assert "`/opt/plugin/bin/sessionmemory local sync --cwd .`" in block
-    assert "--adopt rules/r.md" in block
+    assert "`/opt/plugin/bin/sessionmemory <the command shown> --cwd .`" in block
+    assert "(local sync --keep-settings checkout)" in block
+    assert "(local adopt rules/r.md)" in block
     assert "--keep-settings" in block
     assert "new session" in block
     assert clauses == ["local none, pending 2"]

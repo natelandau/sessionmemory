@@ -292,15 +292,16 @@ sub-commands never offer it, adopt it, copy it, or link over it.
 
 | Sub-command | What it does                                                                  |
 | ----------- | ----------------------------------------------------------------------------- |
-| `sync`      | Link the vault's entries into this checkout, then adopt and copy as you chose |
+| `sync`      | Link the vault's entries into this checkout, then copy settings as you chose  |
+| `adopt`     | Move entries from this checkout into the vault and link each one back         |
 | `status`    | Report how each entry in this checkout relates to the vault                   |
 
-Both sub-commands take `--cwd`, the directory to resolve the project from, and `--json`.
+Each sub-command takes `--cwd`, the directory to resolve the project from, and `--json`.
 
-`sync` and `status` first look for a `CLAUDE.local.md` directly in the project's vault
-folder, outside `local/`. They move it into `local/`. If `local/` already holds an
-identical copy, they delete the outer one. If the two copies differ, nothing moves, and
-the command names both paths:
+`sync`, `adopt`, and `status` first look for a `CLAUDE.local.md` directly in the
+project's vault folder, outside `local/`. They move it into `local/`. If `local/` already
+holds an identical copy, they delete the outer one. If the two copies differ, nothing
+moves, and the command names both paths:
 
 ```
 ! ~/repos/my-vault/projects/invoice-api/CLAUDE.local.md and ~/repos/my-vault/projects/invoice-api/local/CLAUDE.local.md differ, so CLAUDE.local.md was not moved into local/
@@ -425,19 +426,19 @@ the same bytes.
 
 ### `sessionmemory local sync`
 
-Link every entry that the vault holds into this checkout, then adopt entries into the
-vault and keep a settings copy as you choose.
+Link every entry that the vault holds into this checkout, then keep a settings copy as
+you choose. To move entries into the vault, use
+[`local adopt`](#sessionmemory-local-adopt).
 
 ```bash
 sessionmemory local sync --cwd .
 ```
 
-| Option                            | What it does                                                                                         |
-| --------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `--adopt NAME`                    | Move the entry, or any file or folder named by its path, into the vault and link it back. Repeatable |
-| `--keep-settings checkout\|vault` | Write that copy of `settings.local.json` over the other one                                          |
-| `--json`                          | Emit JSON instead of prose                                                                           |
-| `--cwd DIR`                       | Directory to resolve the project from                                                                |
+| Option                            | What it does                                                |
+| --------------------------------- | ----------------------------------------------------------- |
+| `--keep-settings checkout\|vault` | Write that copy of `settings.local.json` over the other one |
+| `--json`                          | Emit JSON instead of prose                                  |
+| `--cwd DIR`                       | Directory to resolve the project from                       |
 
 Every run does the linking that can never lose content. It creates a missing link,
 replaces a link to nothing, and deletes a link whose vault entry is gone. Nothing that
@@ -461,19 +462,22 @@ Lists such as `permissions.allow` compare item by item, in any order. The JSON o
 carries each copy's modification time. It is a hint, not a rule: a vault copy that
 arrived through `git pull` carries the time of the pull.
 
-The command prints each path it wrote on stdout. Adopting all three entries and keeping
-the checkout's settings:
+Entries that the checkout holds and the vault does not are named with the command that
+adopts them:
+
+```
+! not tracked in the vault yet: CLAUDE.local.md, .claude/skills/deploy-check, .claude/rules/style.md
+  └─ Adopt them into the vault with: sessionmemory local adopt CLAUDE.local.md skills/deploy-check rules/style.md --cwd .
+```
+
+The command prints each path it wrote on stdout. Keeping the checkout's settings:
 
 ```bash
-sessionmemory local sync --adopt CLAUDE.local.md --adopt skills/deploy-check --adopt rules/style.md --keep-settings checkout --cwd .
+sessionmemory local sync --keep-settings checkout --cwd .
 ```
 
 ```
-~/repos/my-vault/projects/invoice-api/local/CLAUDE.local.md
-~/repos/my-vault/projects/invoice-api/local/claude/skills/deploy-check
-~/repos/my-vault/projects/invoice-api/local/claude/rules/style.md
 ~/repos/my-vault/projects/invoice-api/local/claude/settings.local.json
-! Claude Code asks once per checkout to allow a linked rule as an external import
 ! the vault's hooks commit the vault copy to the vault's git history
 ```
 
@@ -540,8 +544,7 @@ work:
 `pending.adopt` names each entry that the command can adopt: an untracked entry that is
 `unadopted`, or `diverged` with identical contents. `pending.settings` is `null` unless
 the settings state is `differs`, `checkout only`, or `vault only`. `reason` and `remedy`
-are set for a `conflict`. An `adopted` list follows when `--adopt` ran, with the `name`
-and vault `target` of each entry adopted. A `settings` object follows when
+are set for a `conflict`. A `settings` object follows when
 `--keep-settings` ran, with `kept` and the `path` that holds the kept copy. When both
 copies were already the same, nothing is written and `path` names the existing copy.
 `manifest_problems` holds one line for each line of `local/entries.toml` that the command
@@ -584,7 +587,7 @@ These are the causes of a conflict, and the remedy that the warning gives for ea
 | The old-path copy and the `local/` copy differ                              | Keep one of them, delete the other, run `local sync`                               |
 | The vault entry is not of its kind's shape, such as a file among the skills | Fix or remove it in the vault, run `local sync`                                    |
 | A checkout copy differs from the vault copy                                 | Copy the newer one over the vault copy, delete the checkout copy, run `local sync` |
-| A checkout copy is identical to the vault copy                              | Run `local sync --adopt NAME`, which replaces it with the link                     |
+| A checkout copy is identical to the vault copy                              | Run `local adopt NAME`, which replaces it with the link                            |
 | The checkout holds a link to somewhere else                                 | Remove it and run `local sync`, or compare with `local status`                     |
 | `.claude/` or its `skills/` or `rules/` folder is a symlink or a file       | Replace it with a real folder, run `local sync`                                    |
 
@@ -594,9 +597,9 @@ A removed link is reported the same way:
 ! removed ~/repos/invoice-api/.claude/rules/review.md, whose vault entry is gone
 ```
 
-The command exits 1 when any linked entry is a `conflict`, when an `--adopt` or a
-`--keep-settings` failed, or when `local/entries.toml` holds a line that the command
-cannot use. `--json` still prints the whole payload. One conflict never
+The command exits 1 when any linked entry is a `conflict`, when a `--keep-settings` or
+an adopt that you chose at the terminal failed, or when `local/entries.toml` holds a line
+that the command cannot use. `--json` still prints the whole payload. One conflict never
 stops the other entries. A conflict for an entry that the same run then adopts is not
 reported.
 
@@ -607,9 +610,51 @@ nothing to link. The plugin runs `local sync --json` at every session start (see
 the `info/exclude` line when git does not ignore the link, so a fresh clone is covered
 and a lost line comes back.
 
-#### Adopting an entry
+### `sessionmemory local adopt`
 
-`--adopt` moves an entry from this checkout into the vault and replaces it with a link.
+Move entries from this checkout into the vault, and replace each one with a link to its
+vault copy.
+
+```bash
+sessionmemory local adopt CLAUDE.local.md skills/deploy-check rules/style.md --cwd .
+```
+
+| Argument or option | What it does                                                                                       |
+| ------------------ | -------------------------------------------------------------------------------------------------- |
+| `NAME...`          | `CLAUDE.local.md`, `skills/<name>`, `rules/<name>`, or the path of any file or folder. One or more |
+| `--json`           | Emit JSON instead of prose                                                                         |
+| `--cwd DIR`        | Directory to resolve the project from                                                              |
+
+The command prints the vault path of each entry on stdout:
+
+```
+~/repos/my-vault/projects/invoice-api/local/CLAUDE.local.md
+~/repos/my-vault/projects/invoice-api/local/claude/skills/deploy-check
+~/repos/my-vault/projects/invoice-api/local/claude/rules/style.md
+! Claude Code asks once per checkout to allow a linked rule as an external import
+! the vault's hooks commit the vault copy to the vault's git history
+```
+
+With `--json`, it prints the `name` and vault `target` of each entry adopted:
+
+```json
+{
+  "adopted": [
+    {
+      "name": ".claude/review.toml",
+      "target": "~/repos/my-vault/projects/invoice-api/local/claude/review.toml"
+    },
+    {
+      "name": ".claude/agents",
+      "target": "~/repos/my-vault/projects/invoice-api/local/claude/agents"
+    }
+  ]
+}
+```
+
+`adopt` does not link the vault's other entries or touch `settings.local.json`, which it
+refuses by name. Run `local sync` for those.
+
 The command does these steps for each entry, in order:
 
 1. If the entry is already a link to the vault copy, it adds the `info/exclude` line when
@@ -625,7 +670,7 @@ The command does these steps for each entry, in order:
    vault holds no copy, it writes the copy and compares it with the original. A folder is
    compared file by file, and the copy keeps the executable bit. On a mismatch it removes
    the copy and leaves the original untouched. If a vault copy appears while the command
-   runs, such as from a second `sync --adopt`, the command refuses the entry and keeps both
+   runs, such as from a second `local adopt`, the command refuses the entry and keeps both
    copies. An identical vault copy skips this step.
 5. It adds the entry to the repository's `info/exclude` when git does not already ignore
    it. It never edits a committed `.gitignore`.
@@ -647,7 +692,7 @@ them. Git records a nested repository as a reference to it, not as its files. De
 move the folder, adopt the entry, then install the packages again in the linked folder.
 
 Claude Code resolves a relative `@` import in a linked file from the vault folder, where
-the imported file does not exist. `--adopt` warns once for each relative import that it
+the imported file does not exist. `adopt` warns once for each relative import that it
 finds in `CLAUDE.local.md` or in a `.md` file of a rule, and still adopts the entry. For
 a rules folder, it scans each `.md` file in the folder. Write the imported content into
 the file itself, or remove the import. Skills and other files are not scanned.
@@ -660,11 +705,11 @@ linked skill loads with no approval.
 
 #### Adopting any path
 
-`--adopt` also takes the path of any file or folder in the checkout. Use it for a private
+`adopt` also takes the path of any file or folder in the checkout. Use it for a private
 file that is not `CLAUDE.local.md`, a skill, or a rule, such as a tool's config file:
 
 ```bash
-sessionmemory local sync --adopt .claude/review.toml --adopt .claude/agents --cwd .
+sessionmemory local adopt .claude/review.toml .claude/agents --cwd .
 ```
 
 ```
@@ -682,8 +727,8 @@ The vault cannot tell from its files where an entry adopted by path starts, so t
 command lists each one in `local/entries.toml`:
 
 ```toml
-# Paths adopted into this folder with local sync --adopt, relative to the
-# checkout's top level. Each is linked into every checkout of the project.
+# Paths adopted into this folder with local adopt, relative to the checkout's
+# top level. Each is linked into every checkout of the project.
 paths = [
     ".claude/agents",
     ".claude/review.toml",
@@ -709,7 +754,7 @@ To stop linking a path, do these steps:
 2. In each checkout, delete the link. In one checkout, copy the vault copy to the path.
 3. Delete the vault copy.
 
-`--adopt` refuses a path, and names the reason, when the path:
+`adopt` refuses a path, and names the reason, when the path:
 
 - Is outside the work tree, or is the work tree itself.
 - Is in `.git`.
@@ -722,7 +767,7 @@ To stop linking a path, do these steps:
 - Is inside a path that is already adopted, or holds one.
 
 These names are compared without regard to case, because the file systems of macOS are
-case-insensitive. The checks of [Adopting an entry](#adopting-an-entry) also apply: git
+case-insensitive. The checks of [`local adopt`](#sessionmemory-local-adopt) also apply: git
 must not track the path, and a folder must not hold a symlink or an installed package
 folder.
 

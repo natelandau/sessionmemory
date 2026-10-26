@@ -295,3 +295,27 @@ def test_local_json_output_is_parseable_in_a_colored_shell(colored_checkout, arg
     assert ESCAPE not in result.stdout
     names = [item["name"] for item in json.loads(result.stdout)["entries"]]
     assert names == ["CLAUDE.local.md", "skills/deploy-check"]
+
+
+@pytest.mark.parametrize("as_json", [True, False], ids=["json", "path"])
+def test_local_adopt_output_is_parseable_in_a_colored_shell(colored_checkout, as_json):
+    """Verify `local adopt` prints its JSON or vault paths unstyled in a colored shell."""
+    env, repo = colored_checkout
+    rule = repo / ".claude" / "rules" / "r.md"
+    rule.parent.mkdir(parents=True)
+    rule.write_text("# rule\n")
+    flags = ["--json"] if as_json else []
+
+    result = _run(env, "local", "adopt", "rules/r.md", *flags, "--cwd", str(repo))
+
+    assert result.returncode == 0, result.stderr
+    assert ESCAPE not in result.stdout
+    if as_json:
+        adopted = json.loads(result.stdout)["adopted"]
+        assert [item["name"] for item in adopted] == ["rules/r.md"]
+        target = Path(adopted[0]["target"])
+    else:
+        target = Path(result.stdout.decode().strip())
+    assert target.name == "r.md"
+    assert target.is_file()
+    assert rule.is_symlink()

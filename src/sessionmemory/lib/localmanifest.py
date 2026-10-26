@@ -33,8 +33,8 @@ _KIND_FOLDERS = ("skills", "rules")
 # Claude Code refuses to write through a symlinked settings file.
 _SETTINGS_FILES = ("settings.json", "settings.local.json")
 _HEADER = (
-    "# Paths adopted into this folder with local sync --adopt, relative to the\n"
-    "# checkout's top level. Each is linked into every checkout of the project.\n"
+    "# Paths adopted into this folder with local adopt, relative to the checkout's\n"
+    "# top level. Each is linked into every checkout of the project.\n"
 )
 
 

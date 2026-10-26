@@ -112,10 +112,10 @@ LOCAL_PENDING_NOTE = (
 )
 
 LOCAL_PENDING_COMMAND = (
-    "Then run `{command} local sync --cwd .` with the flag shown for each yes, repeating "
-    "--adopt per entry. After the vault's settings copy is written into the checkout, "
-    "tell the person to start a new session before approving anything, since Claude Code "
-    "read its settings before this ran."
+    "Then, for each yes, run `{command} <the command shown> --cwd .`, naming every entry "
+    "to adopt in one `local adopt`. After the vault's settings copy is written into the "
+    "checkout, tell the person to start a new session before approving anything, since "
+    "Claude Code read its settings before this ran."
 )
 
 SETTINGS_PATH = ".claude/settings.local.json"
@@ -311,22 +311,23 @@ def _settings_lines(settings: dict[str, Any]) -> list[str]:
         return [
             (
                 f'- "Copy {SETTINGS_PATH} into the vault?" Yes copies it into the vault, and '
-                "this checkout keeps its copy. (--keep-settings checkout)"
+                "this checkout keeps its copy. (local sync --keep-settings checkout)"
             )
         ]
     if state == "vault only":
         return [
             (
                 f'- "The vault has a {SETTINGS_PATH} for this project, but this checkout has '
-                'none. Copy it into this checkout?" (--keep-settings vault)'
+                'none. Copy it into this checkout?" (local sync --keep-settings vault)'
             )
         ]
     lines = [
         (
             f'- "{SETTINGS_PATH} differs between this checkout and the vault. Which copy wins?" '
             f"Offer this checkout's (modified {mtimes['checkout']}), copied over the vault's "
-            f"(--keep-settings checkout); the vault's (modified {mtimes['vault']}), copied "
-            "over this checkout's (--keep-settings vault); or neither, leaving both alone."
+            "(local sync --keep-settings checkout); the vault's "
+            f"(modified {mtimes['vault']}), copied over this checkout's "
+            "(local sync --keep-settings vault); or neither, leaving both alone."
         )
     ]
     summary = settings.get("summary")
@@ -351,7 +352,7 @@ def _pending_block(pending: dict[str, Any], *, command: str) -> tuple[str | None
     lines = [LOCAL_PENDING_NOTE, ""]
     lines.extend(
         f'- "Adopt {_relpath(name)} into the vault?" Yes moves it into the vault and links it '
-        f"back here. (--adopt {shlex.quote(name)})"
+        f"back here. (local adopt {shlex.quote(name)})"
         for name in adopt
     )
     if settings:

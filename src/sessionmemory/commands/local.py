@@ -32,12 +32,11 @@ app = typer.Typer(
 )
 
 JSON = typer.Option(False, "--json", help="Emit JSON instead of prose.")  # noqa: FBT003
-ADOPT = typer.Option(
-    None,
-    "--adopt",
+ADOPT_NAMES = typer.Argument(
+    ...,
     help=(
-        "Adopt an entry: CLAUDE.local.md, skills/<name>, rules/<name>, or a path to any "
-        "file or folder in this checkout. Repeatable."
+        "CLAUDE.local.md, skills/<name>, rules/<name>, or a path to any file or folder in "
+        "this checkout."
     ),
     show_default=False,
 )
@@ -97,7 +96,7 @@ Settle = Literal["relink", "checkout", "vault", "old", "local"]
 
 @dataclass
 class _Plan:
-    """What one sync run was asked to do beyond the safe link work."""
+    """What one run was asked to settle, adopt, and keep beyond the safe link work."""
 
     adopt: list[str] = field(default_factory=list)
     keep: Side | None = None
@@ -283,13 +282,8 @@ def _ask(
     return plan
 
 
-def _entries(
-    co: localmd.Checkout, names: list[str], cwd: Path, *, settings_asked: bool = False
-) -> tuple[list[localmd.Entry], bool]:
+def _entries(co: localmd.Checkout, names: list[str], cwd: Path) -> tuple[list[localmd.Entry], bool]:
     """Build the link entries a person named, reporting each name that is not one.
-
-    With `settings_asked`, naming the settings file is skipped quietly, since the settings
-    question that follows is the answer to it.
 
     Returns:
         tuple[list[localmd.Entry], bool]: The valid entries, and whether any name failed.
@@ -299,20 +293,8 @@ def _entries(
     for name in names:
         try:
             item = localmd.resolve_adopt(co=co, raw=name, cwd=cwd)
-        except localmd.SettingsNotAdoptedError as err:
-            if not settings_asked:
-                pp.error(err.message, details=err.details)
-                failed = True
-            continue
         except localmd.LocalMdError as err:
             pp.error(err.message, details=err.details)
-            failed = True
-            continue
-        if item.mode == "copy":
-            pp.error(
-                f"{name} is kept by copy, not adopted",
-                details=["Choose a copy with --keep-settings checkout or --keep-settings vault."],
-            )
             failed = True
             continue
         items.append(item)
@@ -343,19 +325,14 @@ def _adopt_one(
 
 
 def _adopt_all(
-    co: localmd.Checkout,
-    names: list[str],
-    tracked: set[str],
-    cwd: Path,
-    *,
-    settings_asked: bool = False,
+    co: localmd.Checkout, names: list[str], tracked: set[str], cwd: Path
 ) -> tuple[list[localmd.AdoptResult], bool]:
     """Adopt each named entry, reporting each failure so the rest still run.
 
     Returns:
         tuple[list[localmd.AdoptResult], bool]: The adopted entries, and whether any failed.
     """
-    items, failed = _entries(co=co, names=names, cwd=cwd, settings_asked=settings_asked)
+    items, failed = _entries(co=co, names=names, cwd=cwd)
     if not items:
         return [], failed
     # A path named for the first time is in no listing git was asked about yet.
@@ -423,7 +400,6 @@ class _Done:
     kept_side: Side | None = None
     failed: bool = False
     notices: list[str] = field(default_factory=list)
-    settings_asked: bool = False
 
     settled: dict[str, tuple[localmd.LinkResult, Settle]] = field(default_factory=dict)
 
@@ -432,13 +408,7 @@ class _Done:
         for item, action in plan.settle:
             self._settle(co=co, item=item, action=action, tracked=item.name in tracked)
         if plan.adopt:
-            adopted, failed = _adopt_all(
-                co=co,
-                names=plan.adopt,
-                tracked=tracked,
-                cwd=Path.cwd(),
-                settings_asked=self.settings_asked,
-            )
+            adopted, failed = _adopt_all(co=co, names=plan.adopt, tracked=tracked, cwd=Path.cwd())
             self.adopted.extend(adopted)
             self.failed = self.failed or failed
         changed = False
@@ -509,10 +479,10 @@ def _report_links(results: list[localmd.LinkResult]) -> None:
 def _report_pending(waiting: list[localmd.Entry], pending: localmd.SettingsPending | None) -> None:
     """Name each pending item and the command that resolves it, off stdout."""
     if waiting:
-        adopt = " ".join(f"--adopt {shlex.quote(item.name)}" for item in waiting)
+        names = " ".join(shlex.quote(item.name) for item in waiting)
         pp.warning(
             f"not tracked in the vault yet: {', '.join(item.relpath for item in waiting)}",
-            details=[f"Adopt them into the vault with: sessionmemory local sync {adopt} --cwd ."],
+            details=[f"Adopt them into the vault with: sessionmemory local adopt {names} --cwd ."],
         )
     if pending is None:
         return
@@ -575,7 +545,7 @@ class _Report:
     manifest_problems: tuple[str, ...] = ()
 
     def payload(self, plan: _Plan) -> dict[str, object]:
-        """Build the `--json` payload; `adopted` and `settings` only for flags that ran."""
+        """Build the `--json` payload; `settings` only when `--keep-settings` ran."""
         payload: dict[str, object] = {
             "entries": _link_rows(self.results),
             "pending": {
@@ -584,11 +554,6 @@ class _Report:
             },
             "manifest_problems": list(self.manifest_problems),
         }
-        if plan.adopt:
-            payload["adopted"] = [
-                {"name": result.entry.name, "target": str(result.target)}
-                for result in self.done.adopted
-            ]
         if plan.keep is not None and self.done.kept is not None:
             payload["settings"] = {"kept": plan.keep, "path": str(self.done.kept)}
         return payload
@@ -640,24 +605,23 @@ class _Report:
 @app.command(
     "sync",
     help=(
-        "Link the vault's entries into this checkout, then adopt entries and keep a settings "
-        "copy as asked. On a terminal, answer one question per item still pending."
+        "Link the vault's entries into this checkout. On a terminal, answer one question per "
+        "item still pending."
     ),
 )
 def sync_command(
-    adopt: list[str] | None = ADOPT,
     keep_settings: Side | None = KEEP_SETTINGS,
     as_json: bool = JSON,  # noqa: FBT001
     cwd: Path | None = CWD_OPTION,
 ) -> None:
-    """Link the vault's entries into this checkout, then adopt and keep settings as asked.
+    """Link the vault's entries into this checkout, then settle what the person chooses.
 
     Raises:
-        Exit: When an entry is in conflict, or a requested adopt or keep failed.
+        Exit: When an entry is in conflict, or an adopt or keep the person chose failed.
     """
     co = _checkout(cwd)
     try:
-        # One listing of git's index serves linking, the pending report, adopt, and keep.
+        # One listing of git's index serves linking, the pending report, and every answer.
         tracked = localmd.tracked_all(co)
         results = localmd.link_all(co, tracked=tracked)
     except localmd.LocalMdError as err:
@@ -674,17 +638,14 @@ def sync_command(
 
     # A person is asked about whatever the flags left pending, rather than handed commands.
     ask_inline = not as_json and _common.interactive()
-    plan = _Plan(adopt=list(adopt or []), keep=keep_settings)
-    done = _Done(settings_asked=ask_inline)
+    plan = _Plan(keep=keep_settings)
+    done = _Done()
     done.carry_out(co=co, plan=plan, tracked=tracked)
     waiting, listed = _waiting(co, tracked)
     pending, compared = _pending_settings(co, tracked)
     declined: set[str] = set()
     if ask_inline:
-        adopted_now = {result.entry.name for result in done.adopted}
-        conflicts = [
-            r for r in results if r.status == "conflict" and r.entry.name not in adopted_now
-        ]
+        conflicts = [r for r in results if r.status == "conflict"]
         answers = _ask(co=co, conflicts=conflicts, waiting=waiting, pending=pending)
         declined = answers.declined
         if answers.settle or answers.adopt or answers.keep is not None:
@@ -715,6 +676,56 @@ def sync_command(
     else:
         report.prose()
     if failed or any(result.status == "conflict" for result in results):
+        raise typer.Exit(1)
+
+
+@app.command(
+    "adopt",
+    help="Move entries from this checkout into the vault and link each one back.",
+)
+def adopt_command(
+    names: list[str] = ADOPT_NAMES,
+    as_json: bool = JSON,  # noqa: FBT001
+    cwd: Path | None = CWD_OPTION,
+) -> None:
+    """Move entries from this checkout into the vault and link each one back.
+
+    Raises:
+        Exit: When any named entry could not be adopted.
+    """
+    co = _checkout(cwd)
+    _migrate(co)
+    try:
+        tracked = localmd.tracked_all(co)
+    except localmd.LocalMdError as err:
+        fail(err.message, details=err.details)
+    except OSError as err:
+        fail(f"could not read the entries of {co.worktree}: {err}")
+    done = _Done()
+    # A relative path reads from the shell's directory, not --cwd, as a shell would.
+    done.carry_out(co=co, plan=_Plan(adopt=names), tracked=tracked)
+
+    if as_json:
+        emit_json(
+            {
+                "adopted": [
+                    {"name": result.entry.name, "target": str(result.target)}
+                    for result in done.adopted
+                ]
+            }
+        )
+    elif _common.interactive():
+        for result in done.adopted:
+            verb = "was already linked to" if result.already_linked else "moved into"
+            pp.success(f"{result.entry.relpath} {verb} the vault")
+        for notice in done.notices:
+            pp.info(notice)
+    else:
+        for result in done.adopted:
+            emit_value(str(result.target))
+        for notice in done.notices:
+            pp.warning(notice)
+    if done.failed:
         raise typer.Exit(1)
 
 

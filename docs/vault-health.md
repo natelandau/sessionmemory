@@ -250,7 +250,7 @@ second machine gets an empty folder:
 ```
 
 Move the repository out of the vault, and clone it again where you need it.
-`sessionmemory local sync --adopt` refuses a folder like this.
+`sessionmemory local adopt` refuses a folder like this.
 
 `local/entries.toml` lists the paths that you adopted by name. A listed path with no
 vault copy cannot be linked:
@@ -271,10 +271,10 @@ highest such path once, not each file inside it:
   └─ local: ~/repos/my-vault/projects/invoice-api/local/notes: notes in the vault is not an entry; adopt it again from a checkout, or add its path to entries.toml
 ```
 
-Add its checkout path to `entries.toml`, or delete it. A concurrent `local sync --adopt`
+Add its checkout path to `entries.toml`, or delete it. A concurrent `local adopt`
 in two sessions can drop one path from `entries.toml` and leave its copy behind like
 this. The check also reports an `entries.toml` that is not valid TOML, a `paths` value
-that is not a list of strings, and each line that names a path that `local sync --adopt` refuses.
+that is not a list of strings, and each line that names a path that `local adopt` refuses.
 
 A relative `@` import in `CLAUDE.local.md` or in a `.md` file of a rule cannot load,
 because Claude Code resolves it from the vault folder:
@@ -299,7 +299,7 @@ alone:
 ```
 
 If the entry is yours, run the command, commit the removal in the project, then run
-`sessionmemory local sync --adopt skills/release-notes`. The files stay in the project's earlier
+`sessionmemory local adopt skills/release-notes`. The files stay in the project's earlier
 commits. If the project means to share the entry, delete the vault copy instead.
 
 A real file or folder whose content differs from the vault copy is `diverged`:
@@ -335,11 +335,11 @@ to the file that `git rev-parse --git-path info/exclude` prints.
 
 ```
 1 suggestion
-  └─ local: ~/repos/invoice-api/.claude/rules/style.md: rules/style.md is not ignored by git; run local sync --adopt rules/style.md to replace it with an ignored link
+  └─ local: ~/repos/invoice-api/.claude/rules/style.md: rules/style.md is not ignored by git; run local adopt rules/style.md to replace it with an ignored link
 ```
 
 The checkout holds a real copy with the same content as the vault copy. Run the
-`sessionmemory local sync --adopt` command that the finding names, which replaces the copy with a
+`sessionmemory local adopt` command that the finding names, which replaces the copy with a
 link and adds the ignore line.
 
 ```

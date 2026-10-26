@@ -248,7 +248,7 @@ class WriteGuard:
         copied aside before the restore. The pre-run bytes win over HEAD, since the
         person may not have committed their latest edit. Only a file with no pre-run
         bytes falls back to HEAD, and one HEAD does not hold yet stays in place: it may
-        be a concurrent `local sync --adopt` or move in another session, and moving it would
+        be a concurrent `local adopt` or move in another session, and moving it would
         leave every checkout's link dangling.
         """
         saved = self._quarantine_dest(path)

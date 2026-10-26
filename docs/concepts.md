@@ -191,7 +191,7 @@ Each skill and each rule is linked on its own, not the whole `.claude/skills/` o
 links are what let a skill that the project commits sit beside your private ones. A skill
 or rule that git tracks is the project's, and the `local` commands leave it alone.
 
-`sessionmemory local sync --adopt` moves existing files into the vault. The plugin then
+`sessionmemory local adopt` moves existing files into the vault. The plugin then
 links every other checkout at session start. Git ignores each link through the repository's
 `info/exclude` file, which all worktrees of a clone share, so a link never reaches a
 commit of the project.
@@ -208,7 +208,7 @@ Three limits come from how Claude Code loads these files:
 - A relative `@` import, such as `@./notes.md`, resolves from the vault folder, where the
   imported file does not exist. Claude Code also asks you to approve the import as an
   external file. Put the content into the file itself, or remove the import.
-  `local sync --adopt` and `doctor` report each relative import in `CLAUDE.local.md` and in the
+  `local adopt` and `doctor` report each relative import in `CLAUDE.local.md` and in the
   `.md` files of a rule.
 - Claude Code treats a linked rule as an external import. It loads only after you approve
   the dialog "Allow external CLAUDE.md file imports?" once in each checkout. Until then a

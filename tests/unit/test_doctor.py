@@ -563,7 +563,7 @@ def test_local_advises_adopt_for_an_identical_unignored_file(tmp_path):
 
     assert [f.message for f in findings] == [
         (
-            "CLAUDE.local.md is not ignored by git; run local sync --adopt CLAUDE.local.md "
+            "CLAUDE.local.md is not ignored by git; run local adopt CLAUDE.local.md "
             "to replace it with an ignored link"
         )
     ]
@@ -731,7 +731,7 @@ def test_local_names_the_entry_to_adopt_and_to_untrack(tmp_path):
 
     assert messages == [
         (
-            "rules/same.md is not ignored by git; run local sync --adopt rules/same.md "
+            "rules/same.md is not ignored by git; run local adopt rules/same.md "
             "to replace it with an ignored link"
         ),
         (

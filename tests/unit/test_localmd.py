@@ -1322,7 +1322,7 @@ def test_link_reason_for_an_identical_copy_names_adopt(co, md):
 
     assert result.status == "conflict"
     assert result.remedy is not None
-    assert f"local sync --adopt {NAME}" in result.remedy
+    assert f"local adopt {NAME}" in result.remedy
 
 
 def test_link_reason_for_a_foreign_link_names_its_target(co, md, tmp_path):
@@ -2196,10 +2196,10 @@ def test_keep_legacy_keeps_the_chosen_copy_and_links_it(co, md, vault, keep, exp
 
 
 @pytest.mark.parametrize("raw", [".claude/settings.local.json", "settings.local.json"])
-def test_resolve_adopt_names_the_settings_file_apart(co, raw):
-    """Verify adopting the settings file raises the error a caller turns into the settings choice."""
+def test_resolve_adopt_refuses_the_settings_file(co, raw):
+    """Verify adopting the settings file is refused in favor of choosing a copy."""
     (co.worktree / ".claude").mkdir()
     cwd = co.worktree / ".claude" if raw == "settings.local.json" else co.worktree
 
-    with pytest.raises(localmd.SettingsNotAdoptedError):
+    with pytest.raises(localmd.LocalMdError, match="kept by copy, not adopted"):
         localmd.resolve_adopt(co, raw, cwd)
