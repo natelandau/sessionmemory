@@ -34,6 +34,7 @@ commits the vault when a session starts and again when a session ends.
     backlog.md                       a list of open work, not a page
     local/                           private files that checkouts link to or copy
       CLAUDE.local.md
+      entries.toml                   the paths you adopted by name
       claude/skills/<name>/
       claude/rules/<name>.md
 ```
@@ -174,6 +175,7 @@ The vault keeps one copy of each in the project's `local/` folder:
 | `CLAUDE.local.md`     | `CLAUDE.local.md`             | `local/CLAUDE.local.md`            |
 | `skills/<name>`       | `.claude/skills/<name>/`      | `local/claude/skills/<name>/`      |
 | `rules/<name>`        | `.claude/rules/<name>`        | `local/claude/rules/<name>`        |
+| A path you adopt      | `.claude/agents`              | `local/claude/agents`              |
 | `settings.local.json` | `.claude/settings.local.json` | `local/claude/settings.local.json` |
 
 The vault folder is `claude/`, with no dot, so Finder, Obsidian, and `ls` show it. For
@@ -216,9 +218,13 @@ Three limits come from how Claude Code loads these files:
   file's content to the injected block in the session that created the link. After you
   keep the vault's settings copy, start a new session before you approve anything.
 
-Only the `CLAUDE.local.md` at the root of the work tree, and the entries directly inside
-`.claude/skills/` and `.claude/rules/`, are managed. See
-[`sessionmemory local`](cli.md#sessionmemory-local) for the commands.
+The commands find the `CLAUDE.local.md` at the root of the work tree, and the entries
+directly inside `.claude/skills/` and `.claude/rules/`, without being told. Any other
+private file or folder, such as a tool's config file in `.claude/`, becomes an entry when
+you adopt it by its path. Its vault copy keeps the same path, with `.claude/` stored as
+`claude/`. A folder holds no record of where an entry inside it starts, so
+`local/entries.toml` lists each path adopted this way, and every checkout links the same
+paths. See [`sessionmemory local`](cli.md#sessionmemory-local) for the commands.
 
 ## Logs
 

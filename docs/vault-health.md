@@ -252,6 +252,30 @@ second machine gets an empty folder:
 Move the repository out of the vault, and clone it again where you need it.
 `sessionmemory local sync --adopt` refuses a folder like this.
 
+`local/entries.toml` lists the paths that you adopted by name. A listed path with no
+vault copy cannot be linked:
+
+```
+1 suggestion
+  └─ local: ~/repos/my-vault/projects/invoice-api/local/claude/natelandau-toolkit.toml: .claude/natelandau-toolkit.toml is listed in entries.toml but the vault holds no copy; remove the line from entries.toml
+```
+
+Delete the line from `entries.toml`, or adopt the file again from a checkout that still
+has it.
+
+A file or folder in `local/` that no entry names is never linked. The check reports the
+highest such path once, not each file inside it:
+
+```
+1 suggestion
+  └─ local: ~/repos/my-vault/projects/invoice-api/local/notes: notes in the vault is not an entry; adopt it again from a checkout, or add its path to entries.toml
+```
+
+Add its checkout path to `entries.toml`, or delete it. A concurrent `local sync --adopt`
+in two sessions can drop one path from `entries.toml` and leave its copy behind like
+this. The check also reports an `entries.toml` that is not valid TOML, a `paths` value
+that is not a list of strings, and each line that names a path that `local sync --adopt` refuses.
+
 A relative `@` import in `CLAUDE.local.md` or in a `.md` file of a rule cannot load,
 because Claude Code resolves it from the vault folder:
 

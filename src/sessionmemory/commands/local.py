@@ -19,7 +19,7 @@ from sessionmemory.commands._common import (
     require_project,
     require_vault,
 )
-from sessionmemory.lib import localmd, paths
+from sessionmemory.lib import localmanifest, localmd, paths
 
 app = typer.Typer(
     cls=VersionedGroup,
@@ -35,7 +35,10 @@ JSON = typer.Option(False, "--json", help="Emit JSON instead of prose.")  # noqa
 ADOPT = typer.Option(
     None,
     "--adopt",
-    help="Adopt an entry: CLAUDE.local.md, skills/<name>, or rules/<name>. Repeatable.",
+    help=(
+        "Adopt an entry: CLAUDE.local.md, skills/<name>, rules/<name>, or a path to any "
+        "file or folder in this checkout. Repeatable."
+    ),
     show_default=False,
 )
 KEEP_SETTINGS = typer.Option(
@@ -200,7 +203,7 @@ def _ask(waiting: list[localmd.Entry], pending: localmd.SettingsPending | None) 
     return _Plan(adopt=adopt, keep=keep)
 
 
-def _entries(co: localmd.Checkout, names: list[str]) -> tuple[list[localmd.Entry], bool]:
+def _entries(co: localmd.Checkout, names: list[str], cwd: Path) -> tuple[list[localmd.Entry], bool]:
     """Build the link entries a person named, reporting each name that is not one.
 
     Returns:
@@ -210,7 +213,7 @@ def _entries(co: localmd.Checkout, names: list[str]) -> tuple[list[localmd.Entry
     failed = False
     for name in names:
         try:
-            item = localmd.entry(co=co, name=name)
+            item = localmd.resolve_adopt(co=co, raw=name, cwd=cwd)
         except localmd.LocalMdError as err:
             pp.error(err.message, details=err.details)
             failed = True
@@ -250,16 +253,24 @@ def _adopt_one(
 
 
 def _adopt_all(
-    co: localmd.Checkout, names: list[str], tracked: set[str]
+    co: localmd.Checkout, names: list[str], tracked: set[str], cwd: Path
 ) -> tuple[list[localmd.AdoptResult], bool]:
     """Adopt each named entry, warning once about rule approval.
 
     Returns:
         tuple[list[localmd.AdoptResult], bool]: The adopted entries, and whether any failed.
     """
-    items, failed = _entries(co=co, names=names)
+    items, failed = _entries(co=co, names=names, cwd=cwd)
     if not items:
         return [], failed
+    # A path named for the first time is in no listing git was asked about yet.
+    try:
+        tracked = tracked | localmd.tracked_names(
+            co=co, items=[item for item in items if item.kind == "path"]
+        )
+    except localmd.LocalMdError as err:
+        pp.error(err.message, details=err.details)
+        return [], True
     adopted: list[localmd.AdoptResult] = []
     for item in items:
         result = _adopt_one(co=co, item=item, tracked=item.name in tracked)
@@ -393,6 +404,7 @@ class _Report:
     kept: Path | None
     waiting: list[localmd.Entry]
     pending: localmd.SettingsPending | None
+    manifest_problems: tuple[str, ...] = ()
 
     def payload(self, plan: _Plan) -> dict[str, object]:
         """Build the `--json` payload; `adopted` and `settings` only for flags that ran."""
@@ -402,6 +414,7 @@ class _Report:
                 "adopt": [item.name for item in self.waiting],
                 "settings": _settings_payload(self.pending),
             },
+            "manifest_problems": list(self.manifest_problems),
         }
         if plan.adopt:
             payload["adopted"] = [
@@ -451,6 +464,13 @@ def sync_command(
     except OSError as err:
         fail(f"could not link the entries of {co.worktree}: {err}")
 
+    problems = localmd.manifest(co).problems
+    if problems:
+        pp.error(
+            f"{co.local / localmanifest.MANIFEST_NAME} lists paths that cannot be linked",
+            details=[*problems, "Fix the file, then run local sync."],
+        )
+
     plan = _Plan(adopt=list(adopt or []), keep=keep_settings)
     flagged = bool(plan.adopt) or plan.keep is not None
     waiting, listed = _waiting(co, tracked) if not flagged else ([], True)
@@ -459,7 +479,9 @@ def sync_command(
         plan = _ask(waiting=waiting, pending=pending)
 
     adopted, failed = (
-        _adopt_all(co=co, names=plan.adopt, tracked=tracked) if plan.adopt else ([], False)
+        _adopt_all(co=co, names=plan.adopt, tracked=tracked, cwd=Path.cwd())
+        if plan.adopt
+        else ([], False)
     )
     kept, changed = _keep(co=co, side=plan.keep, tracked=tracked) if plan.keep else (None, False)
     if any(not result.already_linked for result in adopted) or (
@@ -474,9 +496,16 @@ def sync_command(
     if plan.adopt or plan.keep is not None:
         waiting, listed = _waiting(co, tracked)
         pending, compared = _pending_settings(co, tracked)
-    failed = failed or not (listed and compared)
+    failed = failed or not (listed and compared) or bool(problems)
 
-    report = _Report(results=results, adopted=adopted, kept=kept, waiting=waiting, pending=pending)
+    report = _Report(
+        results=results,
+        adopted=adopted,
+        kept=kept,
+        waiting=waiting,
+        pending=pending,
+        manifest_problems=problems,
+    )
     if as_json:
         emit_json(report.payload(plan))
     else:

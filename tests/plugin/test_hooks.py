@@ -1612,3 +1612,39 @@ def test_sessionstart_asks_about_differing_settings(tmp_path: Path) -> None:
     assert "permissions: only in the vault" in context
     assert (proj / ".claude" / "settings.local.json").read_text(encoding="utf-8") == "{}"
     assert "pending 1" in _hooks_log(tmp_path)
+
+
+def test_local_block_leaves_path_entries_out_of_the_load_note(tmp_path: Path) -> None:
+    """Verify a linked adopted path is counted but not named as loading next session."""
+    payload = {"entries": [_entry(".claude/t.toml", "created", kind="path")], "pending": {}}
+
+    blocks, clauses = _local_block(payload, tmp_path)
+
+    assert blocks == []
+    assert clauses == ["local created 1"]
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("skills/a", ".claude/skills/a"),
+        ("rules/b.md", ".claude/rules/b.md"),
+        ("CLAUDE.local.md", "CLAUDE.local.md"),
+        (".claude/t.toml", ".claude/t.toml"),
+        ("notes/x.md", "notes/x.md"),
+    ],
+)
+def test_relpath_prefixes_only_skill_and_rule_names(name: str, expected: str) -> None:
+    """Verify only skill and rule names gain the .claude/ prefix."""
+    assert sessionstart._relpath(name) == expected
+
+
+def test_local_block_relays_manifest_problems(tmp_path: Path) -> None:
+    """Verify manifest problems from sync reach the session as a block naming them."""
+    payload = {"entries": [], "pending": {}, "manifest_problems": ["'../x' is not a plain path"]}
+
+    blocks, _ = _local_block(payload, tmp_path)
+
+    assert len(blocks) == 1
+    assert "entries.toml" in blocks[0]
+    assert "'../x' is not a plain path" in blocks[0]

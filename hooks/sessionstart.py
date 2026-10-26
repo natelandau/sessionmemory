@@ -120,6 +120,11 @@ LOCAL_PENDING_COMMAND = (
 
 SETTINGS_PATH = ".claude/settings.local.json"
 
+LOCAL_MANIFEST_NOTE = (
+    "This project's local/entries.toml lists paths that cannot be linked, so they are "
+    "missing from this checkout. Tell the person, and suggest `sessionmemory doctor`:"
+)
+
 # The order the log clause counts `local sync` statuses in, whatever order the CLI lists.
 LOCAL_STATUSES = ("created", "present", "tracked", "removed", "conflict")
 
@@ -224,6 +229,15 @@ def _memory_block(
     return "\n\n".join(blocks) or None
 
 
+def _manifest_block(payload: dict[str, Any] | None) -> list[str]:
+    """The block naming `entries.toml` lines that sync could not use, or none."""
+    problems = payload.get("manifest_problems") if payload is not None else None
+    if not isinstance(problems, list):
+        return []
+    lines = [f"- {line}" for line in problems if isinstance(line, str)]
+    return ["\n".join([LOCAL_MANIFEST_NOTE, *lines])] if lines else []
+
+
 def _local_block(
     vault: VaultCLI | None,
     cfg: SessionMemoryConfig,
@@ -267,21 +281,23 @@ def _local_block(
     for item in created:
         if item.get("name") == shape.LOCAL_MD:
             blocks.extend(_local_md_block(item.get("target"), clauses=clauses, log=log))
+    # Only skills and rules load from the next session; an adopted path is just a file.
     names = [
         name
         for item in created
-        if isinstance(name := item.get("name"), str) and name != shape.LOCAL_MD
+        if item.get("kind") in {"skill", "rule"} and isinstance(name := item.get("name"), str)
     ]
     if names:
         blocks.append(_linked_entries_note(names))
     if ask:
         blocks.append(ask)
+    blocks.extend(_manifest_block(payload))
     return blocks
 
 
 def _relpath(name: str) -> str:
-    """The checkout path of an entry the CLI names relative to `.claude/`."""
-    return name if name == "CLAUDE.local.md" else f".claude/{name}"
+    """The checkout path of an entry: skill and rule names are relative to `.claude/`."""
+    return f".claude/{name}" if name.startswith(("skills/", "rules/")) else name
 
 
 def _settings_lines(settings: dict[str, Any]) -> list[str]:

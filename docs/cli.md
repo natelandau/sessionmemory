@@ -222,7 +222,7 @@ checkout. These files hold personal instructions and settings that must not reac
 project's repository. Without this command each one exists in one clone only. In the vault
 it follows you to your other machines and to every git worktree of the project.
 
-The command manages four kinds of entry. The name in the first column is what you type
+The command manages five kinds of entry. The name in the first column is what you type
 and what every output shows:
 
 | Entry                 | In the checkout               | In the vault, under `projects/<slug>/` |
@@ -230,7 +230,13 @@ and what every output shows:
 | `CLAUDE.local.md`     | `CLAUDE.local.md`             | `local/CLAUDE.local.md`                |
 | `skills/<name>`       | `.claude/skills/<name>/`      | `local/claude/skills/<name>/`          |
 | `rules/<name>`        | `.claude/rules/<name>`        | `local/claude/rules/<name>`            |
+| A path you adopt      | `.claude/agents`              | `local/claude/agents`                  |
 | `settings.local.json` | `.claude/settings.local.json` | `local/claude/settings.local.json`     |
+
+The command finds `CLAUDE.local.md`, skills, and rules by their location. Any other file
+or folder becomes an entry only when you adopt it by its path, as
+[Adopting any path](#adopting-any-path) describes. Its name is its path from the top of
+the work tree. In the vault it keeps the same path, with `.claude/` stored as `claude/`.
 
 A skill is a folder. A rule is the file or the folder directly inside `.claude/rules/`,
 and a rules folder is linked as one entry. A name that starts with a dot is never an
@@ -372,7 +378,8 @@ that saves by writing a temporary file and renaming it over the link also leaves
 }
 ```
 
-`kind` is `local-md`, `skill`, `rule`, or `settings`. The settings row has its copy state
+`kind` is `local-md`, `skill`, `rule`, `path`, or `settings`. A `path` row is a file or
+folder you adopted by its path, and its `name` is that path, such as `.claude/agents`. The settings row has its copy state
 in `state` and `match` set to `null`. `ignored` is `null` when `.claude/` or its
 `skills/` or `rules/` folder is a symlink or not a folder, since git cannot answer for a
 path behind it. `match` is `true` or `false` when both sides are real files or both are
@@ -388,12 +395,12 @@ vault and keep a settings copy as you choose.
 sessionmemory local sync --cwd .
 ```
 
-| Option                           | What it does                                                                       |
-| -------------------------------- | ---------------------------------------------------------------------------------- |
-| `--adopt NAME`                   | Move the entry from this checkout into the vault and link it back. Repeatable      |
-| `--keep-settings checkout\|vault` | Write that copy of `settings.local.json` over the other one                        |
-| `--json`                         | Emit JSON instead of prose                                                         |
-| `--cwd DIR`                      | Directory to resolve the project from                                              |
+| Option                            | What it does                                                                                         |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `--adopt NAME`                    | Move the entry, or any file or folder named by its path, into the vault and link it back. Repeatable |
+| `--keep-settings checkout\|vault` | Write that copy of `settings.local.json` over the other one                                          |
+| `--json`                          | Emit JSON instead of prose                                                                           |
+| `--cwd DIR`                       | Directory to resolve the project from                                                                |
 
 Every run does the linking that can never lose content. It creates a missing link,
 replaces a link to nothing, and deletes a link whose vault entry is gone. Nothing that
@@ -510,7 +517,8 @@ work:
       },
       "summary": []
     }
-  }
+  },
+  "manifest_problems": []
 }
 ```
 
@@ -521,6 +529,8 @@ are set for a `conflict`. An `adopted` list follows when `--adopt` ran, with the
 and vault `target` of each entry adopted. A `settings` object follows when
 `--keep-settings` ran, with `kept` and the `path` that holds the kept copy. When both
 copies were already the same, nothing is written and `path` names the existing copy.
+`manifest_problems` holds one line for each line of `local/entries.toml` that the command
+cannot use, and is empty when there is none.
 
 When nothing is linked or pending, the command says so on stderr and exits 0:
 
@@ -569,8 +579,9 @@ A removed link is reported the same way:
 ! removed ~/repos/invoice-api/.claude/rules/review.md, whose vault entry is gone
 ```
 
-The command exits 1 when any linked entry is a `conflict`, or when an `--adopt` or a
-`--keep-settings` failed. `--json` still prints the whole payload. One conflict never
+The command exits 1 when any linked entry is a `conflict`, when an `--adopt` or a
+`--keep-settings` failed, or when `local/entries.toml` holds a line that the command
+cannot use. `--json` still prints the whole payload. One conflict never
 stops the other entries. A conflict for an entry that the same run then adopts is not
 reported.
 
@@ -631,6 +642,86 @@ a checkout shows the dialog "Allow external CLAUDE.md file imports?" with the ru
 path. Claude Code records the approval for that checkout path on that machine. Until you
 approve it, the rule does not load, and a headless session skips it without a prompt. A
 linked skill loads with no approval.
+
+#### Adopting any path
+
+`--adopt` also takes the path of any file or folder in the checkout. Use it for a private
+file that is not `CLAUDE.local.md`, a skill, or a rule, such as a tool's config file:
+
+```bash
+sessionmemory local sync --adopt .claude/natelandau-toolkit.toml --adopt .claude/agents --cwd .
+```
+
+```
+! the hooks commit the vault copy to the vault's git remote
+~/repos/my-vault/projects/invoice-api/local/claude/natelandau-toolkit.toml
+~/repos/my-vault/projects/invoice-api/local/claude/agents
+```
+
+A relative path starts from the shell's directory, not from `--cwd`. A path that names a
+skill, a rule, or `CLAUDE.local.md`, such as `.claude/skills/deploy-check`, is adopted as
+that kind of entry. A folder is linked as one entry, so a file that you add to it later
+is in the vault too.
+
+The vault cannot tell from its files where an entry adopted by path starts, so the
+command lists each one in `local/entries.toml`:
+
+```toml
+# Paths adopted into this folder with local sync --adopt, relative to the
+# checkout's top level. Each is linked into every checkout of the project.
+paths = [
+    ".claude/agents",
+    ".claude/natelandau-toolkit.toml",
+]
+```
+
+Every `sync` links each listed path into the checkout, and creates any missing parent
+folder. If the file holds a line that the command cannot use, `sync` names the line,
+links the other entries, and exits 1:
+
+```
+✗ ~/repos/my-vault/projects/invoice-api/local/entries.toml lists paths that cannot be linked
+  ├─ '../notes' is not a plain path inside the checkout
+  └─ Fix the file, then run local sync.
+```
+
+Of two nested lines, such as `.claude/agents` and
+`.claude/agents/reviewer.md`, only the outer one is linked.
+
+To stop linking a path, do these steps:
+
+1. Delete its line from `entries.toml`.
+2. In each checkout, delete the link. In one checkout, copy the vault copy to the path.
+3. Delete the vault copy.
+
+`--adopt` refuses a path, and names the reason, when the path:
+
+- Is outside the work tree, or is the work tree itself.
+- Is in `.git`.
+- Is `.claude`, `.claude/skills`, or `.claude/rules`, or is inside a skill or a rule.
+- Is `.claude/settings.json` or `.claude/settings.local.json`.
+- Starts with a `claude/` folder, or is a top-level `entries.toml`. Both collide with the
+  vault's layout.
+- Is a top-level `settings.local.json`, which reads as the settings entry.
+- Reads as a skill or rule name, such as a top-level `skills/notes`.
+- Is inside a path that is already adopted, or holds one.
+
+These names are compared without regard to case, because the file systems of macOS are
+case-insensitive. The checks of [Adopting an entry](#adopting-an-entry) also apply: git
+must not track the path, and a folder must not hold a symlink or an installed package
+folder.
+
+```
+✗ .claude/agents/reviewer.md overlaps .claude/agents, which is already adopted
+  └─ An adopted path cannot hold or sit inside another.
+```
+
+An entry adopted by path gets none of the extra handling of the other kinds. The command
+does not scan it for `@` imports. The session start hook links it, but does not name it
+in the note about entries that load from the next session.
+
+> **Note:** A program that saves a file by renaming a new file over it replaces the link
+> with a regular file. `local status` then shows `diverged`.
 
 ## `sessionmemory new learning`
 

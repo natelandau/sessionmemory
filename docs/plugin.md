@@ -127,11 +127,14 @@ loads no model, so a first session never waits on the embedding model download.
 
 After it registers the project and injects the memory block, the hook runs
 `sessionmemory local sync --json` for the current directory. The command links each
-`CLAUDE.local.md`, skill, and rule that the vault holds for the project and that the
-checkout does not have yet (see [Local files](concepts.md#local-files)). A new git
+`CLAUDE.local.md`, skill, rule, and adopted path that the vault holds for the project and
+that the checkout does not have yet (see [Local files](concepts.md#local-files)). A new git
 worktree, a fresh clone, and a second machine therefore receive them without any action
 from you. The hook runs in any git work tree, whatever starts the session, so a `/clear`
 in a worktree that you created during a session links that worktree too.
+
+If `local/entries.toml` holds a line that the command cannot use, the hook adds a block
+that names the line and tells the agent to tell you.
 
 The hook never replaces a file or folder that holds content, and it never copies
 `settings.local.json`. A real `CLAUDE.local.md`, skill, or rule in the checkout stays where
