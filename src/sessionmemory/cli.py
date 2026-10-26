@@ -5,7 +5,6 @@ from __future__ import annotations
 import importlib.metadata
 
 import typer
-from nclutils import pp
 
 from sessionmemory.commands import delete as delete_commands
 from sessionmemory.commands import doctor as doctor_commands
@@ -45,10 +44,7 @@ def _print_version(value: bool) -> None:  # noqa: FBT001
 
 @app.callback()
 def _root(
-    verbosity: int = typer.Option(
-        0, "-v", "--verbose", count=True, help="Increase output verbosity. Repeat for more."
-    ),
-    version: bool = typer.Option(  # noqa: ARG001, FBT001
+    version: bool = typer.Option(  # noqa: FBT001
         False,  # noqa: FBT003
         "--version",
         callback=_print_version,
@@ -57,7 +53,6 @@ def _root(
     ),
 ) -> None:
     """Manage a project's memory in a vault of markdown pages."""
-    pp.configure(verbosity=verbosity)
 
 
 app.command(
