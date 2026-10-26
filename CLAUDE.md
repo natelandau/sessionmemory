@@ -66,6 +66,21 @@ does with the Python version.
 A command's docstring renders as its `--help`, including any `Args:` or `Raises:`
 section. When ruff requires such a section, pass an explicit `help=` at registration.
 
+### Commands, flags, and names
+
+- A command is a verb: one action with its own object, side effects, and failures. A flag
+  changes how its command does that job: what it targets, its scope, its output, or which
+  side wins a choice the command already faces. If a flag makes the command do something
+  it never does without it, that is a command. `local adopt` is a command because `sync`
+  never moves files into the vault on its own; `--keep-settings` is a flag because `sync`
+  already finds the two settings copies apart and the flag picks the winner.
+- A repeatable flag that takes the things acted on (`--x A --x B`) is a command's
+  arguments in disguise.
+- Every name, on the CLI surface and in the code (commands, options, JSON keys,
+  functions, classes, variables), says what it is or does without the reader opening it,
+  and admits one reading. A name that reads as both a noun and a verb, names a mechanism
+  instead of its effect, or could mean a neighbor's job gets renamed.
+
 ### Console output
 
 - All output goes through `nclutils.pp` (load the `nclutils` skill). Never `print()` or
