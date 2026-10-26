@@ -1,6 +1,6 @@
 ---
 name: review
-description: Curate this project's learnings - sharpen weak titles and summaries, retire stale, historical, or redundant pages, and route a page that is really deferred work into backlog.md. Read-only reviewer subagents judge. This skill applies the changes.
+description: Curate this project's learnings - sharpen weak titles and summaries, retire stale, historical, or redundant pages, route a page that is really deferred work into backlog.md, and bring log commit lists in line with the trunk. Read-only reviewer subagents judge. This skill applies the changes.
 disable-model-invocation: true
 ---
 
@@ -11,6 +11,9 @@ pages. This pass keeps the field accurate, non-redundant, and at the right
 altitude. A page's title is what every session start shows, and its summary is
 what a search returns. A weak title or summary is a memory that in effect does not
 exist. Fixing those is the most valuable work this skill does.
+
+The pass also reconciles the project's session logs: it replaces or drops logged
+commits that no longer exist, so a log lists only commits that landed.
 
 The `backlog` skill validates and ranks the open backlog items. This skill edits
 `backlog.md` only to add a line for a learning that is deferred work.
@@ -37,17 +40,32 @@ If a command exits non-zero, no vault is reachable. Say so and stop.
 
 It reports a page with a nonconformant filename, a page over 8KB, frontmatter that
 does not parse, a bare date in frontmatter, a project root that does not exist, a
-ticked backlog line (`- [x]`), a mention of a vault file that does not exist, and a
-stale index. Three of those have a fixed remedy. Apply it before you dispatch a
-reviewer:
+ticked backlog line (`- [x]`), a mention of a vault file that does not exist, a
+stale index, and a log that lists commits no branch contains. Four of those have a
+fixed remedy. Apply it before you dispatch a reviewer:
 
 - Rename a nonconformant filename with `mv`.
 - Split an oversized page into two.
 - If the index is stale, run `"$CLI" reindex --cwd .`.
+- If a log lists commits no branch contains (a `commits` finding), run
+  `"$CLI" reconcile --cwd .`. Step 2a does this.
 
 Leave a `backlog` finding alone. The `backlog` skill clears it. Leave a `reference`
 finding alone too, since the right fix depends on what the page meant. Mention both in
 the report.
+
+## Step 2a: reconcile logs
+
+```bash
+"$CLI" reconcile --cwd . --json
+```
+
+The JSON is a list with one object per reconciler, named by its `reconciler` field.
+Each object has `changed` (a list of the paths of the logs rewritten, so its length is
+the number of logs changed), `replaced`, `dropped`, `in_progress`, `unchecked`, and
+`notes`. Keep the payload, and report each reconciler's counts under its name. If the
+command exits non-zero, keep its error message for the report and go on. The learnings
+review does not depend on it.
 
 ## Step 3: list the pages
 
@@ -69,6 +87,9 @@ It returns one object per page, keyed by `target`:
 
 - `verdict`: `KEEP`, `UPDATE`, or `DELETE`, with a cited reason and a
   `confidence`.
+- `value`: `pass` or `fail`, naming the mistake a future agent would make without
+  the page and what it would cost, or why none exists. A page that fails is
+  `DELETE`.
 - `proposed_title` and `proposed_summary`: present whenever the existing one is
   weak.
 - `proposed_change`: the corrected body, on `UPDATE`.
@@ -111,9 +132,11 @@ Apply every verdict. No delete and no edit needs a confidence gate.
 
 ## Step 6: report
 
-Write one short paragraph or a brief list: pages reviewed, titles and summaries
-sharpened, pages merged and deleted, backlog lines added, and each CLAUDE.md
-recommendation, stated as not applied. Then list every `DELETE` the reviewer
+Write one short paragraph or a brief list. For the logs, report the logs changed (the
+length of `changed`), replaced, dropped, in progress, and unchecked, then every note
+verbatim, or the error message if `reconcile` failed. For the learnings, report pages
+reviewed, titles and summaries sharpened, pages merged and deleted, backlog lines
+added, and each CLAUDE.md recommendation, stated as not applied. Then list every `DELETE` the reviewer
 returned with low confidence, each with its one-line reason, so a wrong one can be
 reverted from the vault's history.
 

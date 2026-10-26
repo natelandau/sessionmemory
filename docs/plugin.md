@@ -451,7 +451,7 @@ redundant is a judgment, so curation is yours to start.
 
 | Command                  | What it does                                                                  |
 | ------------------------ | ----------------------------------------------------------------------------- |
-| `/sessionmemory:review`  | Curates the learnings: sharpens weak titles, retires stale or redundant pages |
+| `/sessionmemory:review`  | Curates the learnings and reconciles log commits with the trunk               |
 | `/sessionmemory:backlog` | Triages `backlog.md`, then ranks what is left by impact and effort            |
 | `/sessionmemory:handoff` | Writes a consume-once handoff of the current task, for the next session       |
 | `/sessionmemory:sweep`   | Records this session into the vault now, in this session                      |
@@ -460,9 +460,11 @@ redundant is a judgment, so curation is yours to start.
 `cli` is the one skill a session can reach on its own. The other four run only
 when you ask for them. [Sweeping by hand](#sweeping-by-hand) describes `sweep`.
 
-`review` handles the learnings field and `backlog` handles `backlog.md`; neither
-touches the other's files, except that `review` adds a backlog line for a page that
-turns out to be deferred work. `backlog` stops to ask before closing or removing an
+`review` handles the learnings field and the commit lists in the logs. `backlog`
+handles `backlog.md`. Neither touches the other's files, except that `review` adds a
+backlog line for a page that turns out to be deferred work. For the logs, `review` runs
+[`sessionmemory reconcile`](cli.md#sessionmemory-reconcile), which rewrites only the
+`## Changes` section of a log. `backlog` stops to ask before closing or removing an
 item a reviewer judged with low confidence. Pass `--yes`, as in
 `/sessionmemory:backlog --yes`, to apply those too and read them in the report
 instead. Nothing else waits on you: every page edit and delete is applied outright,
