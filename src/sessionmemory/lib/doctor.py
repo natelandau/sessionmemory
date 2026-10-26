@@ -19,6 +19,7 @@ from sessionmemory.lib import (
     commits,
     field,
     fieldindex,
+    localmanifest,
     localmd,
     localtree,
     paths,
@@ -292,6 +293,9 @@ def _checkout_message(
     could not be asked, which leaves only the checks that need no git.
     """
     if localmd.blocked(co, item):
+        if item.kind == "path":
+            folder = localmd.blocking_folder(co, item)
+            return f"{item.name} cannot be linked; {folder} is a symlink or not a folder"
         folder = item.name.partition("/")[0]
         return (
             f"{item.name} cannot be linked; .claude or .claude/{folder} is a symlink "
@@ -408,6 +412,80 @@ def _settings_finding(co: localmd.Checkout, *, tracked: set[str] | None) -> Find
     return Finding("local", str(item.link), f"{item.name} {message}")
 
 
+# Names under `local/` that entries found by location own, so they never need a manifest line.
+_LOCATED = frozenset(
+    {
+        paths.LOCAL_MD_FILE,
+        localmanifest.MANIFEST_NAME,
+        "claude/skills",
+        "claude/rules",
+        f"claude/{localmd.SETTINGS_NAME}",
+    }
+)
+
+
+def _unclaimed(local: Path, listed: set[str]) -> list[Path]:
+    """List the topmost vault copies under `local/` that no entry names.
+
+    A folder above a listed path is walked into rather than reported, since only part of
+    it is claimed.
+    """
+    found: list[Path] = []
+
+    def walk(folder: Path, prefix: str) -> None:
+        for child in sorted(folder.iterdir()):
+            rel = f"{prefix}{child.name}"
+            if child.name.startswith(".") or rel in _LOCATED or rel in listed:
+                continue
+            above = rel == "claude" or any(other.startswith(f"{rel}/") for other in listed)
+            if above and child.is_dir() and not child.is_symlink():
+                walk(child, f"{rel}/")
+            else:
+                found.append(child)
+
+    if local.is_dir():
+        walk(local, "")
+    return found
+
+
+def _manifest_findings(co: localmd.Checkout) -> list[Finding]:
+    """Report a manifest that cannot be used, lines with no vault copy, and unlisted copies."""
+    manifest = localmd.manifest(co)
+    findings = [
+        Finding("local", str(co.local / localmanifest.MANIFEST_NAME), problem)
+        for problem in manifest.problems
+    ]
+    for relpath in manifest.paths:
+        item = localmd.path_entry(co, relpath)
+        if not (item.target.is_symlink() or item.target.exists()):
+            findings.append(
+                Finding(
+                    "local",
+                    str(item.target),
+                    f"{relpath} is listed in entries.toml but the vault holds no copy; "
+                    "remove the line from entries.toml",
+                )
+            )
+    # A line that cannot be used would make its own copy look unclaimed.
+    if manifest.problems:
+        return findings
+    listed = {localmanifest.vault_relpath(relpath) for relpath in manifest.paths}
+    try:
+        unclaimed = _unclaimed(co.local, listed)
+    except OSError as err:
+        return [*findings, Finding("local", str(co.local), f"cannot be read: {err}")]
+    findings.extend(
+        Finding(
+            "local",
+            str(path),
+            f"{path.relative_to(co.local).as_posix()} in the vault is not an entry; adopt it "
+            "again from a checkout, or add its path to entries.toml",
+        )
+        for path in unclaimed
+    )
+    return findings
+
+
 def _project_local_findings(vault: Path, slug: str, root: Path | None) -> list[Finding]:
     """Report one project's local entries, checking the checkout only when `root` exists."""
     findings = []
@@ -418,6 +496,7 @@ def _project_local_findings(vault: Path, slug: str, root: Path | None) -> list[F
     co = localmd.Checkout(
         worktree=root or vault, vault=vault, slug=slug, local=paths.local_dir(vault, slug)
     )
+    findings.extend(_manifest_findings(co))
     try:
         items = localmd.vault_entries(co)
         odd = localmd.misshapen(co)
@@ -460,7 +539,8 @@ def local_instructions(vault: Path, _embedder: Embedder) -> list[Finding]:
     that cannot resolve from the vault folder, and at the registered root, per entry, a
     tracked path, a dangling link, a copy that has drifted from the vault, and a link or
     copy that git does not ignore, plus a settings copy waiting on the person or one that
-    cannot be copied.
+    cannot be copied. Also covers `entries.toml`: a file it cannot use, a listed path with
+    no vault copy, and a vault copy no entry names.
     """
     try:
         projects = registry.load(vault)

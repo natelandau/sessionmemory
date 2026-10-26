@@ -1293,3 +1293,99 @@ def test_doctor_skips_settings_when_git_cannot_say_tracked(tmp_path, monkeypatch
     findings = doctor.local_instructions(vault, StubEmbedder())
 
     assert not [f for f in findings if "settings" in f.message]
+
+
+def _local_dir(vault: Path) -> Path:
+    return vault / "projects" / "demo" / "local"
+
+
+def _write(path: Path, text: str = "x\n") -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_local_flags_listed_path_without_vault_copy(tmp_path):
+    """Verify a manifest line whose vault copy is missing is reported."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    _local_project(vault, tmp_path / "repo")
+    _write(_local_dir(vault) / "entries.toml", 'paths = [".claude/t.toml"]\n')
+
+    findings = doctor.local_instructions(vault, StubEmbedder())
+
+    assert [(f.path, f.message) for f in findings if "holds no copy" in f.message] == [
+        (
+            str(_local_dir(vault) / "claude" / "t.toml"),
+            (
+                ".claude/t.toml is listed in entries.toml but the vault holds no copy; "
+                "remove the line from entries.toml"
+            ),
+        )
+    ]
+
+
+def test_local_flags_unclaimed_vault_copy_once_at_top(tmp_path):
+    """Verify a vault folder no entry names is reported once, not per file inside it."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    _local_project(vault, tmp_path / "repo")
+    _write(_local_dir(vault) / "notes" / "a.md")
+    _write(_local_dir(vault) / "notes" / "b.md")
+
+    findings = doctor.local_instructions(vault, StubEmbedder())
+
+    assert [(f.path, f.message) for f in findings if "is not an entry" in f.message] == [
+        (
+            str(_local_dir(vault) / "notes"),
+            (
+                "notes in the vault is not an entry; adopt it again from a checkout, "
+                "or add its path to entries.toml"
+            ),
+        )
+    ]
+
+
+def test_local_silent_for_listed_and_known_vault_copies(tmp_path):
+    """Verify known kinds, listed paths, and the folders above listed paths are not flagged."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    _local_project(vault, tmp_path / "repo")
+    _local_entry(vault, "skills/s")
+    _write(_local_dir(vault) / "claude" / "settings.local.json", "{}")
+    _write(_local_dir(vault) / "claude" / "t.toml")
+    _write(_local_dir(vault) / "notes" / "p.md")
+    _write(_local_dir(vault) / ".DS_Store")
+    _write(_local_dir(vault) / "entries.toml", 'paths = [".claude/t.toml", "notes/p.md"]\n')
+
+    findings = doctor.local_instructions(vault, StubEmbedder())
+
+    assert [f for f in findings if "entries.toml" in f.message or "not an entry" in f.message] == []
+
+
+def test_local_flags_broken_manifest(tmp_path):
+    """Verify a manifest that cannot be used is reported at its path."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    _local_project(vault, tmp_path / "repo")
+    manifest = _write(_local_dir(vault) / "entries.toml", "paths = 3\n")
+
+    findings = doctor.local_instructions(vault, StubEmbedder())
+
+    assert str(manifest) in [f.path for f in findings]
+
+
+def test_local_broken_manifest_reports_once_without_unclaimed_noise(tmp_path):
+    """Verify a broken manifest is one finding and its copies are not called unclaimed."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    _local_project(vault, tmp_path / "repo")
+    _write(_local_dir(vault) / "claude" / "t.toml")
+    manifest = _write(_local_dir(vault) / "entries.toml", "paths = [\n")
+
+    findings = doctor.local_instructions(vault, StubEmbedder())
+
+    assert not [f for f in findings if "is not an entry" in f.message]
+    ours = [f for f in findings if f.path == str(manifest)]
+    assert len(ours) == 1
+    assert str(manifest) not in ours[0].message
