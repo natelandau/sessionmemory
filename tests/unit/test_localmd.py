@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from sessionmemory.lib import localmd, localtree, paths
+from sessionmemory.lib import localmanifest, localmd, localtree, paths
 from sessionmemory.lib.localmd import LocalMdError, State
 
 NAME = paths.LOCAL_MD_FILE
@@ -691,7 +691,7 @@ def test_entry_paths_per_kind(co):
 
 
 @pytest.mark.parametrize(
-    "name", ["skills/", "skills/a/b", "agents/x", "skills/.x", "rules/..", "", "claude.local.md"]
+    "name", ["skills/", "skills/.x", "rules/..", "", "claude.local.md", "../x", ".git/config"]
 )
 def test_entry_rejects_bad_names(co, name):
     """Verify a name that is no entry's is refused."""
@@ -1868,3 +1868,219 @@ def test_keep_checkout_ignores_the_checkout_copy(co):
     localmd.keep_settings(co, "checkout", tracked=False)
 
     assert "/.claude/settings.local.json" in _exclude(co).read_text(encoding="utf-8")
+
+
+def test_adopt_path_file_lists_it_and_links_back(co):
+    """Verify adopting a file by path moves it under claude/, lists it, and links it."""
+    (co.worktree / ".claude").mkdir()
+    (co.worktree / ".claude" / "t.toml").write_text("a = 1\n")
+    item = localmd.path_entry(co, ".claude/t.toml")
+
+    result = localmd.adopt(co, item, tracked=False)
+
+    assert result.target == co.local / "claude" / "t.toml"
+    assert (co.worktree / ".claude" / "t.toml").is_symlink()
+    assert localmd.manifest(co).paths == (".claude/t.toml",)
+    assert result.relative_imports == []
+
+
+def test_adopt_path_folder_links_whole_folder(co):
+    """Verify adopting a folder by path links the folder itself and skips the import scan."""
+    folder = co.worktree / ".claude" / "agents"
+    folder.mkdir(parents=True)
+    (folder / "a.md").write_text("see @./b.md\n")
+
+    result = localmd.adopt(co, localmd.path_entry(co, ".claude/agents"), tracked=False)
+
+    assert folder.is_symlink()
+    assert (co.local / "claude" / "agents" / "a.md").is_file()
+    assert result.relative_imports == []
+
+
+def test_link_all_links_listed_path_and_creates_parent(co):
+    """Verify a listed path is linked into a checkout that lacks its parent folder."""
+    target = co.local / "notes" / "private.md"
+    target.parent.mkdir(parents=True)
+    target.write_text("x\n")
+    localmanifest.add(co.local, "notes/private.md")
+
+    results = localmd.link_all(co)
+
+    assert [(r.entry.name, r.status) for r in results] == [("notes/private.md", "created")]
+    assert (co.worktree / "notes" / "private.md").resolve() == target.resolve()
+    assert "/notes/private.md" in _exclude(co).read_text()
+
+
+def test_link_all_removes_dangling_link_at_listed_path(co):
+    """Verify a link at a listed path whose vault copy is gone is removed, the line kept."""
+    localmanifest.add(co.local, ".claude/t.toml")
+    (co.worktree / ".claude").mkdir()
+    (co.worktree / ".claude" / "t.toml").symlink_to(co.local / "claude" / "t.toml")
+
+    results = localmd.link_all(co)
+
+    assert [(r.entry.name, r.status) for r in results] == [(".claude/t.toml", "removed")]
+    assert not (co.worktree / ".claude" / "t.toml").is_symlink()
+    assert localmd.manifest(co).paths == (".claude/t.toml",)
+
+
+def test_readopt_linked_path_restores_lost_manifest_line(co):
+    """Verify adopting a linked path again lists it when its manifest line was lost."""
+    (co.worktree / ".claude").mkdir()
+    (co.worktree / ".claude" / "t.toml").write_text("a = 1\n")
+    item = localmd.path_entry(co, ".claude/t.toml")
+    localmd.adopt(co, item, tracked=False)
+    (co.local / "entries.toml").unlink()
+
+    result = localmd.adopt(co, item, tracked=False)
+
+    assert result.already_linked is True
+    assert localmd.manifest(co).paths == (".claude/t.toml",)
+
+
+def test_adopt_path_refused_when_manifest_broken(co):
+    """Verify a manifest with problems stops adopt before anything moves."""
+    (co.worktree / "x.txt").write_text("x\n")
+    co.local.mkdir(parents=True)
+    (co.local / "entries.toml").write_text("paths = 3\n")
+
+    with pytest.raises(LocalMdError):
+        localmd.adopt(co, localmd.path_entry(co, "x.txt"), tracked=False)
+
+    assert not (co.worktree / "x.txt").is_symlink()
+    assert not (co.local / "x.txt").exists()
+
+
+def test_path_entry_blocked_by_symlinked_parent(co, tmp_path):
+    """Verify a symlinked folder above a path entry blocks it and is named."""
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (co.worktree / "notes").symlink_to(elsewhere)
+    item = localmd.path_entry(co, "notes/private.md")
+
+    assert localmd.blocked(co, item) is True
+    assert localmd.blocking_folder(co, item) == co.worktree / "notes"
+
+
+def test_candidates_never_offer_path_entries(co):
+    """Verify a listed path present only in the checkout is never offered."""
+    localmanifest.add(co.local, "x.txt")
+    (co.worktree / "x.txt").write_text("x\n")
+
+    assert localmd.candidates(co) == []
+
+
+def test_entry_falls_back_to_path_entry(co):
+    """Verify a plain path that is no kind name builds a path entry."""
+    item = localmd.entry(co, ".claude/t.toml")
+
+    assert item.kind == "path"
+    assert item.target == co.local / "claude" / "t.toml"
+    assert localmd.entry(co, "skills/x").kind == "skill"
+
+
+@pytest.mark.parametrize(
+    ("raw", "kind", "name"),
+    [
+        ("skills/x", "skill", "skills/x"),
+        (".claude/skills/x", "skill", "skills/x"),
+        ("./CLAUDE.local.md", "local-md", "CLAUDE.local.md"),
+        (".claude/agents/", "path", ".claude/agents"),
+        (".claude/t.toml", "path", ".claude/t.toml"),
+    ],
+)
+def test_resolve_adopt_routes(co, raw, kind, name):
+    """Verify a typed name or path resolves to the entry it means."""
+    item = localmd.resolve_adopt(co, raw, co.worktree)
+
+    assert (item.kind, item.name) == (kind, name)
+
+
+def test_resolve_adopt_from_subdirectory(co):
+    """Verify a relative path resolves against the shell's directory, not the top level."""
+    (co.worktree / ".claude").mkdir()
+
+    item = localmd.resolve_adopt(co, "t.toml", co.worktree / ".claude")
+
+    assert item.name == ".claude/t.toml"
+
+
+@pytest.mark.parametrize("raw", ["../outside", ".", ".claude/settings.local.json", ".git/config"])
+def test_resolve_adopt_refuses(co, raw):
+    """Verify a path outside the checkout, the checkout, settings, or git's folder is refused."""
+    with pytest.raises(LocalMdError):
+        localmd.resolve_adopt(co, raw, co.worktree)
+
+
+@pytest.mark.parametrize("raw", [".claude/agents/foo.md", "notes/../.claude/agents/x"])
+def test_resolve_adopt_refuses_path_inside_listed_path(co, raw):
+    """Verify a path inside a listed folder is refused, naming that folder."""
+    localmanifest.add(co.local, ".claude/agents")
+
+    with pytest.raises(LocalMdError, match=r"\.claude/agents"):
+        localmd.resolve_adopt(co, raw, co.worktree)
+
+
+def test_resolve_adopt_refuses_path_around_listed_path(co):
+    """Verify a folder holding a listed path is refused, naming the listed path."""
+    localmanifest.add(co.local, ".claude/agents/sub")
+
+    with pytest.raises(LocalMdError, match=r"\.claude/agents/sub"):
+        localmd.resolve_adopt(co, ".claude/agents", co.worktree)
+
+
+def test_resolve_adopt_refuses_case_variant_of_listed_path(co):
+    """Verify a path that differs from a listed one only in case is refused."""
+    localmanifest.add(co.local, "docs")
+
+    with pytest.raises(LocalMdError, match="only in case"):
+        localmd.resolve_adopt(co, "Docs", co.worktree)
+
+
+def test_resolve_adopt_names_overlap_inside_linked_folder(co):
+    """Verify a path inside an adopted, linked folder reports the overlap, not the vault."""
+    folder = co.worktree / ".claude" / "agents"
+    folder.mkdir(parents=True)
+    (folder / "reviewer.md").write_text("# reviewer\n")
+    localmd.adopt(co, localmd.path_entry(co, ".claude/agents"), tracked=False)
+
+    with pytest.raises(LocalMdError, match="overlaps"):
+        localmd.resolve_adopt(co, ".claude/agents/reviewer.md", co.worktree)
+
+
+def test_resolve_adopt_overlap_ignores_case(co):
+    """Verify a case variant of a path inside a listed folder is refused as an overlap."""
+    localmanifest.add(co.local, ".claude/agents")
+
+    with pytest.raises(LocalMdError, match="overlaps"):
+        localmd.resolve_adopt(co, ".Claude/Agents/x.md", co.worktree)
+
+
+def test_resolve_adopt_relative_cwd_reads_lexically(co, monkeypatch):
+    """Verify a relative base directory still reports an overlap inside a linked folder."""
+    folder = co.worktree / ".claude" / "agents"
+    folder.mkdir(parents=True)
+    (folder / "reviewer.md").write_text("# reviewer\n")
+    localmd.adopt(co, localmd.path_entry(co, ".claude/agents"), tracked=False)
+    monkeypatch.chdir(co.worktree)
+
+    with pytest.raises(LocalMdError, match="overlaps"):
+        localmd.resolve_adopt(co, ".claude/agents/reviewer.md", Path())
+
+
+def test_adopt_failed_listing_removes_created_folders(co, monkeypatch):
+    """Verify a listing failure after the copy leaves no copy and no empty folder behind."""
+    (co.worktree / "notes").mkdir()
+    (co.worktree / "notes" / "private.md").write_text("x\n")
+
+    def refuse(*_args: object) -> bool:
+        msg = "no"
+        raise localmanifest.ManifestError(msg)
+
+    monkeypatch.setattr(localmd.localmanifest, "add", refuse)
+
+    with pytest.raises(LocalMdError):
+        localmd.adopt(co, localmd.path_entry(co, "notes/private.md"), tracked=False)
+
+    assert not (co.local / "notes").exists()
+    assert (co.worktree / "notes" / "private.md").read_text() == "x\n"

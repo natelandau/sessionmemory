@@ -2,9 +2,11 @@
 
 An entry is one thing a person keeps out of the project's git history but wants in every
 checkout: `CLAUDE.local.md`, a skill folder under `.claude/skills/`, a rule under
-`.claude/rules/`, or `.claude/settings.local.json`. This is the one place the states of an
-entry are known. The vault holds each entry under the project's `local/` folder so it
-survives a lost machine and is shared by every checkout of a project.
+`.claude/rules/`, `.claude/settings.local.json`, or any other file or folder adopted by its
+path. An adopted path has no fixed depth, so `lib/localmanifest.py` lists each one. This
+is the one place the states of an entry are known. The vault holds each entry under the
+project's `local/` folder so it survives a lost machine and is shared by every checkout of
+a project.
 
 Every entry but the settings file is linked: each checkout holds a symlink to the vault
 copy. Claude Code refuses to write through a symlinked settings file, so that one is
@@ -36,13 +38,21 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from sessionmemory.lib import atomic, bootstrap, gitinfo, localtree, paths, settingsdiff
+from sessionmemory.lib import (
+    atomic,
+    bootstrap,
+    gitinfo,
+    localmanifest,
+    localtree,
+    paths,
+    settingsdiff,
+)
 
 if TYPE_CHECKING:
     import subprocess
     from collections.abc import Iterable
 
-Kind = Literal["local-md", "skill", "rule", "settings"]
+Kind = Literal["local-md", "skill", "rule", "path", "settings"]
 Mode = Literal["link", "copy"]
 SETTINGS_NAME = "settings.local.json"
 # Folders adopt refuses inside a skill or rule: installed dependencies, virtualenvs, and
@@ -50,7 +60,7 @@ SETTINGS_NAME = "settings.local.json"
 KEPT_OUT_FOLDERS = frozenset({"node_modules", ".venv", "venv", ".git"})
 LinkStatus = Literal["created", "present", "conflict", "tracked", "removed"]
 
-_KIND_ORDER: dict[Kind, int] = {"local-md": 0, "skill": 1, "rule": 2, "settings": 3}
+_KIND_ORDER: dict[Kind, int] = {"local-md": 0, "skill": 1, "rule": 2, "path": 3, "settings": 4}
 # Each folder kind's directory name, shared by the checkout's `.claude/` and the vault's
 # `claude/`, so a checkout path maps to a vault path by swapping one prefix.
 _KIND_DIRS: dict[Kind, str] = {"skill": "skills", "rule": "rules"}
@@ -59,6 +69,7 @@ SHAPES: dict[Kind, str] = {
     "local-md": "regular file",
     "skill": "folder",
     "rule": "file or a folder",
+    "path": "file or a folder",
     "settings": "regular file",
 }
 _CHECKOUT_CLAUDE = ".claude"
@@ -184,7 +195,7 @@ class Entry:
     @property
     def relpath(self) -> str:
         """The link path relative to the work tree's top level, as git names it."""
-        if self.kind == "local-md":
+        if self.kind in {"local-md", "path"}:
             return self.name
         return f"{_CHECKOUT_CLAUDE}/{self.name}"
 
@@ -216,8 +227,38 @@ def checkout(vault: Path, slug: str, cwd: Path) -> Checkout:
     )
 
 
+def path_entry(co: Checkout, relpath: str) -> Entry:
+    """Build the entry for a path adopted by name, without judging the path.
+
+    Args:
+        co (Checkout): The checkout the entry belongs to.
+        relpath (str): The path relative to the work tree's top level.
+
+    Returns:
+        Entry: The entry, linked at the path and kept at its mirror under `local/`.
+    """
+    return Entry(
+        kind="path",
+        name=relpath,
+        link=co.worktree / relpath,
+        target=co.local / localmanifest.vault_relpath(relpath),
+    )
+
+
+def manifest(co: Checkout) -> localmanifest.Manifest:
+    """Read the project's list of paths adopted by name.
+
+    Args:
+        co (Checkout): The checkout whose project's `local/` folder holds the list.
+
+    Returns:
+        localmanifest.Manifest: The usable paths and any problems in the file.
+    """
+    return localmanifest.read(co.local)
+
+
 def entry(co: Checkout, name: str) -> Entry:
-    """Build the entry a person names, as `CLAUDE.local.md`, `skills/<n>`, or `rules/<n>`.
+    """Build the entry a name means: `CLAUDE.local.md`, `skills/<n>`, `rules/<n>`, or a path.
 
     Args:
         co (Checkout): The checkout the entry belongs to.
@@ -241,17 +282,108 @@ def entry(co: Checkout, name: str) -> Entry:
     prefix, sep, child = name.partition("/")
     kind = next((k for k, folder in _KIND_DIRS.items() if folder == prefix), None)
     if kind is None or not sep or not child or "/" in child or child.startswith("."):
+        reason = None
+        if not localmanifest.is_kind_name(name):
+            reason = localmanifest.name_problem(name)
+            if reason is None:
+                return path_entry(co, name)
         msg = f"{name!r} is not an entry name"
-        raise LocalMdError(
-            msg,
-            [f"Use {paths.LOCAL_MD_FILE}, skills/<name>, or rules/<name>, with no leading dot."],
+        usage = (
+            f"Use {paths.LOCAL_MD_FILE}, skills/<name>, or rules/<name>, with no leading dot, "
+            "or a path inside the checkout."
         )
+        raise LocalMdError(msg, [usage, *([reason] if reason else [])])
     return Entry(
         kind=kind,
         name=name,
         link=co.worktree / _CHECKOUT_CLAUDE / prefix / child,
         target=co.local / _VAULT_CLAUDE / prefix / child,
     )
+
+
+def _lexical(path: Path) -> Path:
+    """Drop `.` segments and fold `..` into its parent without reading the file system."""
+    parts: list[str] = []
+    for part in path.parts:
+        if part == "..":
+            if len(parts) > 1:
+                parts.pop()
+        elif part != ".":
+            parts.append(part)
+    return Path(*parts)
+
+
+def _work_tree_path(co: Checkout, raw: str, cwd: Path) -> str:
+    """Turn a typed path into its path from the work tree's top level.
+
+    Raises:
+        LocalMdError: When the path is outside the checkout or is the checkout itself.
+    """
+    typed = Path(raw) if Path(raw).is_absolute() else cwd.resolve() / raw
+    resolved = _lexical(typed)
+    # Read lexically first, so a path inside a linked folder is judged where it was typed
+    # rather than in the vault. Resolving catches a checkout reached through a symlink.
+    if not resolved.is_relative_to(co.worktree):
+        resolved = typed.parent.resolve() / typed.name if typed.name else typed.resolve()
+        if resolved.name in {"", ".", ".."}:
+            resolved = resolved.resolve()
+    try:
+        relpath = resolved.relative_to(co.worktree).as_posix()
+    except ValueError:
+        msg = f"{raw} is outside the checkout at {co.worktree}"
+        raise LocalMdError(msg) from None
+    if relpath == ".":
+        msg = f"{raw} is the checkout itself"
+        raise LocalMdError(msg, ["Adopt a file or folder inside it."])
+    return relpath
+
+
+def resolve_adopt(co: Checkout, raw: str, cwd: Path) -> Entry:
+    """Turn what a person typed after `--adopt` into the entry it means.
+
+    A name `--adopt` already knows (`CLAUDE.local.md`, `skills/<n>`, `rules/<n>`) keeps its
+    meaning. Anything else is a path from `cwd`, and a path that lands on a known entry is
+    that entry, so it keeps its kind's warnings.
+
+    Args:
+        co (Checkout): The checkout to adopt into the vault from.
+        raw (str): The name or path as typed.
+        cwd (Path): The directory a relative path is read from.
+
+    Returns:
+        Entry: The entry to adopt.
+
+    Raises:
+        LocalMdError: When the path is outside the checkout, the checkout itself, the
+            settings file, a path adopt refuses, or overlaps a path already adopted.
+    """
+    if localmanifest.is_kind_name(raw):
+        return entry(co, raw)
+    relpath = _work_tree_path(co, raw, cwd)
+    if relpath == f"{_CHECKOUT_CLAUDE}/{SETTINGS_NAME}":
+        msg = f"{relpath} is kept by copy, not adopted"
+        raise LocalMdError(
+            msg, ["Answer the settings question, or pass --keep-settings checkout or vault."]
+        )
+    if relpath == paths.LOCAL_MD_FILE:
+        return entry(co, relpath)
+    head, _, rest = relpath.partition(f"{_CHECKOUT_CLAUDE}/")
+    if not head and localmanifest.is_kind_name(rest):
+        return entry(co, rest)
+    reason = localmanifest.name_problem(relpath)
+    if reason is not None:
+        msg = f"{relpath} cannot be adopted"
+        raise LocalMdError(msg, [reason])
+    listed = manifest(co).paths
+    other = localmanifest.same_but_case(relpath, listed)
+    if other is not None:
+        msg = f"{relpath} differs only in case from {other}, which is already adopted"
+        raise LocalMdError(msg, [f"Adopt it as {other}."])
+    other = localmanifest.outer_of(relpath, listed)
+    if other is not None:
+        msg = f"{relpath} overlaps {other}, which is already adopted"
+        raise LocalMdError(msg, ["An adopted path cannot hold or sit inside another."])
+    return path_entry(co, relpath)
 
 
 def _visible_children(folder: Path) -> list[str]:
@@ -282,13 +414,25 @@ def _names_in(base: Path, claude: str) -> dict[str, tuple[Kind, Path]]:
     return found
 
 
+def _listed(co: Checkout) -> list[Entry]:
+    """Build an entry for each path the manifest lists."""
+    return [path_entry(co, relpath) for relpath in manifest(co).paths]
+
+
 def _vault_names(co: Checkout, *, shaped: bool = True) -> set[str]:
     """Name the vault's entries of the right shape, or with `shaped` unset, the wrong one."""
-    return {
+    found = {
         name
         for name, (kind, path) in _names_in(co.local, _VAULT_CLAUDE).items()
         if _present(path, kind) is shaped
     }
+    found.update(
+        item.name
+        for item in _listed(co)
+        if (item.target.is_symlink() or item.target.exists())
+        and _present(item.target, item.kind) is shaped
+    )
+    return found
 
 
 def _checkout_names(co: Checkout) -> set[str]:
@@ -296,11 +440,17 @@ def _checkout_names(co: Checkout) -> set[str]:
 
     A plain file among the skills is not a skill, so it is never offered for adoption.
     """
-    return {
+    found = {
         name
         for name, (kind, path) in _names_in(co.worktree, _CHECKOUT_CLAUDE).items()
         if path.is_symlink() or _present(path, kind)
     }
+    found.update(
+        item.name
+        for item in _listed(co)
+        if item.link.is_symlink() or _present(item.link, item.kind)
+    )
+    return found
 
 
 def _sorted(entries: Iterable[Entry]) -> list[Entry]:
@@ -436,6 +586,34 @@ def _blocked_folders(co: Checkout, kind: Kind) -> bool:
     )
 
 
+def _blocked_ancestor(co: Checkout, item: Entry) -> Path | None:
+    """Return the first folder above a path entry that is a symlink or not a folder."""
+    current = co.worktree
+    for part in Path(item.relpath).parts[:-1]:
+        current /= part
+        if current.is_symlink() or (current.exists() and not current.is_dir()):
+            return current
+    return None
+
+
+def blocking_folder(co: Checkout, item: Entry) -> Path:
+    """Name the folder a blocked entry sits behind, for a message.
+
+    Args:
+        co (Checkout): The checkout holding the entry.
+        item (Entry): An entry `blocked` reported.
+
+    Returns:
+        Path: The kind's folder for a skill or rule, the first symlinked or non-folder
+            ancestor for a path, or `.claude` otherwise.
+    """
+    if item.kind == "path":
+        return _blocked_ancestor(co, item) or item.link.parent
+    if item.kind in _KIND_DIRS:
+        return _kind_folder(co, item.kind)
+    return co.worktree / _CHECKOUT_CLAUDE
+
+
 def blocked(co: Checkout, item: Entry) -> bool:
     """Report whether the entry sits behind a symlinked or non-folder `.claude/` path.
 
@@ -454,6 +632,8 @@ def blocked(co: Checkout, item: Entry) -> bool:
     if item.kind == "settings":
         claude = co.worktree / _CHECKOUT_CLAUDE
         return claude.is_symlink() or (claude.exists() and not claude.is_dir())
+    if item.kind == "path":
+        return _blocked_ancestor(co, item) is not None
     return _blocked_folders(co, item.kind)
 
 
@@ -635,7 +815,7 @@ class LinkResult:
 def _conflict_reason(co: Checkout, item: Entry, current: State) -> tuple[str, str]:
     """Name why the entry was not linked and the remedy that fits that cause."""
     if blocked(co, item):
-        folder = _kind_folder(co, item.kind)
+        folder = blocking_folder(co, item)
         return (
             f"{folder} or its parent is a symlink or not a folder, so {item.name} was not linked",
             "Replace it with a real folder, then run local sync.",
@@ -728,24 +908,25 @@ def _remove_dangling(co: Checkout) -> list[LinkResult]:
 
     A dangling link pointing anywhere else is the person's own and is left alone.
     """
-    removed: list[LinkResult] = []
+    candidates: list[Entry] = []
     for kind, folder in _KIND_DIRS.items():
         if _blocked_folders(co, kind):
             continue
-        for name in sorted(_visible_children(_kind_folder(co, kind))):
-            item = entry(co, f"{folder}/{name}")
-            if (
-                item.link.is_symlink()
-                and not item.link.exists()
-                and _points_into(item.link, co.local)
-            ):
-                try:
-                    item.link.unlink()
-                except OSError as err:
-                    reason = f"could not remove {item.link}, whose vault entry is gone: {err}"
-                    removed.append(LinkResult(item, "conflict", State.DANGLING, reason=reason))
-                    continue
-                removed.append(LinkResult(item, "removed", State.DANGLING))
+        candidates.extend(
+            entry(co, f"{folder}/{name}")
+            for name in sorted(_visible_children(_kind_folder(co, kind)))
+        )
+    candidates.extend(item for item in _listed(co) if not blocked(co, item))
+    removed: list[LinkResult] = []
+    for item in candidates:
+        if item.link.is_symlink() and not item.link.exists() and _points_into(item.link, co.local):
+            try:
+                item.link.unlink()
+            except OSError as err:
+                reason = f"could not remove {item.link}, whose vault entry is gone: {err}"
+                removed.append(LinkResult(item, "conflict", State.DANGLING, reason=reason))
+                continue
+            removed.append(LinkResult(item, "removed", State.DANGLING))
     return removed
 
 
@@ -873,7 +1054,12 @@ def candidates(co: Checkout, *, tracked: set[str] | None = None) -> list[Entry]:
         list[Entry]: Untracked entries whose state is unadopted, or diverged with
             matching contents, which adopt finishes by linking.
     """
-    pool = [item for item in entries(co) if not blocked(co, item) and _offerable(item)]
+    # A path entry is adopted only by name, so it is never offered.
+    pool = [
+        item
+        for item in entries(co)
+        if item.kind != "path" and not blocked(co, item) and _offerable(item)
+    ]
     if tracked is None:
         tracked = tracked_names(co, pool)
     return [item for item in pool if item.name not in tracked]
@@ -945,7 +1131,7 @@ def import_sources(item: Entry, root: Path) -> list[Path]:
     Returns:
         list[Path]: The files to scan, sorted.
     """
-    if item.kind == "skill":
+    if item.kind in {"skill", "path"}:
         return []
     if root.is_file():
         return [root] if item.kind == "local-md" or root.suffix == ".md" else []
@@ -1065,7 +1251,7 @@ def _refuse_adopt(co: Checkout, item: Entry, current: State, *, tracked: bool) -
             vault holds different content.
     """
     if blocked(co, item):
-        msg = f"{_kind_folder(co, item.kind)} or its parent is a symlink or not a folder"
+        msg = f"{blocking_folder(co, item)} or its parent is a symlink or not a folder"
         raise LocalMdError(msg, [f"{item.name} cannot be adopted through it."])
     if tracked:
         msg = f"{item.name} is tracked by git in {co.worktree}"
@@ -1088,6 +1274,52 @@ def _refuse_adopt(co: Checkout, item: Entry, current: State, *, tracked: bool) -
     if current is State.DIVERGED and not contents_match(item):
         msg = f"{item.link} and {item.target} differ"
         raise LocalMdError(msg, ["Keep one of them, delete the other, and run this again."])
+
+
+def _list(co: Checkout, item: Entry, *, created: bool = False) -> None:
+    """List a path entry in the manifest once its vault copy exists.
+
+    Raises:
+        LocalMdError: When the manifest cannot be updated. A vault copy this adopt
+            created is removed first, so nothing is left unlisted.
+    """
+    if item.kind != "path":
+        return
+    try:
+        localmanifest.add(co.local, item.name)
+    except (localmanifest.ManifestError, OSError) as err:
+        if created:
+            if item.target.is_dir() and not item.target.is_symlink():
+                shutil.rmtree(item.target, ignore_errors=True)
+            else:
+                item.target.unlink(missing_ok=True)
+            _remove_empty_parents(item.target.parent, co.local)
+        if isinstance(err, localmanifest.ManifestError):
+            raise LocalMdError(err.message, err.details) from err
+        msg = f"could not update {co.local / localmanifest.MANIFEST_NAME}: {err}"
+        raise LocalMdError(msg, [f"{item.link} was left untouched."]) from err
+
+
+def _remove_empty_parents(folder: Path, stop: Path) -> None:
+    """Remove `folder` and each parent below `stop` while it is empty."""
+    while folder != stop and folder.is_relative_to(stop):
+        try:
+            folder.rmdir()
+        except OSError:
+            return
+        folder = folder.parent
+
+
+def _check_manifest(co: Checkout, item: Entry) -> None:
+    """Refuse a path entry before anything moves when the manifest cannot take it."""
+    if item.kind != "path":
+        return
+    problems = manifest(co).problems
+    if problems:
+        msg = (
+            f"{co.local / localmanifest.MANIFEST_NAME} has problems, so {item.name} was not adopted"
+        )
+        raise LocalMdError(msg, [*problems, "Fix the file, then run this again."])
 
 
 def adopt(co: Checkout, item: Entry, *, tracked: bool) -> AdoptResult:
@@ -1119,9 +1351,11 @@ def adopt(co: Checkout, item: Entry, *, tracked: bool) -> AdoptResult:
         )
 
     if current is State.LINKED and not blocked(co, item):
+        _list(co, item)
         ensure_ignored(co, item)
         return result(imports=[], already=True)
     _refuse_adopt(co, item, current, tracked=tracked)
+    _check_manifest(co, item)
     folder = item.link.is_dir()
 
     created = current is State.UNADOPTED
@@ -1130,14 +1364,22 @@ def adopt(co: Checkout, item: Entry, *, tracked: bool) -> AdoptResult:
         if created:
             bootstrap.ensure_local_ignore(co.vault)
             _copy_folder(item)
+        _list(co, item, created=created)
         ensure_ignored(co, item)
-        _swap_folder(item, created=created)
+        try:
+            _swap_folder(item, created=created)
+        except LocalMdError:
+            # A failed swap may have removed the copy this adopt made; drop its line too.
+            if item.kind == "path" and not (item.target.is_symlink() or item.target.exists()):
+                localmanifest.discard(co.local, item.name)
+            raise
         return result(imports=imports)
 
     text = _file_text(item)
     if created:
         bootstrap.ensure_local_ignore(co.vault)
         _write_file(item)
+    _list(co, item, created=created)
     ensure_ignored(co, item)
     localtree.place_link(item.link, item.target)
     return result(imports=relative_imports(text) if text is not None else [])

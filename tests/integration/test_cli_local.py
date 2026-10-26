@@ -218,7 +218,7 @@ def test_adopt_by_name_continues_after_a_failure(workspace):
             "--adopt",
             "skills/missing",
             "--adopt",
-            "bogus",
+            "skills/.hidden",
             "--adopt",
             "skills/good",
         ],
@@ -226,7 +226,7 @@ def test_adopt_by_name_continues_after_a_failure(workspace):
 
     assert result.exit_code == 1
     assert "no skills/missing" in result.stderr
-    assert "'bogus' is not an entry name" in result.stderr
+    assert "'skills/.hidden' is not an entry name" in result.stderr
     assert result.stdout == f"{_local(vault) / 'claude' / 'skills' / 'good'}\n"
     assert (repo / ".claude" / "skills" / "good").is_symlink()
 
@@ -316,6 +316,7 @@ def test_link_json_lists_entries(workspace):
             },
         ],
         "pending": {"adopt": [], "settings": None},
+        "manifest_problems": [],
     }
     assert second.exit_code == 0
     assert [e["status"] for e in json.loads(second.stdout)["entries"]] == ["present", "present"]
@@ -481,7 +482,11 @@ def test_link_with_nothing_in_the_vault_exits_0(workspace):
     result = runner.invoke(app, ["local", "sync", "--json"])
 
     assert result.exit_code == 0
-    assert json.loads(result.stdout) == {"entries": [], "pending": {"adopt": [], "settings": None}}
+    assert json.loads(result.stdout) == {
+        "entries": [],
+        "pending": {"adopt": [], "settings": None},
+        "manifest_problems": [],
+    }
 
 
 def test_link_with_nothing_in_prose_prints_nothing_on_stdout(workspace):
@@ -1030,3 +1035,98 @@ def test_status_prose_gives_a_linked_settings_file_no_ignore_flag(workspace, tmp
 
     line = next(line for line in result.stdout.splitlines() if "settings.local.json" in line)
     assert line.split() == ["linked", "settings.local.json"]
+
+
+def test_sync_adopts_a_path_and_a_second_worktree_links_it(workspace):
+    """Verify an adopted path prints its vault copy and links into another worktree."""
+    vault, repo = workspace
+    (repo / ".claude").mkdir()
+    (repo / ".claude" / "t.toml").write_text("a = 1\n")
+
+    result = runner.invoke(app, ["local", "sync", "--adopt", ".claude/t.toml"])
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout == f"{_local(vault) / 'claude' / 't.toml'}\n"
+    other = repo.parent / "demo-wt"
+    _git("worktree", "add", "-q", str(other), cwd=repo)
+    result = runner.invoke(app, ["local", "sync", "--cwd", str(other)])
+    assert result.exit_code == 0, result.output
+    assert (other / ".claude" / "t.toml").read_text() == "a = 1\n"
+
+
+def test_sync_adopt_path_from_subdirectory(workspace, monkeypatch):
+    """Verify a relative path given from a subdirectory resolves against that directory."""
+    vault, repo = workspace
+    (repo / ".claude").mkdir()
+    (repo / ".claude" / "t.toml").write_text("a = 1\n")
+    monkeypatch.chdir(repo / ".claude")
+
+    result = runner.invoke(app, ["local", "sync", "--adopt", "t.toml"])
+
+    assert result.exit_code == 0, result.output
+    assert (repo / ".claude" / "t.toml").is_symlink()
+    assert (_local(vault) / "claude" / "t.toml").read_text() == "a = 1\n"
+
+
+def test_sync_adopt_tracked_path_is_refused(workspace):
+    """Verify a path git tracks is refused and left in place."""
+    _, repo = workspace
+    (repo / "x.txt").write_text("x\n")
+    _git("add", "x.txt", cwd=repo)
+
+    result = runner.invoke(app, ["local", "sync", "--adopt", "x.txt"])
+
+    assert result.exit_code == 1
+    assert "tracked" in result.stderr
+    assert not (repo / "x.txt").is_symlink()
+
+
+def test_status_lists_path_entries(workspace):
+    """Verify status reports an adopted path with kind path."""
+    _, repo = workspace
+    (repo / "x.txt").write_text("x\n")
+    runner.invoke(app, ["local", "sync", "--adopt", "x.txt"])
+
+    rows = json.loads(runner.invoke(app, ["local", "status", "--json"]).stdout)["entries"]
+
+    assert {"kind": "path", "name": "x.txt", "state": "linked"}.items() <= rows[0].items()
+
+
+def test_sync_with_broken_manifest_links_the_rest_and_exits_1(workspace):
+    """Verify a bad manifest line is reported while other entries still link."""
+    vault, repo = workspace
+    _vault_skill(vault, "a")
+    (_local(vault) / "entries.toml").write_text('paths = ["../x"]\n')
+
+    result = runner.invoke(app, ["local", "sync"])
+
+    assert result.exit_code == 1
+    assert "entries.toml" in result.stderr
+    assert (repo / ".claude" / "skills" / "a").is_symlink()
+
+
+def test_sync_adopt_reads_relative_path_from_shell_not_cwd_option(workspace, monkeypatch):
+    """Verify a relative --adopt path starts from the shell's directory even with --cwd."""
+    _, repo = workspace
+    (repo / ".claude").mkdir()
+    (repo / ".claude" / "t.toml").write_text("a = 1\n")
+    monkeypatch.chdir(repo / ".claude")
+
+    result = runner.invoke(app, ["local", "sync", "--adopt", "t.toml", "--cwd", str(repo)])
+
+    assert result.exit_code == 0, result.output
+    assert (repo / ".claude" / "t.toml").is_symlink()
+
+
+def test_sync_json_carries_manifest_problems(workspace):
+    """Verify --json names each manifest problem so the session start can relay it."""
+    vault, _ = workspace
+    _local(vault).mkdir(parents=True)
+    (_local(vault) / "entries.toml").write_text('paths = ["../x"]\n')
+
+    result = runner.invoke(app, ["local", "sync", "--json"])
+
+    assert result.exit_code == 1
+    problems = json.loads(result.stdout)["manifest_problems"]
+    assert len(problems) == 1
+    assert "../x" in problems[0]
