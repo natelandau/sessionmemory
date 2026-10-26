@@ -52,7 +52,7 @@ learn nothing. Fail-open: any error exits 0 rather than wedging session start.
 
 The hook's timeout budgets its worst case: `Store.for_cwd` 5s, `head_commit` 5s, two
 `VaultCLI.discover` handshakes 10s, the vault commit 45s (nine git calls at 5s),
-`VaultCLI.resolve` 5s, `VaultCLI.register` 5s, `VaultCLI.inject` 25s, `VaultCLI.link_local`
+`VaultCLI.resolve` 5s, `VaultCLI.register` 5s, `VaultCLI.inject` 25s, `VaultCLI.sync_local`
 5s, 105s in all; the timeout is 110 to stay ahead of that sum. Raising any of those numbers
 means raising it.
 
@@ -65,6 +65,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import shlex
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -104,7 +105,21 @@ LOCAL_LINKED_NOTE = (
     "session. Its content follows."
 )
 
-# The order the log clause counts `local link` statuses in, whatever order the CLI lists.
+LOCAL_PENDING_NOTE = (
+    "This checkout has local entries waiting on the person. Before other work, ask the "
+    "person whether to adopt each entry below into the vault, and which copy of "
+    "settings.local.json to keep. Adopt or overwrite nothing until they answer."
+)
+
+LOCAL_PENDING_COMMAND = (
+    "Then run `{command} local sync --adopt <name> --keep-settings checkout|vault "
+    "--cwd .` with their answers, repeating --adopt per entry and leaving out what they "
+    "declined. After the vault's settings copy is written into the checkout, tell the "
+    "person to start a new session before approving anything, since Claude Code read its "
+    "settings before this ran."
+)
+
+# The order the log clause counts `local sync` statuses in, whatever order the CLI lists.
 LOCAL_STATUSES = ("created", "present", "tracked", "removed", "conflict")
 
 
@@ -223,7 +238,7 @@ def _local_block(
     """
     if vault is None or not cfg.local_link:
         return []
-    payload = vault.link_local(cwd=cwd, env=os.environ)
+    payload = vault.sync_local(cwd=cwd, env=os.environ)
     if payload is not None and payload.get("status") == "refused":
         clauses.append("local refused")
         return []
@@ -237,7 +252,12 @@ def _local_block(
         for status in LOCAL_STATUSES
     }
     summary = ", ".join(f"{status} {n}" for status, n in counts.items() if n)
-    clauses.append(f"local {summary or 'none'}")
+    pending = payload.get("pending") if payload is not None else None
+    ask, waiting = _pending_block(
+        pending if isinstance(pending, dict) else {}, command=vault.command
+    )
+    clause = f"local {summary or 'none'}"
+    clauses.append(f"{clause}, pending {waiting}" if waiting else clause)
     for item in results:
         if item.get("status") == "conflict":
             log.info("local conflict: %s at %s", item.get("name"), item.get("link"))
@@ -253,7 +273,45 @@ def _local_block(
     ]
     if names:
         blocks.append(_linked_entries_note(names))
+    if ask:
+        blocks.append(ask)
     return blocks
+
+
+def _settings_lines(settings: dict[str, Any]) -> list[str]:
+    """Describe a pending settings difference: its state, each side's time, and the summary."""
+    lines = [f"- settings.local.json: {settings.get('state')}"]
+    for side in ("checkout", "vault"):
+        copy = settings.get(side)
+        mtime = copy.get("mtime") if isinstance(copy, dict) else None
+        lines.append(f"  - the {side}'s copy: {mtime or 'missing'}")
+    summary = settings.get("summary")
+    if isinstance(summary, list):
+        lines.extend(f"  - {line}" for line in summary if isinstance(line, str))
+    return lines
+
+
+def _pending_block(pending: dict[str, Any], *, command: str) -> tuple[str | None, int]:
+    """Build the block telling the agent to ask before adopting or overwriting anything.
+
+    Returns:
+        tuple[str | None, int]: The block, or None when nothing waits, and how many items
+            wait: one per entry to adopt, plus one for settings.
+    """
+    adopt = [name for name in pending.get("adopt") or [] if isinstance(name, str)]
+    settings = pending.get("settings") if isinstance(pending.get("settings"), dict) else None
+    waiting = len(adopt) + (1 if settings else 0)
+    if not waiting:
+        return None, 0
+    lines = [LOCAL_PENDING_NOTE, ""]
+    lines.extend(
+        f"- adopt {name}: only in this checkout, not in the vault yet (--adopt {shlex.quote(name)})"
+        for name in adopt
+    )
+    if settings:
+        lines.extend(_settings_lines(settings))
+    lines.extend(["", LOCAL_PENDING_COMMAND.format(command=command)])
+    return "\n".join(lines), waiting
 
 
 def _local_md_block(target: object, *, clauses: list[str], log: logging.Logger) -> list[str]:

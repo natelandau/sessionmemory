@@ -119,23 +119,45 @@ No vault is reachable, so this session has no memory and nothing it does will be
 
 The hook's timeout is 110 seconds, and it budgets its own worst case: resolving the
 project root 5s, reading the head commit 5s, two version handshakes 10s, the vault commit
-45s, one registration check 5s, one registration 5s, `sessionmemory local link` 5s, and
+45s, one registration check 5s, one registration 5s, `sessionmemory local sync` 5s, and
 `sessionmemory inject` 25s, which is 105 seconds in all. Injection reads no index and
 loads no model, so a first session never waits on the embedding model download.
 
-#### Linking local files
+#### Syncing local files
 
 After it registers the project and injects the memory block, the hook runs
-`sessionmemory local link --json` for the current directory. The command links each
+`sessionmemory local sync --json` for the current directory. The command links each
 `CLAUDE.local.md`, skill, and rule that the vault holds for the project and that the
 checkout does not have yet (see [Local files](concepts.md#local-files)). A new git
 worktree, a fresh clone, and a second machine therefore receive them without any action
 from you. The hook runs in any git work tree, whatever starts the session, so a `/clear`
 in a worktree that you created during a session links that worktree too.
 
-The hook never replaces a file or folder that holds content. A real `CLAUDE.local.md`,
-skill, or rule in the checkout stays where it is until you run `sessionmemory local adopt`.
-See [`sessionmemory local`](cli.md#sessionmemory-local) for the states and the commands.
+The hook never replaces a file or folder that holds content, and it never copies
+`settings.local.json`. A real `CLAUDE.local.md`, skill, or rule in the checkout stays where
+it is until you choose to adopt it. See [`sessionmemory local`](cli.md#sessionmemory-local)
+for the states and the commands.
+
+When an entry waits to be adopted, or the two copies of `settings.local.json` differ or
+exist on one side only, the hook adds a block that tells the agent to ask you before
+other work. The block lists each entry, the settings state, the modification time of each
+settings copy, and what each copy has that the other lacks:
+
+```
+This checkout has local entries waiting on the person. Before other work, ask the person whether to adopt each entry below into the vault, and which copy of settings.local.json to keep. Adopt or overwrite nothing until they answer.
+
+- adopt rules/tickets.md: only in this checkout, not in the vault yet (--adopt rules/tickets.md)
+- settings.local.json: differs
+  - the checkout's copy: 2026-10-26T17:09:47Z
+  - the vault's copy: 2026-10-26T17:09:23Z
+  - permissions.allow: 1 only in the checkout (Bash(just docs))
+  - enabledPlugins: only in the checkout
+
+Then run `sessionmemory local sync --adopt <name> --keep-settings checkout|vault --cwd .` with their answers, repeating --adopt per entry and leaving out what they declined. After the vault's settings copy is written into the checkout, tell the person to start a new session before approving anything, since Claude Code read its settings before this ran.
+```
+
+The agent adopts and copies nothing until you answer. Every session start asks again
+while the item waits.
 
 Claude Code reads its memory files and skills before `SessionStart` runs. A link that the
 hook creates therefore takes effect from the next session. To cover the session that made
@@ -162,7 +184,8 @@ skips it. A linked skill needs no approval.
 
 The hook writes one clause to the start's log line that counts each status, such as
 `local created 2, present 1, conflict 1`, and logs each conflict on its own line with the
-entry name and path. The other clauses are these:
+entry name and path. When anything waits on you, the clause ends with its count, such as
+`local present 3, pending 2`. The other clauses are these:
 
 | Clause              | Meaning                                                                                                                        |
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
@@ -172,7 +195,9 @@ entry name and path. The other clauses are these:
 | `local unreadable`  | The `CLAUDE.local.md` link was made, but the hook could not read the vault copy                                                |
 
 The hook links even when `inject.enabled` is false. Set `link = false` under `[local]` to
-stop it. The setting does not affect the `sessionmemory local` commands.
+stop it. That also stops the block that asks about waiting entries and settings. The
+setting does not affect the `sessionmemory local` commands. Update the plugin and the CLI
+together: the hook calls `local sync`, which an older CLI does not have.
 
 ### SessionEnd
 
@@ -347,7 +372,7 @@ put back to the content it had when the pass started, so edits you had not commi
 survive. The content the pass displaces is first copied into the quarantine directory,
 and the log note names the copy. A deleted file is restored the same way. A file that
 appeared during the pass and is not in the vault's git history stays in place, and the
-log note names it. The pass cannot be told apart from a `local adopt` in another session,
+log note names it. The pass cannot be told apart from a `local sync --adopt` in another session,
 and removing the file can delete the only copy of an entry. The secret scrub skips
 `local/`, so the restored bytes are exactly yours.
 

@@ -62,7 +62,7 @@ TIMEOUT = 25
 # alone should not risk doubling a session-start hook's total wait.
 RESOLVE_TIMEOUT = 5
 
-# `local link` reads the registry and runs a few git calls and loads no model, so like
+# `local sync` reads the registry, lists git's index once, and loads no model, so like
 # `project` it never needs the full budget.
 LINK_TIMEOUT = 5
 
@@ -373,18 +373,19 @@ class VaultCLI:
         slug = payload.get("slug")
         return slug if isinstance(slug, str) and slug else None
 
-    def link_local(self, *, cwd: Path, env: Mapping[str, str]) -> dict[str, Any] | None:
+    def sync_local(self, *, cwd: Path, env: Mapping[str, str]) -> dict[str, Any] | None:
         """Link every local entry the vault holds into this checkout; the payload, or None.
 
         The CLI owns every rule: which entries exist, where each link goes, what counts as
-        a conflict, and what it refuses. The payload is `{"entries": [...]}` with one
-        result per entry. Any conflict exits 1 and still prints the whole payload, which is
-        returned. A refusal exits 1 with nothing on stdout and reads as
-        `{"status": "refused"}`, so the hook can tell it from a CLI that could not run or
-        printed something without an `entries` list, which reads as None.
+        a conflict, what it refuses, and what waits on the person. The payload is
+        `{"entries": [...], "pending": {...}}` with one result per linked entry. Any
+        conflict exits 1 and still prints the whole payload, which is returned. A refusal
+        exits 1 with nothing on stdout and reads as `{"status": "refused"}`, so the hook
+        can tell it from a CLI that could not run or printed something without an
+        `entries` list, which reads as None.
         """
         proc = self.run(
-            ["local", "link", "--json", "--cwd", str(cwd)],
+            ["local", "sync", "--json", "--cwd", str(cwd)],
             cwd=cwd,
             env=env,
             timeout=LINK_TIMEOUT,

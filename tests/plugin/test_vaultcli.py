@@ -660,16 +660,16 @@ def _link_stub(stub_cli: Path, body: str) -> None:
 
 
 @pytest.mark.parametrize("code", [0, 1], ids=["ok", "conflict"])
-def test_link_local_returns_the_whole_entries_payload(marked_vault, stub_cli, tmp_path, code):
-    """Verify link_local() sends `local link --json --cwd` and returns every entry, on exit 1 too."""
+def test_sync_local_returns_the_whole_entries_payload(marked_vault, stub_cli, tmp_path, code):
+    """Verify sync_local() sends `local sync --json --cwd` and returns every entry, on exit 1 too."""
     _link_stub(stub_cli, f"print(json.dumps({_ENTRIES!r}))\nsys.exit({code})")
     cli = VaultCLI.discover(env=_env(**{ROOT_ENV: str(marked_vault)}), configured=None)
 
-    payload = cli.link_local(cwd=tmp_path, env=_env())
+    payload = cli.sync_local(cwd=tmp_path, env=_env())
 
     assert payload == _ENTRIES
     sent = (stub_cli.parent / "args.txt").read_text(encoding="utf-8").split()
-    assert sent[:2] == ["local", "link"]
+    assert sent[:2] == ["local", "sync"]
     assert "--json" in sent
     assert sent[sent.index("--cwd") + 1] == str(tmp_path)
 
@@ -683,31 +683,31 @@ def test_link_local_returns_the_whole_entries_payload(marked_vault, stub_cli, tm
         pytest.param("print('not json')\nsys.exit(1)", id="exit-1-not-json"),
     ],
 )
-def test_link_local_none_without_an_entries_list(marked_vault, stub_cli, tmp_path, body):
+def test_sync_local_none_without_an_entries_list(marked_vault, stub_cli, tmp_path, body):
     """Verify output lacking an `entries` list reads as unavailable, whatever the exit."""
     _link_stub(stub_cli, body)
     cli = VaultCLI.discover(env=_env(**{ROOT_ENV: str(marked_vault)}), configured=None)
 
-    assert cli.link_local(cwd=tmp_path, env=_env()) is None
+    assert cli.sync_local(cwd=tmp_path, env=_env()) is None
 
 
-def test_link_local_reads_a_bare_refusal_as_refused(marked_vault, stub_cli, tmp_path):
+def test_sync_local_reads_a_bare_refusal_as_refused(marked_vault, stub_cli, tmp_path):
     """Verify exit 1 with no payload, as a refusal gives, reads as refused."""
     _link_stub(stub_cli, "sys.stderr.write('tracked by git\\n')\nsys.exit(1)")
     cli = VaultCLI.discover(env=_env(**{ROOT_ENV: str(marked_vault)}), configured=None)
 
-    assert cli.link_local(cwd=tmp_path, env=_env()) == {"status": "refused"}
+    assert cli.sync_local(cwd=tmp_path, env=_env()) == {"status": "refused"}
 
 
-def test_link_local_none_when_misconfigured(marked_vault, stub_cli, tmp_path):
+def test_sync_local_none_when_misconfigured(marked_vault, stub_cli, tmp_path):
     """Verify an exit other than 0 or 1 reads as None, whatever it printed."""
     _link_stub(stub_cli, "print(json.dumps({'status': 'conflict'}))\nsys.exit(2)")
     cli = VaultCLI.discover(env=_env(**{ROOT_ENV: str(marked_vault)}), configured=None)
 
-    assert cli.link_local(cwd=tmp_path, env=_env()) is None
+    assert cli.sync_local(cwd=tmp_path, env=_env()) is None
 
 
-def test_link_local_none_on_a_timeout(marked_vault, stub_cli, tmp_path, mocker):
+def test_sync_local_none_on_a_timeout(marked_vault, stub_cli, tmp_path, mocker):
     """Verify a CLI that outruns its budget reads as None."""
     cli = VaultCLI.discover(env=_env(**{ROOT_ENV: str(marked_vault)}), configured=None)
     mocker.patch(
@@ -716,4 +716,4 @@ def test_link_local_none_on_a_timeout(marked_vault, stub_cli, tmp_path, mocker):
         side_effect=subprocess.TimeoutExpired(cmd="sessionmemory", timeout=5),
     )
 
-    assert cli.link_local(cwd=tmp_path, env=_env()) is None
+    assert cli.sync_local(cwd=tmp_path, env=_env()) is None

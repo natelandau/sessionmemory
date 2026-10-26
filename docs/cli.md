@@ -217,19 +217,20 @@ or folder exists yet. `sessionmemory project --json` prints every path at once.
 
 ## `sessionmemory local`
 
-Keep this project's private Claude Code files in the vault and link them into each
-checkout. These files hold personal instructions that must not reach the project's
-repository. Without this command each one exists in one clone only. In the vault it
-follows you to your other machines and to every git worktree of the project.
+Keep this project's private Claude Code files in the vault and sync them with each
+checkout. These files hold personal instructions and settings that must not reach the
+project's repository. Without this command each one exists in one clone only. In the vault
+it follows you to your other machines and to every git worktree of the project.
 
-The command manages three kinds of entry. The name in the first column is what you type
+The command manages four kinds of entry. The name in the first column is what you type
 and what every output shows:
 
-| Entry             | In the checkout          | In the vault, under `projects/<slug>/` |
-| ----------------- | ------------------------ | -------------------------------------- |
-| `CLAUDE.local.md` | `CLAUDE.local.md`        | `local/CLAUDE.local.md`                |
-| `skills/<name>`   | `.claude/skills/<name>/` | `local/claude/skills/<name>/`          |
-| `rules/<name>`    | `.claude/rules/<name>`   | `local/claude/rules/<name>`            |
+| Entry                 | In the checkout               | In the vault, under `projects/<slug>/` |
+| --------------------- | ----------------------------- | -------------------------------------- |
+| `CLAUDE.local.md`     | `CLAUDE.local.md`             | `local/CLAUDE.local.md`                |
+| `skills/<name>`       | `.claude/skills/<name>/`      | `local/claude/skills/<name>/`          |
+| `rules/<name>`        | `.claude/rules/<name>`        | `local/claude/rules/<name>`            |
+| `settings.local.json` | `.claude/settings.local.json` | `local/claude/settings.local.json`     |
 
 A skill is a folder. A rule is the file or the folder directly inside `.claude/rules/`,
 and a rules folder is linked as one entry. A name that starts with a dot is never an
@@ -243,31 +244,31 @@ repository's `info/exclude`, never through a committed `.gitignore`. A skill or 
 an anchored line, such as `/.claude/skills/deploy-check`, so a file with the same name
 deeper in the tree stays visible to git.
 
+`settings.local.json` is copied, not linked. Claude Code refuses to write through a
+symlinked settings file. With a link in its place, a permission you approve, a plugin
+installed at local scope, and every other local-scope change fails or is lost. Claude
+Code itself writes the file during sessions, so either copy can be the newer one. The
+command never copies it in either direction until you choose which copy to keep.
+
 Each sub-command resolves the project from `--cwd`, and refuses an unregistered directory
 and a directory outside git. An entry that git tracks belongs to the project. The
-sub-commands never offer it, adopt it, or link over it.
+sub-commands never offer it, adopt it, copy it, or link over it.
 
-`.claude/settings.local.json` is not an entry. Claude Code refuses to write through a
-symlinked settings file. With a link in its place, a permission you approve, a plugin
-installed at local scope, and every other local-scope change fails or is lost.
+| Sub-command | What it does                                                                  |
+| ----------- | ----------------------------------------------------------------------------- |
+| `sync`      | Link the vault's entries into this checkout, then adopt and copy as you chose |
+| `status`    | Report how each entry in this checkout relates to the vault                   |
 
-| Sub-command       | What it does                                                      |
-| ----------------- | ----------------------------------------------------------------- |
-| `adopt [NAME...]` | Move entries from this checkout into the vault and link them back |
-| `link`            | Link every entry the vault holds into this checkout               |
-| `status`          | Report how each entry in this checkout relates to the vault       |
+Both sub-commands take `--cwd`, the directory to resolve the project from, and `--json`.
 
-Every sub-command takes `--cwd`, the directory to resolve the project from. `link` and
-`status` also take `--json`.
-
-`adopt`, `link`, and `status` first look for a `CLAUDE.local.md` directly in the
-project's vault folder, outside `local/`. They move it into `local/`. If `local/` already
-holds an identical copy, they delete the outer one. If the two copies differ, nothing
-moves, and the command names both paths:
+`sync` and `status` first look for a `CLAUDE.local.md` directly in the project's vault
+folder, outside `local/`. They move it into `local/`. If `local/` already holds an
+identical copy, they delete the outer one. If the two copies differ, nothing moves, and
+the command names both paths:
 
 ```
 ! ~/repos/my-vault/projects/invoice-api/CLAUDE.local.md and ~/repos/my-vault/projects/invoice-api/local/CLAUDE.local.md differ, so CLAUDE.local.md was not moved into local/
-  └─ Keep one of them, delete the other, then run local link.
+  └─ Keep one of them, delete the other, then run local sync.
 ```
 
 ### `sessionmemory local status`
@@ -279,25 +280,25 @@ sessionmemory local status --cwd .
 ```
 
 ```
-unadopted     CLAUDE.local.md
-unadopted     skills/deploy-check
-unadopted     rules/style.md
+unadopted      CLAUDE.local.md
+unadopted      skills/deploy-check
+unadopted      rules/style.md
+checkout only  settings.local.json
 local: ~/repos/my-vault/projects/invoice-api/local
 ```
 
 Each line gives the state and the entry name. The last line is the project's `local/`
-folder in the vault. A worktree that holds a committed skill and an edited rule reports
-this:
+folder in the vault. A worktree whose settings differ from the vault copy reports this:
 
 ```
-linked        CLAUDE.local.md
-linked        skills/deploy-check
-unadopted     skills/release-notes  (tracked)
-diverged      rules/style.md  (contents different)
+linked         CLAUDE.local.md
+linked         skills/deploy-check
+linked         rules/style.md
+differs        settings.local.json
 local: ~/repos/my-vault/projects/invoice-api/local
 ```
 
-The state is one of six values:
+A linked entry is in one of six states:
 
 | State          | Meaning                                                               |
 | -------------- | --------------------------------------------------------------------- |
@@ -308,12 +309,28 @@ The state is one of six values:
 | `foreign link` | The checkout holds a link that resolves somewhere else                |
 | `dangling`     | The checkout holds a link to nothing                                  |
 
-A note in parentheses follows the name only when something needs attention. `tracked`
-means that git tracks the entry. `not ignored` means that git does not ignore a link.
-`contents identical` or `contents different` follows a `diverged` entry. An editor that
-saves by writing a temporary file and renaming it over the link also leaves a `diverged`
-state behind. A skill that is a symlink into another repository shows as `foreign link`
-and stays as it is.
+`settings.local.json` is in one of seven states. It is left out when neither side has a
+copy:
+
+| State           | Meaning                                                                 |
+| --------------- | ----------------------------------------------------------------------- |
+| `same`          | Both copies hold the same settings                                      |
+| `differs`       | Both copies exist and hold different settings                           |
+| `checkout only` | The checkout has a copy, and the vault has none                         |
+| `vault only`    | The vault has a copy, and the checkout has none                         |
+| `linked`        | The checkout holds a symlink, which Claude Code cannot write through    |
+| `tracked`       | Git tracks the checkout's copy                                          |
+| `blocked`       | `.claude/` is a symlink or not a folder, so nothing is read through it |
+
+Two settings copies are the same when they hold the same JSON, so a change of indent or
+key order is not a difference. A copy that is not valid JSON is compared byte for byte.
+
+A note in parentheses follows a linked entry's name only when something needs attention.
+`tracked` means that git tracks the entry. `not ignored` means that git does not ignore a
+link. `contents identical` or `contents different` follows a `diverged` entry. An editor
+that saves by writing a temporary file and renaming it over the link also leaves a
+`diverged` state behind. A skill that is a symlink into another repository shows as
+`foreign link` and stays as it is.
 
 `--json` prints the `local` folder and one object per entry:
 
@@ -355,51 +372,208 @@ and stays as it is.
 }
 ```
 
-`kind` is `local-md`, `skill`, or `rule`. `ignored` is `null` when `.claude/` or its
+`kind` is `local-md`, `skill`, `rule`, or `settings`. The settings row has its copy state
+in `state` and `match` set to `null`. `ignored` is `null` when `.claude/` or its
 `skills/` or `rules/` folder is a symlink or not a folder, since git cannot answer for a
 path behind it. `match` is `true` or `false` when both sides are real files or both are
 real folders, and `null` otherwise. Two folders match when they hold the same files with
 the same bytes.
 
-### `sessionmemory local adopt`
+### `sessionmemory local sync`
 
-Move entries from this checkout into the vault and replace each one with a link.
+Link every entry that the vault holds into this checkout, then adopt entries into the
+vault and keep a settings copy as you choose.
 
 ```bash
-sessionmemory local adopt CLAUDE.local.md skills/deploy-check rules/style.md --cwd .
+sessionmemory local sync --cwd .
+```
+
+| Option                           | What it does                                                                       |
+| -------------------------------- | ---------------------------------------------------------------------------------- |
+| `--adopt NAME`                   | Move the entry from this checkout into the vault and link it back. Repeatable      |
+| `--keep-settings checkout\|vault` | Write that copy of `settings.local.json` over the other one                        |
+| `--json`                         | Emit JSON instead of prose                                                         |
+| `--cwd DIR`                      | Directory to resolve the project from                                              |
+
+Every run does the linking that can never lose content. It creates a missing link,
+replaces a link to nothing, and deletes a link whose vault entry is gone. Nothing that
+moves or overwrites your files happens without your choice: adopting an entry needs
+`--adopt`, and copying settings needs `--keep-settings`.
+
+On a terminal with no options, the command links, then shows a checklist with one row per
+entry it can adopt and one row per settings copy you can keep. Tick the rows with the
+space bar, then press Enter. A summary of the settings difference prints above the list.
+If you tick both settings rows, the command keeps neither, says so, and exits 1. An empty
+selection does only the linking.
+
+Off a terminal with no options, the command never prompts. It links, then names each
+pending item and the command that resolves it, and exits 0:
+
+```
+! not in the vault yet: CLAUDE.local.md, skills/deploy-check, rules/style.md
+  └─ Adopt them with: sessionmemory local sync --adopt CLAUDE.local.md --adopt skills/deploy-check --adopt rules/style.md --cwd .
+! settings.local.json: checkout only
+  └─ Keep the checkout's copy with: sessionmemory local sync --keep-settings checkout --cwd .
+```
+
+When the settings differ, the warning lists what each copy has that the other lacks:
+
+```
+! settings.local.json: differs
+  ├─ permissions.allow: 1 only in the checkout (Bash(just docs))
+  ├─ enabledPlugins: only in the checkout
+  ├─ Keep the checkout's copy with: sessionmemory local sync --keep-settings checkout --cwd .
+  └─ Keep the vault's copy with: sessionmemory local sync --keep-settings vault --cwd .
+```
+
+Lists such as `permissions.allow` compare item by item, in any order. The modification
+time of each copy is in the JSON output and in the checklist. It is a hint, not a rule:
+a vault copy that arrived through `git pull` carries the time of the pull.
+
+The command prints each path it wrote on stdout and nothing else. Adopting all three
+entries and keeping the checkout's settings prints this:
+
+```bash
+sessionmemory local sync --adopt CLAUDE.local.md --adopt skills/deploy-check --adopt rules/style.md --keep-settings checkout --cwd .
 ```
 
 ```
-! @./sandbox-notes.md in CLAUDE.local.md resolves from the vault copy's folder and will not load
+! Claude Code asks once per checkout to allow a linked rule as an external import
+! the hooks commit the vault copy to the vault's git remote
 ~/repos/my-vault/projects/invoice-api/local/CLAUDE.local.md
 ~/repos/my-vault/projects/invoice-api/local/claude/skills/deploy-check
 ~/repos/my-vault/projects/invoice-api/local/claude/rules/style.md
-! the hooks commit the vault copy to the vault's git remote
-! Claude Code asks once per checkout to allow a linked rule as an external import
+~/repos/my-vault/projects/invoice-api/local/claude/settings.local.json
 ```
 
-The command prints each vault path on stdout and nothing else. The warnings go to stderr.
-
-With names, the command adopts those entries in the order given. With no names on a
-terminal, it shows a checklist with one row per entry that it can adopt. Tick the entries
-with the space bar, then press Enter. An empty selection does nothing and exits 0. The
-list holds each untracked entry that is `unadopted`, and each one that is `diverged` with
-identical contents, which `adopt` finishes by linking.
-
-With no names off a terminal, the command never prompts. It names the entries that wait
-and the command that adopts them, then exits 1:
+In a second worktree, the same command links the entries and asks about the settings:
 
 ```
-✗ not in the vault yet: CLAUDE.local.md, skills/deploy-check, rules/style.md
-  └─ Adopt them with: sessionmemory local adopt CLAUDE.local.md skills/deploy-check rules/style.md --cwd .
+~/repos/invoice-api-pdf/CLAUDE.local.md
+~/repos/invoice-api-pdf/.claude/skills/deploy-check
+~/repos/invoice-api-pdf/.claude/rules/style.md
+! settings.local.json: vault only
+  └─ Keep the vault's copy with: sessionmemory local sync --keep-settings vault --cwd .
 ```
 
-When no entry waits, the command says so and exits 0:
+`--keep-settings vault` writes the vault copy into `.claude/settings.local.json`, creates
+`.claude/` when it is missing, and adds the file to `info/exclude`. Claude Code read its
+settings before the command ran. Start a new session before you approve anything, or
+Claude Code can write its old copy back:
 
 ```
-nothing in this checkout is waiting to be adopted
+! Claude Code read its settings before this ran; start a new session before approving anything so it does not write the old copy back
+~/repos/invoice-api-pdf/.claude/settings.local.json
 ```
 
+`--keep-settings` refuses a settings file that git tracks, one behind a symlinked
+`.claude/`, a checkout copy that is a symlink, and a side that has no copy. When both
+copies are the same, it does nothing.
+
+With `--json`, the command prints one object per vault entry it linked, and the pending
+work:
+
+```json
+{
+  "entries": [
+    {
+      "kind": "local-md",
+      "name": "CLAUDE.local.md",
+      "status": "present",
+      "link": "~/repos/invoice-api-pdf/CLAUDE.local.md",
+      "target": "~/repos/my-vault/projects/invoice-api/local/CLAUDE.local.md",
+      "reason": null,
+      "remedy": null
+    }
+  ],
+  "pending": {
+    "adopt": [],
+    "settings": {
+      "state": "vault only",
+      "checkout": {
+        "path": "~/repos/invoice-api-pdf/.claude/settings.local.json",
+        "mtime": null
+      },
+      "vault": {
+        "path": "~/repos/my-vault/projects/invoice-api/local/claude/settings.local.json",
+        "mtime": "2026-10-26T17:09:23Z"
+      },
+      "summary": []
+    }
+  }
+}
+```
+
+`pending.adopt` names each entry that the command can adopt: an untracked entry that is
+`unadopted`, or `diverged` with identical contents. `pending.settings` is `null` unless
+the settings state is `differs`, `checkout only`, or `vault only`. `reason` and `remedy`
+are set for a `conflict`. An `adopted` list follows when `--adopt` ran, with the `name`
+and vault `target` of each entry adopted. A `settings` object follows when
+`--keep-settings` ran, with `kept` and the `path` that holds the kept copy. When both
+copies were already the same, nothing is written and `path` names the existing copy.
+
+When nothing is linked or pending, the command says so on stderr and exits 0:
+
+```
+nothing to sync for this project
+```
+
+Each vault entry gets one link status:
+
+| Status     | Meaning                                                                                                          |
+| ---------- | ---------------------------------------------------------------------------------------------------------------- |
+| `created`  | The checkout had nothing there, or a link to nothing. The command made the link                                  |
+| `present`  | The checkout already holds a link to the vault copy                                                              |
+| `tracked`  | Git tracks the checkout path. Nothing changed, and the vault copy stays in the vault                             |
+| `conflict` | Something is in the way, or the vault entry has the wrong shape. Nothing changed                                 |
+| `removed`  | A link in `.claude/skills/` or `.claude/rules/` pointed at a `local/` entry that is gone. The command deleted it |
+
+`sync` never replaces a file or folder that holds content, and it never deletes a link to
+nothing that points outside `local/`. Each conflict gets a warning on stderr that names
+the cause and the remedy for that cause. Each tracked entry also gets a warning:
+
+```
+! ~/repos/my-vault/projects/invoice-api/CLAUDE.local.md and ~/repos/my-vault/projects/invoice-api/local/CLAUDE.local.md differ, so CLAUDE.local.md was not moved into local/
+  └─ Keep one of them, delete the other, then run local sync.
+! the vault copy at ~/repos/my-vault/projects/invoice-api/local/claude/skills/notes.md is not a folder
+  └─ Fix or remove it in the vault, then run local sync.
+! ~/repos/invoice-api/.claude/skills/release-notes is tracked by git; the vault copy stays in the vault
+! ~/repos/invoice-api/.claude/rules/style.md differs from the vault copy at ~/repos/my-vault/projects/invoice-api/local/claude/rules/style.md
+  └─ Copy the newer one over the vault copy, delete the checkout copy, and run local sync.
+```
+
+These are the causes of a conflict, and the remedy that the warning gives for each:
+
+| Cause                                                                       | Remedy                                                                             |
+| --------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| The old-path copy and the `local/` copy differ                              | Keep one of them, delete the other, run `local sync`                               |
+| The vault entry is not of its kind's shape, such as a file among the skills | Fix or remove it in the vault, run `local sync`                                    |
+| A checkout copy differs from the vault copy                                 | Copy the newer one over the vault copy, delete the checkout copy, run `local sync` |
+| A checkout copy is identical to the vault copy                              | Run `local sync --adopt NAME`, which replaces it with the link                     |
+| The checkout holds a link to somewhere else                                 | Remove it and run `local sync`, or compare with `local status`                     |
+| `.claude/` or its `skills/` or `rules/` folder is a symlink or a file       | Replace it with a real folder, run `local sync`                                    |
+
+A removed link is reported the same way:
+
+```
+! removed ~/repos/invoice-api/.claude/rules/review.md, whose vault entry is gone
+```
+
+The command exits 1 when any linked entry is a `conflict`, or when an `--adopt` or a
+`--keep-settings` failed. `--json` still prints the whole payload. One conflict never
+stops the other entries. A conflict for an entry that the same run then adopts is not
+reported.
+
+To resolve a `diverged` entry, copy the newer content over the vault copy, delete the
+checkout copy, and run `local sync`. Deleting the vault copy instead leaves `sync` with
+nothing to link. The plugin runs `local sync --json` at every session start (see
+[SessionStart](plugin.md#sessionstart)). On `created` and on `present`, `sync` also adds
+the `info/exclude` line when git does not ignore the link, so a fresh clone is covered
+and a lost line comes back.
+
+#### Adopting an entry
+
+`--adopt` moves an entry from this checkout into the vault and replaces it with a link.
 The command does these steps for each entry, in order:
 
 1. If the entry is already a link to the vault copy, it adds the `info/exclude` line when
@@ -415,7 +589,7 @@ The command does these steps for each entry, in order:
    vault holds no copy, it writes the copy and compares it with the original. A folder is
    compared file by file, and the copy keeps the executable bit. On a mismatch it removes
    the copy and leaves the original untouched. If a vault copy appears while the command
-   runs, such as from a second `adopt`, the command refuses the entry and keeps both
+   runs, such as from a second `sync --adopt`, the command refuses the entry and keeps both
    copies. An identical vault copy skips this step.
 5. It adds the entry to the repository's `info/exclude` when git does not already ignore
    it. It never edits a committed `.gitignore`.
@@ -437,7 +611,7 @@ them. Git records a nested repository as a reference to it, not as its files. De
 move the folder, adopt the entry, then install the packages again in the linked folder.
 
 Claude Code resolves a relative `@` import in a linked file from the vault folder, where
-the imported file does not exist. `adopt` warns once for each relative import that it
+the imported file does not exist. `--adopt` warns once for each relative import that it
 finds in `CLAUDE.local.md` or in a `.md` file of a rule, and still adopts the entry. For
 a rules folder, it scans each `.md` file in the folder. Write the imported content into
 the file itself, or remove the import. Skills and other files are not scanned.
@@ -447,109 +621,6 @@ a checkout shows the dialog "Allow external CLAUDE.md file imports?" with the ru
 path. Claude Code records the approval for that checkout path on that machine. Until you
 approve it, the rule does not load, and a headless session skips it without a prompt. A
 linked skill loads with no approval.
-
-### `sessionmemory local link`
-
-Link every entry that the vault holds into this checkout, such as on a new machine or in a
-new worktree.
-
-```bash
-sessionmemory local link --cwd .
-```
-
-```
-~/repos/invoice-api-pdf/CLAUDE.local.md
-~/repos/invoice-api-pdf/.claude/skills/deploy-check
-~/repos/invoice-api-pdf/.claude/rules/style.md
-```
-
-The command prints the path of each link that it made. It creates `.claude/skills/` and
-`.claude/rules/` when they are missing, and it never prompts. With `--json` it prints one
-object per vault entry:
-
-```json
-{
-  "entries": [
-    {
-      "kind": "local-md",
-      "name": "CLAUDE.local.md",
-      "status": "present",
-      "link": "~/repos/invoice-api-pdf/CLAUDE.local.md",
-      "target": "~/repos/my-vault/projects/invoice-api/local/CLAUDE.local.md"
-    },
-    {
-      "kind": "skill",
-      "name": "skills/deploy-check",
-      "status": "present",
-      "link": "~/repos/invoice-api-pdf/.claude/skills/deploy-check",
-      "target": "~/repos/my-vault/projects/invoice-api/local/claude/skills/deploy-check"
-    },
-    {
-      "kind": "rule",
-      "name": "rules/style.md",
-      "status": "present",
-      "link": "~/repos/invoice-api-pdf/.claude/rules/style.md",
-      "target": "~/repos/my-vault/projects/invoice-api/local/claude/rules/style.md"
-    }
-  ]
-}
-```
-
-An empty `entries` list means that the vault holds nothing for the project. Without
-`--json`, the command says so on stderr and exits 0:
-
-```
-the vault holds nothing local for this project
-```
-
-| Status     | Meaning                                                                                                          |
-| ---------- | ---------------------------------------------------------------------------------------------------------------- |
-| `created`  | The checkout had nothing there, or a link to nothing. The command made the link                                  |
-| `present`  | The checkout already holds a link to the vault copy                                                              |
-| `tracked`  | Git tracks the checkout path. Nothing changed, and the vault copy stays in the vault                             |
-| `conflict` | Something is in the way, or the vault entry has the wrong shape. Nothing changed                                 |
-| `removed`  | A link in `.claude/skills/` or `.claude/rules/` pointed at a `local/` entry that is gone. The command deleted it |
-
-`link` never replaces a file or folder that holds content, and it never deletes a link to
-nothing that points outside `local/`. Each conflict gets a warning on stderr that names
-the cause and the remedy for that cause. Each tracked entry also gets a warning:
-
-```
-! ~/repos/my-vault/projects/invoice-api/CLAUDE.local.md and ~/repos/my-vault/projects/invoice-api/local/CLAUDE.local.md differ, so CLAUDE.local.md was not moved into local/
-  └─ Keep one of them, delete the other, then run local link.
-! the vault copy at ~/repos/my-vault/projects/invoice-api/local/claude/skills/notes.md is not a folder
-  └─ Fix or remove it in the vault, then run local link.
-! ~/repos/invoice-api/.claude/skills/release-notes is tracked by git; the vault copy stays in the vault
-! ~/repos/invoice-api/.claude/rules/style.md differs from the vault copy at ~/repos/my-vault/projects/invoice-api/local/claude/rules/style.md
-  └─ Copy the newer one over the vault copy, delete the checkout copy, and run local link.
-```
-
-These are the causes of a conflict, and the remedy that the warning gives for each:
-
-| Cause                                                                       | Remedy                                                                             |
-| --------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| The old-path copy and the `local/` copy differ                              | Keep one of them, delete the other, run `local link`                               |
-| The vault entry is not of its kind's shape, such as a file among the skills | Fix or remove it in the vault, run `local link`                                    |
-| A checkout copy differs from the vault copy                                 | Copy the newer one over the vault copy, delete the checkout copy, run `local link` |
-| A checkout copy is identical to the vault copy                              | Run `local adopt NAME`, which replaces it with the link                            |
-| The checkout holds a link to somewhere else                                 | Remove it and run `local link`, or compare with `local status`                     |
-| `.claude/` or its `skills/` or `rules/` folder is a symlink or a file       | Replace it with a real folder, run `local link`                                    |
-
-A removed link is reported the same way:
-
-```
-! removed ~/repos/invoice-api/.claude/rules/review.md, whose vault entry is gone
-```
-
-The command exits 1 when any entry is a `conflict`, and `--json` still prints the whole
-payload. One conflict never stops the other entries.
-
-To resolve a `diverged` entry, copy the newer content over the vault copy, delete the
-checkout copy, and run `local link`. Deleting the vault copy instead leaves `link` with
-nothing to link. The plugin runs `local link --json` at every session start (see
-[SessionStart](plugin.md#sessionstart)). On `created` and on `present`, `link` also adds
-the `info/exclude` line when git does not ignore the link, so a fresh clone is covered
-and a lost line comes back.
 
 ## `sessionmemory new learning`
 
@@ -1164,23 +1235,14 @@ than 30 days ago, gets one more line under its titles:
   Learnings last reviewed: never. At a natural stopping point, suggest /sessionmemory:review to the user.
 ```
 
-`--json` emits the same content as ten keys: `guidance`, `project`, `titles`,
-`open_backlog`, `specs`, `reference`, `runbooks`, `reviewed`, `review_due`, and
-`unadopted_local`.
+`--json` emits the same content as nine keys: `guidance`, `project`, `titles`,
+`open_backlog`, `specs`, `reference`, `runbooks`, `reviewed`, and `review_due`.
 `open_backlog` and `specs` are counts, `reference` and `runbooks` are lists of filenames,
 `reviewed` is the date of the last review or an empty string when never reviewed, and
 `review_due` says whether the review line above is shown.
 
-`unadopted_local` lists the name of each untracked entry in this checkout that is
-`unadopted` (see [`sessionmemory local status`](#sessionmemory-local-status)). When the
-list is not empty, the block ends with one more line that names the entries:
-
-```
-  Not in the vault yet: CLAUDE.local.md, skills/deploy-check, rules/style.md; `sessionmemory local adopt CLAUDE.local.md skills/deploy-check rules/style.md --cwd .` moves them there
-```
-
-A `diverged` entry is left out, since the block never reads file content. `local status`
-and `doctor` report it.
+Local entries waiting in the checkout are not part of this block. The plugin's session
+start reports them from `local sync` (see [SessionStart](plugin.md#sessionstart)).
 
 ## `sessionmemory reconcile`
 

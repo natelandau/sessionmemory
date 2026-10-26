@@ -80,7 +80,7 @@ def test_adopt_prints_only_the_vault_path(workspace):
     vault, repo = workspace
     (repo / "CLAUDE.local.md").write_text("notes\n")
 
-    result = runner.invoke(app, ["local", "adopt", "CLAUDE.local.md"])
+    result = runner.invoke(app, ["local", "sync", "--adopt", "CLAUDE.local.md"])
 
     assert result.exit_code == 0
     assert result.stdout == f"{vault}/projects/demo/local/CLAUDE.local.md\n"
@@ -92,7 +92,7 @@ def test_adopt_warns_on_relative_import(workspace):
     _, repo = workspace
     (repo / "CLAUDE.local.md").write_text("see @./sibling.md\n")
 
-    result = runner.invoke(app, ["local", "adopt", "CLAUDE.local.md"])
+    result = runner.invoke(app, ["local", "sync", "--adopt", "CLAUDE.local.md"])
 
     assert result.exit_code == 0
     assert "@./sibling.md" in result.stderr
@@ -103,9 +103,9 @@ def test_adopt_when_already_linked_prints_the_path(workspace):
     """Verify a second adopt prints the vault path and exits 0."""
     vault, repo = workspace
     (repo / "CLAUDE.local.md").write_text("notes\n")
-    runner.invoke(app, ["local", "adopt", "CLAUDE.local.md"])
+    runner.invoke(app, ["local", "sync", "--adopt", "CLAUDE.local.md"])
 
-    result = runner.invoke(app, ["local", "adopt", "CLAUDE.local.md"])
+    result = runner.invoke(app, ["local", "sync", "--adopt", "CLAUDE.local.md"])
 
     assert result.exit_code == 0
     assert result.stdout == f"{vault}/projects/demo/local/CLAUDE.local.md\n"
@@ -113,7 +113,7 @@ def test_adopt_when_already_linked_prints_the_path(workspace):
 
 def test_adopt_without_a_file_is_refused(workspace):
     """Verify adopt exits 1 when the named entry is not in the checkout."""
-    result = runner.invoke(app, ["local", "adopt", "CLAUDE.local.md"])
+    result = runner.invoke(app, ["local", "sync", "--adopt", "CLAUDE.local.md"])
 
     assert result.exit_code == 1
     assert "no CLAUDE.local.md" in result.stderr
@@ -124,7 +124,7 @@ def test_adopt_with_no_candidates_exits_0(workspace, monkeypatch):
     monkeypatch.setattr(local_commands, "_interactive", lambda: True)
     monkeypatch.setattr(local_commands.ask, "choose_multiple_from_list", _fail_prompt)
 
-    result = runner.invoke(app, ["local", "adopt"])
+    result = runner.invoke(app, ["local", "sync"])
 
     assert result.exit_code == 0
     assert "nothing" in result.stdout
@@ -141,15 +141,16 @@ def test_adopt_checklist_adopts_selected(workspace, monkeypatch):
     def choose(choices: list[tuple[str, object]], message: str) -> list[object]:
         offered.append([title for title, _ in choices])
         assert message
-        return [value for title, value in choices if title in {"CLAUDE.local.md", "skills/b"}]
+        wanted = {"adopt CLAUDE.local.md", "adopt skills/b"}
+        return [value for title, value in choices if title in wanted]
 
     monkeypatch.setattr(local_commands, "_interactive", lambda: True)
     monkeypatch.setattr(local_commands.ask, "choose_multiple_from_list", choose)
 
-    result = runner.invoke(app, ["local", "adopt"])
+    result = runner.invoke(app, ["local", "sync"])
 
     assert result.exit_code == 0
-    assert offered == [["CLAUDE.local.md", "skills/a", "skills/b"]]
+    assert offered == [["adopt CLAUDE.local.md", "adopt skills/a", "adopt skills/b"]]
     assert result.stdout.splitlines() == [
         str(_local(vault) / "CLAUDE.local.md"),
         str(_local(vault) / "claude" / "skills" / "b"),
@@ -166,26 +167,28 @@ def test_adopt_checklist_empty_selection_exits_0(workspace, monkeypatch):
     monkeypatch.setattr(local_commands, "_interactive", lambda: True)
     monkeypatch.setattr(local_commands.ask, "choose_multiple_from_list", lambda *_a, **_k: None)
 
-    result = runner.invoke(app, ["local", "adopt"])
+    result = runner.invoke(app, ["local", "sync"])
 
     assert result.exit_code == 0
     assert result.stdout == ""
     assert not (repo / "CLAUDE.local.md").is_symlink()
 
 
-def test_adopt_off_terminal_lists_candidates_and_exits_1(workspace, monkeypatch):
-    """Verify a bare adopt off a terminal never prompts and names the command to run."""
+def test_sync_off_terminal_lists_candidates_and_exits_0(workspace, monkeypatch):
+    """Verify a bare sync off a terminal never prompts and names the command to run."""
     _, repo = workspace
     _checkout_skill(repo, "a")
     _checkout_rule(repo, "style.md")
     monkeypatch.setattr(local_commands.ask, "choose_multiple_from_list", _fail_prompt)
 
-    result = runner.invoke(app, ["local", "adopt"])
+    result = runner.invoke(app, ["local", "sync"])
 
-    assert result.exit_code == 1
+    assert result.exit_code == 0
     assert result.stdout == ""
     assert "skills/a" in result.stderr
-    assert "sessionmemory local adopt skills/a rules/style.md --cwd ." in result.stderr
+    assert (
+        "sessionmemory local sync --adopt skills/a --adopt rules/style.md --cwd ." in result.stderr
+    )
     assert not (repo / ".claude" / "skills" / "a").is_symlink()
 
 
@@ -194,7 +197,19 @@ def test_adopt_by_name_continues_after_a_failure(workspace):
     vault, repo = workspace
     _checkout_skill(repo, "good")
 
-    result = runner.invoke(app, ["local", "adopt", "skills/missing", "bogus", "skills/good"])
+    result = runner.invoke(
+        app,
+        [
+            "local",
+            "sync",
+            "--adopt",
+            "skills/missing",
+            "--adopt",
+            "bogus",
+            "--adopt",
+            "skills/good",
+        ],
+    )
 
     assert result.exit_code == 1
     assert "no skills/missing" in result.stderr
@@ -208,7 +223,7 @@ def test_adopt_rule_prints_approval_note(workspace):
     vault, repo = workspace
     _checkout_rule(repo, "style.md")
 
-    result = runner.invoke(app, ["local", "adopt", "rules/style.md"])
+    result = runner.invoke(app, ["local", "sync", "--adopt", "rules/style.md"])
 
     assert result.exit_code == 0
     assert result.stdout == f"{_local(vault) / 'claude' / 'rules' / 'style.md'}\n"
@@ -220,7 +235,7 @@ def test_adopt_skill_prints_no_approval_note(workspace):
     _, repo = workspace
     _checkout_skill(repo, "a")
 
-    result = runner.invoke(app, ["local", "adopt", "skills/a"])
+    result = runner.invoke(app, ["local", "sync", "--adopt", "skills/a"])
 
     assert result.exit_code == 0
     assert "external import" not in result.stdout + result.stderr
@@ -234,9 +249,10 @@ def test_adopt_reports_a_legacy_conflict(workspace):
     legacy.write_text("old\n")
     _checkout_skill(repo, "a")
 
-    result = runner.invoke(app, ["local", "adopt", "skills/a"])
+    result = runner.invoke(app, ["local", "sync", "--adopt", "skills/a"])
 
-    assert result.exit_code == 0
+    assert result.exit_code == 1
+    assert (repo / ".claude" / "skills" / "a").is_symlink()
     assert str(legacy) in result.stderr
     assert str(_local(vault) / "CLAUDE.local.md") in result.stderr
 
@@ -248,7 +264,7 @@ def test_adopt_moves_a_legacy_copy_first(workspace):
     legacy.write_text("notes\n")
     (repo / "CLAUDE.local.md").write_text("notes\n")
 
-    result = runner.invoke(app, ["local", "adopt", "CLAUDE.local.md"])
+    result = runner.invoke(app, ["local", "sync", "--adopt", "CLAUDE.local.md"])
 
     assert result.exit_code == 0
     assert not legacy.exists()
@@ -256,13 +272,13 @@ def test_adopt_moves_a_legacy_copy_first(workspace):
 
 
 def test_link_json_lists_entries(workspace):
-    """Verify link --json lists every vault entry, created then present."""
+    """Verify sync --json lists every vault entry, created then present."""
     vault, repo = workspace
     target = _vault_md(vault)
     skill = _vault_skill(vault, "a")
 
-    first = runner.invoke(app, ["local", "link", "--json"])
-    second = runner.invoke(app, ["local", "link", "--json"])
+    first = runner.invoke(app, ["local", "sync", "--json"])
+    second = runner.invoke(app, ["local", "sync", "--json"])
 
     assert first.exit_code == 0
     assert json.loads(first.stdout) == {
@@ -273,6 +289,8 @@ def test_link_json_lists_entries(workspace):
                 "status": "created",
                 "link": str(repo.resolve() / "CLAUDE.local.md"),
                 "target": str(target),
+                "reason": None,
+                "remedy": None,
             },
             {
                 "kind": "skill",
@@ -280,8 +298,11 @@ def test_link_json_lists_entries(workspace):
                 "status": "created",
                 "link": str(repo.resolve() / ".claude" / "skills" / "a"),
                 "target": str(skill),
+                "reason": None,
+                "remedy": None,
             },
-        ]
+        ],
+        "pending": {"adopt": [], "settings": None},
     }
     assert second.exit_code == 0
     assert [e["status"] for e in json.loads(second.stdout)["entries"]] == ["present", "present"]
@@ -295,7 +316,7 @@ def test_link_prose_prints_the_link_paths(workspace):
     _vault_md(vault)
     _vault_skill(vault, "a")
 
-    result = runner.invoke(app, ["local", "link"])
+    result = runner.invoke(app, ["local", "sync"])
 
     assert result.exit_code == 0
     assert result.stdout.splitlines() == [
@@ -311,7 +332,7 @@ def test_link_conflict_exits_1(workspace):
     _vault_skill(vault, "a")
     (repo / "CLAUDE.local.md").write_text("local\n")
 
-    result = runner.invoke(app, ["local", "link", "--json"])
+    result = runner.invoke(app, ["local", "sync", "--json"])
 
     assert result.exit_code == 1
     statuses = {e["name"]: e["status"] for e in json.loads(result.stdout)["entries"]}
@@ -324,14 +345,14 @@ def test_link_conflict_in_prose_names_the_reason_and_remedy(workspace):
     _vault_md(vault, "vault\n")
     (repo / "CLAUDE.local.md").write_text("local\n")
 
-    result = runner.invoke(app, ["local", "link"])
+    result = runner.invoke(app, ["local", "sync"])
 
     assert result.exit_code == 1
     assert result.stdout == ""
     flat = " ".join(result.stderr.split())
     assert "differs from the vault copy" in flat
     assert (
-        "Copy the newer one over the vault copy, delete the checkout copy, and run local link."
+        "Copy the newer one over the vault copy, delete the checkout copy, and run local sync."
         in flat
     )
 
@@ -343,7 +364,7 @@ def test_link_conflict_for_a_wrong_shape_vault_entry_says_fix_the_vault(workspac
     skills.mkdir(parents=True)
     (skills / "README.md").write_text("stray\n")
 
-    result = runner.invoke(app, ["local", "link"])
+    result = runner.invoke(app, ["local", "sync"])
 
     assert result.exit_code == 1
     flat = " ".join(result.stderr.split())
@@ -359,13 +380,13 @@ def test_legacy_conflict_wording_matches_in_adopt_and_link(workspace):
     (vault / "projects" / "demo" / "CLAUDE.local.md").write_text("old\n")
     _checkout_skill(repo, "a")
 
-    adopted = runner.invoke(app, ["local", "adopt", "skills/a"])
-    linked = runner.invoke(app, ["local", "link"])
+    adopted = runner.invoke(app, ["local", "sync", "--adopt", "skills/a"])
+    linked = runner.invoke(app, ["local", "sync"])
 
     def warning(stderr: str) -> str:
         flat = " ".join(stderr.split())
         start = flat.index(str(vault / "projects" / "demo" / "CLAUDE.local.md"))
-        return flat[start : flat.index("run local link.", start)]
+        return flat[start : flat.index("run local sync.", start)]
 
     assert warning(adopted.stderr) == warning(linked.stderr)
 
@@ -377,7 +398,7 @@ def test_link_tracked_is_not_a_conflict(workspace):
     (repo / "CLAUDE.local.md").write_text("committed\n")
     _git("add", "-f", "CLAUDE.local.md", cwd=repo)
 
-    result = runner.invoke(app, ["local", "link", "--json"])
+    result = runner.invoke(app, ["local", "sync", "--json"])
 
     assert result.exit_code == 0
     assert json.loads(result.stdout)["entries"][0]["status"] == "tracked"
@@ -391,7 +412,7 @@ def test_link_migrates_old_copy_and_repairs_link(workspace):
     legacy.write_text("notes\n")
     (repo / "CLAUDE.local.md").symlink_to(legacy)
 
-    result = runner.invoke(app, ["local", "link", "--json"])
+    result = runner.invoke(app, ["local", "sync", "--json"])
 
     assert result.exit_code == 0
     entries = json.loads(result.stdout)["entries"]
@@ -407,7 +428,7 @@ def test_link_legacy_conflict_names_both_paths(workspace):
     legacy = vault / "projects" / "demo" / "CLAUDE.local.md"
     legacy.write_text("old\n")
 
-    result = runner.invoke(app, ["local", "link"])
+    result = runner.invoke(app, ["local", "sync"])
 
     assert result.exit_code == 1
     assert str(legacy) in result.stderr
@@ -421,7 +442,7 @@ def test_link_reports_a_removed_link(workspace):
     (repo / ".claude" / "skills").mkdir(parents=True)
     (repo / ".claude" / "skills" / "gone").symlink_to(gone)
 
-    result = runner.invoke(app, ["local", "link", "--json"])
+    result = runner.invoke(app, ["local", "sync", "--json"])
 
     assert result.exit_code == 0
     assert [e["status"] for e in json.loads(result.stdout)["entries"]] == ["removed"]
@@ -435,7 +456,7 @@ def test_link_prose_keeps_the_removed_note_off_stdout(workspace):
     (repo / ".claude" / "skills").mkdir(parents=True)
     (repo / ".claude" / "skills" / "gone").symlink_to(_local(vault) / "claude" / "skills" / "gone")
 
-    result = runner.invoke(app, ["local", "link"])
+    result = runner.invoke(app, ["local", "sync"])
 
     assert result.exit_code == 0
     assert result.stdout == f"{repo.resolve() / '.claude' / 'skills' / 'a'}\n"
@@ -443,19 +464,19 @@ def test_link_prose_keeps_the_removed_note_off_stdout(workspace):
 
 
 def test_link_with_nothing_in_the_vault_exits_0(workspace):
-    """Verify link exits 0 with an empty list when the vault holds nothing."""
-    result = runner.invoke(app, ["local", "link", "--json"])
+    """Verify sync exits 0 with empty lists when the vault holds nothing."""
+    result = runner.invoke(app, ["local", "sync", "--json"])
 
     assert result.exit_code == 0
-    assert json.loads(result.stdout) == {"entries": []}
+    assert json.loads(result.stdout) == {"entries": [], "pending": {"adopt": [], "settings": None}}
 
 
 def test_link_with_nothing_in_prose_prints_nothing_on_stdout(workspace):
-    """Verify link prints an info line, not a value, when the vault holds nothing."""
-    result = runner.invoke(app, ["local", "link"])
+    """Verify sync prints an info line, not a value, when there is nothing to sync."""
+    result = runner.invoke(app, ["local", "sync"])
 
     assert result.exit_code == 0
-    assert "holds nothing" in result.stdout
+    assert "nothing to sync" in result.stdout
     assert str(workspace[1]) not in result.stdout
 
 
@@ -604,7 +625,7 @@ def test_adopt_on_a_linked_checkout_restores_the_ignore_entry(workspace):
     copy = _vault_md(vault)
     (repo / "CLAUDE.local.md").symlink_to(copy)
 
-    result = runner.invoke(app, ["local", "adopt", "CLAUDE.local.md"])
+    result = runner.invoke(app, ["local", "sync", "--adopt", "CLAUDE.local.md"])
 
     assert result.exit_code == 0
     assert result.stdout == f"{copy}\n"
@@ -620,17 +641,17 @@ def test_adopt_off_terminal_quotes_names_in_the_command(workspace, monkeypatch):
     _checkout_rule(repo, "my style.md")
     monkeypatch.setattr(local_commands.ask, "choose_multiple_from_list", _fail_prompt)
 
-    result = runner.invoke(app, ["local", "adopt"])
+    result = runner.invoke(app, ["local", "sync"])
 
-    assert result.exit_code == 1
-    assert "sessionmemory local adopt 'rules/my style.md' --cwd ." in result.stderr
+    assert result.exit_code == 0
+    assert "sessionmemory local sync --adopt 'rules/my style.md' --cwd ." in result.stderr
 
 
 def test_adopt_off_terminal_with_no_candidates_exits_0(workspace, monkeypatch):
     """Verify a bare adopt off a terminal with nothing waiting exits 0 without prompting."""
     monkeypatch.setattr(local_commands.ask, "choose_multiple_from_list", _fail_prompt)
 
-    result = runner.invoke(app, ["local", "adopt"])
+    result = runner.invoke(app, ["local", "sync"])
 
     assert result.exit_code == 0
     assert "nothing" in result.stdout
@@ -643,7 +664,7 @@ def test_link_prose_warns_about_a_tracked_entry(workspace):
     (repo / "CLAUDE.local.md").write_text("committed\n")
     _git("add", "-f", "CLAUDE.local.md", cwd=repo)
 
-    result = runner.invoke(app, ["local", "link"])
+    result = runner.invoke(app, ["local", "sync"])
 
     assert result.exit_code == 0
     assert result.stdout == ""
@@ -653,13 +674,13 @@ def test_link_prose_warns_about_a_tracked_entry(workspace):
 def test_adopt_fails_when_the_legacy_copy_cannot_be_moved(workspace, monkeypatch):
     """Verify an OS error while moving the old vault copy fails the command with a message."""
 
-    def broken(**_kwargs: object) -> None:
+    def broken(*_args: object, **_kwargs: object) -> None:
         msg = "denied"
         raise PermissionError(msg)
 
     monkeypatch.setattr(localmd, "migrate_legacy", broken)
 
-    result = runner.invoke(app, ["local", "adopt", "CLAUDE.local.md"])
+    result = runner.invoke(app, ["local", "sync", "--adopt", "CLAUDE.local.md"])
 
     assert result.exit_code == 1
     assert "could not move the vault's old CLAUDE.local.md" in result.stderr
@@ -685,14 +706,274 @@ def test_status_fails_when_an_entry_cannot_be_read(workspace, monkeypatch):
 def test_link_reports_an_unreadable_vault_without_a_traceback(workspace, monkeypatch):
     """Verify a filesystem failure while linking exits 1 with a message."""
 
-    def broken(_co: localmd.Checkout) -> list[localmd.LinkResult]:
+    def broken(_co: localmd.Checkout, **_kwargs: object) -> list[localmd.LinkResult]:
         msg = "permission denied"
         raise PermissionError(msg)
 
     monkeypatch.setattr(localmd, "link_all", broken)
 
-    result = runner.invoke(app, ["local", "link"])
+    result = runner.invoke(app, ["local", "sync"])
 
     assert result.exit_code == 1
     assert isinstance(result.exception, SystemExit)
     assert "permission denied" in result.stderr
+
+
+# local sync: pending work and settings
+
+
+def _settings(repo: Path, vault: Path, *, checkout: str | None, theirs: str | None) -> None:
+    if checkout is not None:
+        (repo / ".claude").mkdir(exist_ok=True)
+        (repo / ".claude" / "settings.local.json").write_text(checkout)
+    if theirs is not None:
+        target = _local(vault) / "claude" / "settings.local.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(theirs)
+
+
+def test_sync_links_and_reports_pending_json(workspace):
+    """Verify sync links the vault's entries and reports adoptions and settings as pending."""
+    vault, repo = workspace
+    _vault_skill(vault, "a")
+    _checkout_rule(repo, "r.md")
+    _settings(repo, vault, checkout='{"permissions": {"allow": ["A"]}}', theirs="{}")
+
+    result = runner.invoke(app, ["local", "sync", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert [(e["name"], e["status"]) for e in payload["entries"]] == [("skills/a", "created")]
+    assert payload["pending"]["adopt"] == ["rules/r.md"]
+    settings = payload["pending"]["settings"]
+    assert settings["state"] == "differs"
+    assert settings["summary"] == ["permissions: only in the checkout"]
+    assert settings["checkout"]["path"] == str(repo.resolve() / ".claude" / "settings.local.json")
+    assert settings["vault"]["mtime"].endswith("Z")
+    assert "adopted" not in payload
+    assert "settings" not in payload
+
+
+def test_sync_json_with_nothing_pending(workspace):
+    """Verify a checkout with nothing waiting reports an empty pending block."""
+    result = runner.invoke(app, ["local", "sync", "--json"])
+
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)["pending"] == {"adopt": [], "settings": None}
+
+
+def test_sync_adopt_flag_adopts_each_name(workspace):
+    """Verify repeated --adopt flags adopt each entry and report them in JSON."""
+    _, repo = workspace
+    _checkout_rule(repo, "r.md")
+    _checkout_skill(repo, "s")
+
+    result = runner.invoke(
+        app, ["local", "sync", "--adopt", "rules/r.md", "--adopt", "skills/s", "--json"]
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert [item["name"] for item in payload["adopted"]] == ["rules/r.md", "skills/s"]
+    assert payload["pending"]["adopt"] == []
+    assert (repo / ".claude" / "skills" / "s").is_symlink()
+
+
+def test_sync_keep_settings_checkout(workspace):
+    """Verify keeping the checkout's settings writes them into the vault."""
+    vault, repo = workspace
+    _settings(repo, vault, checkout='{"a": 1}', theirs='{"a": 2}')
+
+    result = runner.invoke(app, ["local", "sync", "--keep-settings", "checkout", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    target = _local(vault) / "claude" / "settings.local.json"
+    assert payload["settings"] == {"kept": "checkout", "path": str(target)}
+    assert payload["pending"]["settings"] is None
+    assert target.read_text() == '{"a": 1}'
+
+
+def test_sync_keep_settings_vault(workspace):
+    """Verify keeping the vault's settings writes them into the checkout and notes the restart."""
+    vault, repo = workspace
+    _settings(repo, vault, checkout='{"a": 1}', theirs='{"a": 2}')
+
+    result = runner.invoke(app, ["local", "sync", "--keep-settings", "vault"])
+
+    assert result.exit_code == 0, result.output
+    assert (repo / ".claude" / "settings.local.json").read_text() == '{"a": 2}'
+    assert "new session" in result.stderr
+
+
+def test_sync_keep_settings_refused_exits_1(workspace, tmp_path):
+    """Verify a keep refused for a symlinked settings file fails the run."""
+    vault, repo = workspace
+    _settings(repo, vault, checkout=None, theirs='{"a": 2}')
+    other = tmp_path / "other.json"
+    other.write_text("{}")
+    (repo / ".claude").mkdir()
+    (repo / ".claude" / "settings.local.json").symlink_to(other)
+
+    result = runner.invoke(app, ["local", "sync", "--keep-settings", "vault"])
+
+    assert result.exit_code == 1
+    assert "symlink" in result.stderr
+    assert other.read_text() == "{}"
+
+
+def test_sync_off_terminal_reports_pending_and_exits_0(workspace, monkeypatch):
+    """Verify sync off a terminal never prompts and names the command for each pending item."""
+    vault, repo = workspace
+    monkeypatch.setattr(local_commands.ask, "choose_multiple_from_list", _fail_prompt)
+    _checkout_rule(repo, "r.md")
+    _settings(repo, vault, checkout='{"a": 1}', theirs='{"a": 2}')
+
+    result = runner.invoke(app, ["local", "sync"])
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout == ""
+    assert "sessionmemory local sync --adopt rules/r.md --cwd ." in result.stderr
+    assert "--keep-settings checkout" in result.stderr
+    assert "--keep-settings vault" in result.stderr
+
+
+def test_sync_checklist_adopts_and_keeps(workspace, monkeypatch):
+    """Verify the checklist's adopt and settings rows are both acted on."""
+    vault, repo = workspace
+    monkeypatch.setattr(local_commands, "_interactive", lambda: True)
+    _checkout_rule(repo, "r.md")
+    _settings(repo, vault, checkout='{"a": 1}', theirs='{"a": 2}')
+    seen: list[str] = []
+
+    def choose(choices: list[tuple[str, object]], message: str) -> list[object]:
+        assert message
+        seen.extend(title for title, _ in choices)
+        return [value for title, value in choices if "r.md" in title or "checkout" in title]
+
+    monkeypatch.setattr(local_commands.ask, "choose_multiple_from_list", choose)
+
+    result = runner.invoke(app, ["local", "sync"])
+
+    assert result.exit_code == 0, result.output
+    assert len(seen) == 3
+    assert (repo / ".claude" / "rules" / "r.md").is_symlink()
+    assert (_local(vault) / "claude" / "settings.local.json").read_text() == '{"a": 1}'
+
+
+def test_sync_checklist_both_settings_rows_refused(workspace, monkeypatch):
+    """Verify choosing both settings rows changes no settings but still adopts."""
+    vault, repo = workspace
+    monkeypatch.setattr(local_commands, "_interactive", lambda: True)
+    _checkout_rule(repo, "r.md")
+    _settings(repo, vault, checkout='{"a": 1}', theirs='{"a": 2}')
+    monkeypatch.setattr(
+        local_commands.ask,
+        "choose_multiple_from_list",
+        lambda choices, message: [value for _, value in choices],
+    )
+
+    result = runner.invoke(app, ["local", "sync"])
+
+    assert result.exit_code == 1
+    assert "both" in result.stderr
+    assert (repo / ".claude" / "rules" / "r.md").is_symlink()
+    assert (repo / ".claude" / "settings.local.json").read_text() == '{"a": 1}'
+    assert (_local(vault) / "claude" / "settings.local.json").read_text() == '{"a": 2}'
+
+
+@pytest.mark.parametrize("command", ["adopt", "link"])
+def test_adopt_and_link_commands_are_gone(workspace, command):
+    """Verify the commands sync replaced no longer exist."""
+    assert runner.invoke(app, ["local", command]).exit_code == 2
+
+
+def test_status_lists_settings_row(workspace):
+    """Verify status reports the settings entry with its copy state."""
+    vault, repo = workspace
+    _settings(repo, vault, checkout='{"a": 1}', theirs='{"a": 2}')
+
+    result = runner.invoke(app, ["local", "status", "--json"])
+
+    rows = json.loads(result.stdout)["entries"]
+    assert rows == [
+        {
+            "kind": "settings",
+            "name": "settings.local.json",
+            "state": "differs",
+            "link": str(repo.resolve() / ".claude" / "settings.local.json"),
+            "target": str(_local(vault) / "claude" / "settings.local.json"),
+            "ignored": False,
+            "tracked": False,
+            "match": None,
+        }
+    ]
+
+
+def test_sync_json_keeps_the_payload_when_settings_cannot_be_read(workspace, monkeypatch):
+    """Verify an unreadable settings copy still prints the links made, and exits 1."""
+    vault, _ = workspace
+    _vault_md(vault)
+
+    def unreadable(*_args: object, **_kwargs: object) -> NoReturn:
+        msg = "denied"
+        raise PermissionError(msg)
+
+    monkeypatch.setattr(localmd, "settings_pending", unreadable)
+
+    result = runner.invoke(app, ["local", "sync", "--json"])
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert [entry["status"] for entry in payload["entries"]] == ["created"]
+    assert payload["pending"]["settings"] is None
+    assert "denied" in result.stderr
+
+
+def test_sync_asks_git_for_tracked_paths_once(workspace, monkeypatch):
+    """Verify a session-start sync lists git's index once, whatever it links or reports."""
+    vault, repo = workspace
+    _vault_md(vault)
+    _vault_skill(vault, "a")
+    _checkout_rule(repo, "r.md")
+    _settings(repo, vault, checkout='{"a": 1}', theirs='{"a": 2}')
+    calls: list[tuple[str, ...]] = []
+    real = localmd._git
+
+    def counting(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+        if "ls-files" in args:
+            calls.append(args)
+        return real(cwd, *args)
+
+    monkeypatch.setattr(localmd, "_git", counting)
+
+    result = runner.invoke(app, ["local", "sync", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert len(calls) == 1
+
+
+def test_sync_keep_settings_on_matching_copies_warns_nothing(workspace):
+    """Verify keeping a copy that already matches writes nothing and warns nothing."""
+    vault, repo = workspace
+    _settings(repo, vault, checkout='{"a": 1}', theirs='{"a":1}')
+
+    result = runner.invoke(app, ["local", "sync", "--keep-settings", "vault"])
+
+    assert result.exit_code == 0, result.output
+    assert "new session" not in result.stderr
+    assert "commit" not in result.stderr
+
+
+def test_status_prose_gives_a_linked_settings_file_no_ignore_flag(workspace, tmp_path):
+    """Verify a symlinked settings file shows its state without a misleading flag."""
+    _, repo = workspace
+    other = tmp_path / "other.json"
+    other.write_text("{}")
+    (repo / ".claude").mkdir()
+    (repo / ".claude" / "settings.local.json").symlink_to(other)
+
+    result = runner.invoke(app, ["local", "status"])
+
+    line = next(line for line in result.stdout.splitlines() if "settings.local.json" in line)
+    assert line.split() == ["linked", "settings.local.json"]

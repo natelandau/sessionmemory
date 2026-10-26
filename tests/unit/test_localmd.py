@@ -1309,7 +1309,7 @@ def test_link_reason_for_a_differing_copy_says_copy_over_the_vault(co, md):
 
     assert result.reason == f"{md.link} differs from the vault copy at {md.target}"
     assert result.remedy == (
-        "Copy the newer one over the vault copy, delete the checkout copy, and run local link."
+        "Copy the newer one over the vault copy, delete the checkout copy, and run local sync."
     )
 
 
@@ -1322,7 +1322,7 @@ def test_link_reason_for_an_identical_copy_names_adopt(co, md):
 
     assert result.status == "conflict"
     assert result.remedy is not None
-    assert f"local adopt {NAME}" in result.remedy
+    assert f"local sync --adopt {NAME}" in result.remedy
 
 
 def test_link_reason_for_a_foreign_link_names_its_target(co, md, tmp_path):
@@ -1619,3 +1619,252 @@ def test_link_all_reports_a_dangling_link_it_cannot_remove(co, vault, monkeypatc
 
     assert statuses == {"skills/a": "created", "skills/gone": "conflict"}
     assert gone.is_symlink()
+
+
+# Settings kept by copy
+
+
+def _settings(
+    co: localmd.Checkout, *, checkout: str | None = None, vault: str | None = None
+) -> localmd.Entry:
+    item = localmd.settings_entry(co)
+    if checkout is not None:
+        item.link.parent.mkdir(parents=True, exist_ok=True)
+        item.link.write_text(checkout, encoding="utf-8")
+    if vault is not None:
+        item.target.parent.mkdir(parents=True, exist_ok=True)
+        item.target.write_text(vault, encoding="utf-8")
+    return item
+
+
+def test_settings_entry_paths(co):
+    """Verify the settings entry maps .claude/ to the vault's claude/ folder and copies."""
+    item = localmd.settings_entry(co)
+
+    assert item.kind == "settings"
+    assert item.name == "settings.local.json"
+    assert item.link == co.worktree / ".claude" / "settings.local.json"
+    assert item.target == co.local / "claude" / "settings.local.json"
+    assert item.mode == "copy"
+    assert localmd.entry(co, "skills/a").mode == "link"
+
+
+@pytest.mark.parametrize(
+    ("ours", "theirs", "expected"),
+    [
+        ('{"a": 1}', '{"a": 1}', localmd.CopyState.SAME),
+        ('{"a": 1}', '{"a": 2}', localmd.CopyState.DIFFERS),
+        ('{"a": 1}', None, localmd.CopyState.CHECKOUT_ONLY),
+        (None, '{"a": 1}', localmd.CopyState.VAULT_ONLY),
+        (None, None, None),
+    ],
+)
+def test_copy_states(co, ours, theirs, expected):
+    """Verify each pair of copies maps to its state."""
+    item = _settings(co, checkout=ours, vault=theirs)
+
+    assert localmd.copy_state(co, item, tracked=False) == expected
+
+
+def test_copy_state_tracked_and_blocked(co, tmp_path):
+    """Verify tracked and blocked outrank the content comparison."""
+    item = _settings(co, checkout="{}", vault='{"a": 1}')
+    assert localmd.copy_state(co, item, tracked=True) is localmd.CopyState.TRACKED
+
+    shutil.rmtree(co.worktree / ".claude")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (co.worktree / ".claude").symlink_to(elsewhere)
+    assert localmd.copy_state(co, item, tracked=False) is localmd.CopyState.BLOCKED
+
+
+def test_copy_state_blocked_with_no_copies_is_none(co, tmp_path):
+    """Verify a blocked .claude with no settings on either side reports nothing."""
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (co.worktree / ".claude").symlink_to(elsewhere)
+
+    assert localmd.copy_state(co, localmd.settings_entry(co), tracked=False) is None
+
+
+def test_settings_reformat_is_same(co):
+    """Verify copies equal as parsed JSON are the same whatever their layout."""
+    item = _settings(co, checkout='{"b": [1], "a": 2}\n', vault='{\n  "a": 2,\n  "b": [1]\n}')
+
+    assert localmd.copy_state(co, item, tracked=False) is localmd.CopyState.SAME
+    assert localmd.settings_pending(co, tracked=False) is None
+
+
+def test_settings_invalid_json_summary_and_keep(co):
+    """Verify an invalid side is named in the summary and still copied as bytes."""
+    _settings(co, checkout="{broken", vault='{"a": 1}')
+
+    pending = localmd.settings_pending(co, tracked=False)
+
+    assert pending is not None
+    assert pending.state is localmd.CopyState.DIFFERS
+    assert pending.summary == ("the checkout's copy is not valid JSON",)
+    written = localmd.keep_settings(co, "checkout", tracked=False)
+    assert written.read_text(encoding="utf-8") == "{broken"
+
+
+def test_settings_pending_carries_paths_times_and_summary(co):
+    """Verify a pending difference names both paths, both times, and the summary."""
+    item = _settings(co, checkout='{"permissions": {"allow": ["A"]}}', vault="{}")
+
+    pending = localmd.settings_pending(co, tracked=False)
+
+    assert pending is not None
+    assert pending.checkout == item.link
+    assert pending.vault == item.target
+    assert pending.checkout_mtime is not None
+    assert pending.checkout_mtime.endswith("Z")
+    assert pending.summary == ("permissions: only in the checkout",)
+
+
+def test_settings_pending_one_side(co):
+    """Verify a copy on one side only is pending with no time for the missing side."""
+    _settings(co, vault="{}")
+
+    pending = localmd.settings_pending(co, tracked=False)
+
+    assert pending is not None
+    assert pending.state is localmd.CopyState.VAULT_ONLY
+    assert pending.checkout_mtime is None
+
+
+def test_keep_checkout_writes_vault_copy(co):
+    """Verify keeping the checkout's copy writes it over the vault copy."""
+    item = _settings(co, checkout='{"a": 1}', vault='{"a": 2}')
+
+    assert localmd.keep_settings(co, "checkout", tracked=False) == item.target
+    assert item.target.read_text(encoding="utf-8") == '{"a": 1}'
+    assert item.link.read_text(encoding="utf-8") == '{"a": 1}'
+
+
+def test_keep_vault_creates_claude_dir_and_ignores(co):
+    """Verify keeping the vault's copy creates .claude/ and ignores the file."""
+    item = _settings(co, vault='{"a": 2}')
+
+    assert localmd.keep_settings(co, "vault", tracked=False) == item.link
+    assert item.link.read_text(encoding="utf-8") == '{"a": 2}'
+    assert "/.claude/settings.local.json" in _exclude(co).read_text(encoding="utf-8")
+
+
+def test_settings_symlink_is_linked_and_never_copied(co, tmp_path):
+    """Verify a symlinked checkout copy is reported and both keeps refuse."""
+    item = _settings(co, vault='{"a": 2}')
+    elsewhere = tmp_path / "other.json"
+    elsewhere.write_text('{"a": 1}', encoding="utf-8")
+    item.link.parent.mkdir(parents=True, exist_ok=True)
+    item.link.symlink_to(elsewhere)
+
+    assert localmd.copy_state(co, item, tracked=False) is localmd.CopyState.LINKED
+    for side in ("checkout", "vault"):
+        with pytest.raises(LocalMdError):
+            localmd.keep_settings(co, side, tracked=False)
+    assert elsewhere.read_text(encoding="utf-8") == '{"a": 1}'
+    assert item.target.read_text(encoding="utf-8") == '{"a": 2}'
+
+
+def test_keep_refuses_tracked_blocked_and_missing_side(co, tmp_path):
+    """Verify keep refuses a tracked entry, a blocked .claude, and a missing chosen side."""
+    _settings(co, vault='{"a": 2}')
+    with pytest.raises(LocalMdError, match="no"):
+        localmd.keep_settings(co, "checkout", tracked=False)
+    with pytest.raises(LocalMdError, match="tracked"):
+        localmd.keep_settings(co, "vault", tracked=True)
+
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (co.worktree / ".claude").symlink_to(elsewhere)
+    with pytest.raises(LocalMdError):
+        localmd.keep_settings(co, "vault", tracked=False)
+    assert not (elsewhere / "settings.local.json").exists()
+
+
+def test_link_all_and_candidates_skip_settings(co):
+    """Verify linking and adoption never touch the settings entry."""
+    item = _settings(co, checkout='{"a": 1}', vault='{"a": 2}')
+
+    results = localmd.link_all(co)
+
+    assert item.link.read_text(encoding="utf-8") == '{"a": 1}'
+    assert all(result.entry.kind != "settings" for result in results)
+    assert all(found.kind != "settings" for found in localmd.candidates(co))
+    assert not item.link.is_symlink()
+
+
+def test_settings_order_only_difference_has_a_summary(co):
+    """Verify copies that differ only in list order or repetition still explain the difference."""
+    _settings(
+        co,
+        checkout='{"permissions": {"allow": ["a", "b"]}}',
+        vault='{"permissions": {"allow": ["b", "a"]}}',
+    )
+
+    pending = localmd.settings_pending(co, tracked=False)
+
+    assert pending is not None
+    assert pending.state is localmd.CopyState.DIFFERS
+    assert pending.summary == ("the copies differ only in the order or repetition of list items",)
+
+
+@pytest.mark.parametrize("side", ["checkout", "vault"])
+def test_settings_non_regular_copy_is_blocked(co, tmp_path, side):
+    """Verify a folder or a symlink in place of either copy blocks syncing and both keeps refuse."""
+    item = _settings(co, checkout='{"a": 1}', vault='{"a": 2}')
+    path = item.link if side == "checkout" else item.target
+    path.unlink()
+    if side == "checkout":
+        path.mkdir()
+    else:
+        other = tmp_path / "outside.json"
+        other.write_text('{"secret": 1}', encoding="utf-8")
+        path.symlink_to(other)
+
+    assert localmd.copy_state(co, item, tracked=False) is localmd.CopyState.BLOCKED
+    for keep in ("checkout", "vault"):
+        with pytest.raises(LocalMdError):
+            localmd.keep_settings(co, keep, tracked=False)
+
+
+def test_settings_compare_as_strict_json(co):
+    """Verify true and 1 differ, and a copy holding null is valid JSON."""
+    item = _settings(co, checkout='{"x": true}', vault='{"x": 1}')
+    assert localmd.copy_state(co, item, tracked=False) is localmd.CopyState.DIFFERS
+
+    _settings(co, checkout="null", vault="{}")
+    pending = localmd.settings_pending(co, tracked=False)
+    assert pending is not None
+    assert pending.summary == ("the settings differ",)
+
+
+def test_keep_settings_keeps_the_destination_mode(co):
+    """Verify keeping the vault copy leaves a private checkout file private."""
+    item = _settings(co, checkout='{"a": 1}', vault='{"a": 2}')
+    item.link.chmod(0o600)
+
+    localmd.keep_settings(co, "vault", tracked=False)
+
+    assert item.link.read_text(encoding="utf-8") == '{"a": 2}'
+    assert item.link.stat().st_mode & 0o777 == 0o600
+
+
+def test_keep_settings_new_copy_takes_the_source_mode(co):
+    """Verify a first vault copy of a private checkout file stays private."""
+    item = _settings(co, checkout='{"a": 1}')
+    item.link.chmod(0o600)
+
+    localmd.keep_settings(co, "checkout", tracked=False)
+
+    assert item.target.stat().st_mode & 0o777 == 0o600
+
+
+def test_keep_checkout_ignores_the_checkout_copy(co):
+    """Verify keeping the checkout's copy also hides it from git."""
+    _settings(co, checkout='{"a": 1}')
+
+    localmd.keep_settings(co, "checkout", tracked=False)
+
+    assert "/.claude/settings.local.json" in _exclude(co).read_text(encoding="utf-8")
