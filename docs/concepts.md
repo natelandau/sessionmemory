@@ -32,7 +32,7 @@ commits the vault when a session starts and again when a session ends.
     runbooks/<slug>.md
     reference/<slug>.md
     backlog.md                       a list of open work, not a page
-    local/                           private files that checkouts link to
+    local/                           private files that checkouts link to or copy
       CLAUDE.local.md
       claude/skills/<name>/
       claude/rules/<name>.md
@@ -162,20 +162,23 @@ is not counted. A ticked `- [x]` line is not an open item either, and
 
 Some Claude Code files belong to you and not to the project: a `CLAUDE.local.md` with a
 sandbox URL, which account to use, or where a credential lives, a skill that only you run,
-a rule for how you like to work. They must not reach the project's repository, so they
+a rule for how you like to work, and the permissions and plugins you approved for the
+project. They must not reach the project's repository, so they
 normally exist in one clone only. A second machine, a fresh clone, and a new git worktree
 start without them.
 
 The vault keeps one copy of each in the project's `local/` folder:
 
-| Entry             | In the checkout          | In the vault                         |
-| ----------------- | ------------------------ | ------------------------------------ |
-| `CLAUDE.local.md` | `CLAUDE.local.md`        | `local/CLAUDE.local.md`              |
-| `skills/<name>`   | `.claude/skills/<name>/` | `local/claude/skills/<name>/`        |
-| `rules/<name>`    | `.claude/rules/<name>`   | `local/claude/rules/<name>`          |
+| Entry                 | In the checkout               | In the vault                       |
+| --------------------- | ----------------------------- | ---------------------------------- |
+| `CLAUDE.local.md`     | `CLAUDE.local.md`             | `local/CLAUDE.local.md`            |
+| `skills/<name>`       | `.claude/skills/<name>/`      | `local/claude/skills/<name>/`      |
+| `rules/<name>`        | `.claude/rules/<name>`        | `local/claude/rules/<name>`        |
+| `settings.local.json` | `.claude/settings.local.json` | `local/claude/settings.local.json` |
 
-The vault folder is `claude/`, with no dot, so Finder, Obsidian, and `ls` show it. Each
-checkout holds an absolute symlink to each vault copy. Claude Code loads a link as it
+The vault folder is `claude/`, with no dot, so Finder, Obsidian, and `ls` show it. For
+every entry except `settings.local.json`, each checkout holds an absolute symlink to the
+vault copy. Claude Code loads a link as it
 loads a regular file, and an edit made through Claude Code changes the vault copy. The
 vault's remote carries the copies to your other machines. Nothing in `local/` is a page,
 and nothing indexes, lists, or searches it. Record where a credential lives, never the
@@ -186,28 +189,32 @@ Each skill and each rule is linked on its own, not the whole `.claude/skills/` o
 links are what let a skill that the project commits sit beside your private ones. A skill
 or rule that git tracks is the project's, and the `local` commands leave it alone.
 
-`sessionmemory local adopt` moves existing files into the vault. The plugin then links
-every other checkout at session start. Git ignores each link through the repository's
+`sessionmemory local sync --adopt` moves existing files into the vault. The plugin then
+links every other checkout at session start. Git ignores each link through the repository's
 `info/exclude` file, which all worktrees of a clone share, so a link never reaches a
 commit of the project.
 
-`.claude/settings.local.json` is not kept in the vault. Claude Code refuses to write
-through a symlinked settings file. With a link in its place, a permission you approve, a
-plugin installed at local scope, and every other local-scope change fails or is lost.
+`.claude/settings.local.json` is copied, not linked. Claude Code refuses to write through
+a symlinked settings file, and it writes this file itself whenever you approve a
+permission or install a plugin at local scope. So the checkout's copy and the vault copy
+can each be the newer one. Nothing copies one over the other until you choose: at session
+start the agent shows you what each copy has that the other lacks and asks which one to
+keep. The whole copy you choose replaces the other. The two are never merged.
 
 Three limits come from how Claude Code loads these files:
 
 - A relative `@` import, such as `@./notes.md`, resolves from the vault folder, where the
   imported file does not exist. Claude Code also asks you to approve the import as an
   external file. Put the content into the file itself, or remove the import.
-  `local adopt` and `doctor` report each relative import in `CLAUDE.local.md` and in the
+  `local sync --adopt` and `doctor` report each relative import in `CLAUDE.local.md` and in the
   `.md` files of a rule.
 - Claude Code treats a linked rule as an external import. It loads only after you approve
   the dialog "Allow external CLAUDE.md file imports?" once in each checkout. Until then a
   headless session skips the rule. A linked skill needs no approval.
-- Claude Code reads its memory files before `SessionStart` runs. A link that the hook
-  creates loads from the next session. For `CLAUDE.local.md`, the hook adds the file's
-  content to the injected block in the session that created the link.
+- Claude Code reads its memory files and settings before `SessionStart` runs. A link that
+  the hook creates loads from the next session. For `CLAUDE.local.md`, the hook adds the
+  file's content to the injected block in the session that created the link. After you
+  keep the vault's settings copy, start a new session before you approve anything.
 
 Only the `CLAUDE.local.md` at the root of the work tree, and the entries directly inside
 `.claude/skills/` and `.claude/rules/`, are managed. See

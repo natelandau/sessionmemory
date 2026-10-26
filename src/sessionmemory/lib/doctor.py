@@ -257,7 +257,7 @@ def _diverged_message(item: localmd.Entry, *, ignored: bool) -> str | None:
     if match is None or ignored:
         return None
     return (
-        f"{item.name} is not ignored by git; run local adopt {item.name} "
+        f"{item.name} is not ignored by git; run local sync --adopt {item.name} "
         "to replace it with an ignored link"
     )
 
@@ -267,7 +267,7 @@ def _state_message(item: localmd.Entry, *, ignored: bool) -> str | None:
     name = item.name
     current = localmd.state(item)
     if current is localmd.State.DANGLING:
-        return f"{name} is a dangling symlink; run local link to replace it"
+        return f"{name} is a dangling symlink; run local sync to replace it"
     if current is localmd.State.DIVERGED:
         return _diverged_message(item, ignored=ignored)
     if ignored:
@@ -275,9 +275,9 @@ def _state_message(item: localmd.Entry, *, ignored: bool) -> str | None:
     if current is localmd.State.FOREIGN_LINK:
         return (
             f"{name} is not ignored by git, and a symlink to {item.link.resolve()} rather "
-            "than the vault copy; remove it, then run local link"
+            "than the vault copy; remove it, then run local sync"
         )
-    return f"{name} is not ignored by git; run local link to add it to info/exclude"
+    return f"{name} is not ignored by git; run local sync to add it to info/exclude"
 
 
 def _checkout_message(
@@ -286,7 +286,7 @@ def _checkout_message(
     """Name what is wrong at one entry's link path, with advice that fits its state.
 
     A tracked entry and a diverged one each get one finding and no ignore advice, since
-    `local link` refuses both and the first remedy is a different command. An entry
+    `local sync` refuses to link both and the first remedy is a different command. An entry
     behind a symlinked or non-folder `.claude` path is reported once, since git cannot
     be asked about it. An unreadable entry is not judged, and `tracked` is None when git
     could not be asked, which leaves only the checks that need no git.
@@ -359,13 +359,98 @@ def _legacy_finding(vault: Path, slug: str) -> Finding | None:
     if differs:
         message = (
             f"CLAUDE.local.md is at its old path and differs from {new}; keep one of them, "
-            "delete the other, then run local link"
+            "delete the other, then run local sync"
         )
     else:
         message = (
-            f"CLAUDE.local.md is at its old path; run local link to move it into {paths.LOCAL_DIR}/"
+            f"CLAUDE.local.md is at its old path; run local sync to move it into {paths.LOCAL_DIR}/"
         )
     return Finding("local", str(legacy), message)
+
+
+_SETTINGS_MESSAGES: dict[localmd.CopyState, str] = {
+    localmd.CopyState.DIFFERS: (
+        "differs from the vault copy; run local sync to choose which copy to keep"
+    ),
+    localmd.CopyState.CHECKOUT_ONLY: "is only in the checkout; run local sync to keep a copy",
+    localmd.CopyState.VAULT_ONLY: "is only in the vault; run local sync to keep a copy",
+    localmd.CopyState.LINKED: (
+        "is a symlink, which Claude Code cannot write through; replace it with a regular file"
+    ),
+}
+
+
+def _settings_finding(co: localmd.Checkout, *, tracked: set[str] | None) -> Finding | None:
+    """Report the settings copy when it waits on the person or cannot be copied.
+
+    Nothing is reported when git could not say whether it tracks the file, since a
+    tracked file would otherwise read as a difference.
+    """
+    if tracked is None:
+        return None
+    item = localmd.settings_entry(co)
+    try:
+        current = localmd.copy_state(co, item, tracked=item.name in tracked)
+    except OSError:
+        return None
+    if current is localmd.CopyState.BLOCKED:
+        message = (
+            "cannot be synced; .claude is a symlink or not a folder"
+            if localmd.blocked(co, item)
+            else "cannot be synced; a copy is a folder or a symlink, not a regular file"
+        )
+    elif current is localmd.CopyState.TRACKED:
+        message = f"is tracked by git; run git rm --cached {item.relpath} to keep it private"
+    elif current is None or current not in _SETTINGS_MESSAGES:
+        return None
+    else:
+        message = _SETTINGS_MESSAGES[current]
+    return Finding("local", str(item.link), f"{item.name} {message}")
+
+
+def _project_local_findings(vault: Path, slug: str, root: Path | None) -> list[Finding]:
+    """Report one project's local entries, checking the checkout only when `root` exists."""
+    findings = []
+    legacy = _legacy_finding(vault, slug)
+    if legacy is not None:
+        findings.append(legacy)
+    # With no registered root nothing below reaches git, so the vault is a harmless stand-in.
+    co = localmd.Checkout(
+        worktree=root or vault, vault=vault, slug=slug, local=paths.local_dir(vault, slug)
+    )
+    try:
+        items = localmd.vault_entries(co)
+        odd = localmd.misshapen(co)
+    except OSError as err:
+        return [*findings, Finding("local", str(co.local), f"cannot be read: {err}")]
+    findings.extend(
+        Finding(
+            "local",
+            str(item.target),
+            f"{item.name} in the vault is not a {localmd.SHAPES[item.kind]}; "
+            "fix or remove it in the vault",
+        )
+        for item in odd
+    )
+    for item in items:
+        findings.extend(_import_findings(item))
+        findings.extend(_repository_findings(item))
+    if root is None or not root.is_dir():
+        return findings
+    try:
+        tracked: set[str] | None = localmd.tracked_names(co, [*items, localmd.settings_entry(co)])
+    except localmd.LocalMdError:
+        tracked = None
+    settings = _settings_finding(co, tracked=tracked)
+    if settings is not None:
+        findings.append(settings)
+    for item in items:
+        message = _checkout_message(
+            co, item, tracked=None if tracked is None else item.name in tracked
+        )
+        if message is not None:
+            findings.append(Finding("local", str(item.link), message))
+    return findings
 
 
 def local_instructions(vault: Path, _embedder: Embedder) -> list[Finding]:
@@ -374,7 +459,8 @@ def local_instructions(vault: Path, _embedder: Embedder) -> list[Finding]:
     Covers a vault copy of CLAUDE.local.md left at its old path, a relative `@import`
     that cannot resolve from the vault folder, and at the registered root, per entry, a
     tracked path, a dangling link, a copy that has drifted from the vault, and a link or
-    copy that git does not ignore.
+    copy that git does not ignore, plus a settings copy waiting on the person or one that
+    cannot be copied.
     """
     try:
         projects = registry.load(vault)
@@ -383,45 +469,9 @@ def local_instructions(vault: Path, _embedder: Embedder) -> list[Finding]:
         projects = {}
     findings = []
     for slug in paths.iter_project_slugs(vault):
-        legacy = _legacy_finding(vault, slug)
-        if legacy is not None:
-            findings.append(legacy)
         project = projects.get(slug)
         root = Path(project.root) if project and project.root else None
-        # With no registered root nothing below reaches git, so the vault is a harmless stand-in.
-        co = localmd.Checkout(
-            worktree=root or vault, vault=vault, slug=slug, local=paths.local_dir(vault, slug)
-        )
-        try:
-            items = localmd.vault_entries(co)
-            odd = localmd.misshapen(co)
-        except OSError as err:
-            findings.append(Finding("local", str(co.local), f"cannot be read: {err}"))
-            continue
-        findings.extend(
-            Finding(
-                "local",
-                str(item.target),
-                f"{item.name} in the vault is not a {localmd.SHAPES[item.kind]}; "
-                "fix or remove it in the vault",
-            )
-            for item in odd
-        )
-        for item in items:
-            findings.extend(_import_findings(item))
-            findings.extend(_repository_findings(item))
-        if root is None or not root.is_dir():
-            continue
-        try:
-            tracked: set[str] | None = localmd.tracked_names(co, items)
-        except localmd.LocalMdError:
-            tracked = None
-        for item in items:
-            message = _checkout_message(
-                co, item, tracked=None if tracked is None else item.name in tracked
-            )
-            if message is not None:
-                findings.append(Finding("local", str(item.link), message))
+        findings.extend(_project_local_findings(vault, slug, root))
     return findings
 
 

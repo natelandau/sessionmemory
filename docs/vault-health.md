@@ -215,18 +215,18 @@ old path:
 
 ```
 1 suggestion
-  └─ local: ~/repos/my-vault/projects/invoice-api/CLAUDE.local.md: CLAUDE.local.md is at its old path; run local link to move it into local/
+  └─ local: ~/repos/my-vault/projects/invoice-api/CLAUDE.local.md: CLAUDE.local.md is at its old path; run local sync to move it into local/
 ```
 
-Run `sessionmemory local link`. It moves the file into `local/`. If `local/` already holds
+Run `sessionmemory local sync`. It moves the file into `local/`. If `local/` already holds
 a different copy, the finding says so:
 
 ```
 1 suggestion
-  └─ local: ~/repos/my-vault/projects/invoice-api/CLAUDE.local.md: CLAUDE.local.md is at its old path and differs from ~/repos/my-vault/projects/invoice-api/local/CLAUDE.local.md; keep one of them, delete the other, then run local link
+  └─ local: ~/repos/my-vault/projects/invoice-api/CLAUDE.local.md: CLAUDE.local.md is at its old path and differs from ~/repos/my-vault/projects/invoice-api/local/CLAUDE.local.md; keep one of them, delete the other, then run local sync
 ```
 
-Keep the copy you want, delete the other one, then run `sessionmemory local link`.
+Keep the copy you want, delete the other one, then run `sessionmemory local sync`.
 
 An entry in `local/` that does not have the shape of its kind is never linked. Examples
 are a file among the skills, which must be folders, and a folder at
@@ -237,7 +237,7 @@ are a file among the skills, which must be folders, and a folder at
   └─ local: ~/repos/my-vault/projects/invoice-api/local/claude/skills/notes.md: skills/notes.md in the vault is not a folder; fix or remove it in the vault
 ```
 
-Move the file into a skill folder, or delete it. Until then, `sessionmemory local link`
+Move the file into a skill folder, or delete it. Until then, `sessionmemory local sync`
 reports a conflict for it and exits 1.
 
 A skill or rule folder in the vault that holds a `.git` folder is a separate repository.
@@ -250,7 +250,7 @@ second machine gets an empty folder:
 ```
 
 Move the repository out of the vault, and clone it again where you need it.
-`sessionmemory local adopt` refuses a folder like this.
+`sessionmemory local sync --adopt` refuses a folder like this.
 
 A relative `@` import in `CLAUDE.local.md` or in a `.md` file of a rule cannot load,
 because Claude Code resolves it from the vault folder:
@@ -266,7 +266,7 @@ and the other files of a rule are not scanned.
 When the registered root exists on this machine, the check also looks at each entry
 there. It reports at most one finding for each entry, with the remedy that fits its state.
 
-An entry that git tracks belongs to the project, and `sessionmemory local link` leaves it
+An entry that git tracks belongs to the project, and `sessionmemory local sync` leaves it
 alone:
 
 ```
@@ -275,59 +275,75 @@ alone:
 ```
 
 If the entry is yours, run the command, commit the removal in the project, then run
-`sessionmemory local adopt skills/release-notes`. The files stay in the project's earlier
+`sessionmemory local sync --adopt skills/release-notes`. The files stay in the project's earlier
 commits. If the project means to share the entry, delete the vault copy instead.
 
 A real file or folder whose content differs from the vault copy is `diverged`:
 
 ```
 1 suggestion
-  └─ local: ~/repos/invoice-api/.claude/rules/style.md: rules/style.md differs from the vault copy; copy the newer one over the vault copy, delete the checkout copy, and run local link
+  └─ local: ~/repos/invoice-api/.claude/rules/style.md: rules/style.md differs from the vault copy; copy the newer one over the vault copy, delete the checkout copy, and run local sync
 ```
 
 An editor that saves by renaming a temporary file over the link leaves this state behind.
 Run `sessionmemory local status` to compare both copies. Then copy the newer content over
-the vault copy, delete the checkout copy, and run `sessionmemory local link`.
+the vault copy, delete the checkout copy, and run `sessionmemory local sync`.
 
 A link to nothing is reported whether or not git ignores it:
 
 ```
 1 suggestion
-  └─ local: ~/repos/invoice-api/.claude/skills/deploy-check: skills/deploy-check is a dangling symlink; run local link to replace it
+  └─ local: ~/repos/invoice-api/.claude/skills/deploy-check: skills/deploy-check is a dangling symlink; run local sync to replace it
 ```
 
-Run `sessionmemory local link`, which replaces the link.
+Run `sessionmemory local sync`, which replaces the link.
 
 The other findings are for a link or a copy that git does not ignore, which shows up as an
 untracked file in the project. The remedy depends on what is there:
 
 ```
 1 suggestion
-  └─ local: ~/repos/invoice-api/CLAUDE.local.md: CLAUDE.local.md is not ignored by git; run local link to add it to info/exclude
+  └─ local: ~/repos/invoice-api/CLAUDE.local.md: CLAUDE.local.md is not ignored by git; run local sync to add it to info/exclude
 ```
 
-The checkout links to the vault copy. Run `sessionmemory local link`, which adds the entry
+The checkout links to the vault copy. Run `sessionmemory local sync`, which adds the entry
 to the file that `git rev-parse --git-path info/exclude` prints.
 
 ```
 1 suggestion
-  └─ local: ~/repos/invoice-api/.claude/rules/style.md: rules/style.md is not ignored by git; run local adopt rules/style.md to replace it with an ignored link
+  └─ local: ~/repos/invoice-api/.claude/rules/style.md: rules/style.md is not ignored by git; run local sync --adopt rules/style.md to replace it with an ignored link
 ```
 
 The checkout holds a real copy with the same content as the vault copy. Run the
-`sessionmemory local adopt` command that the finding names, which replaces the copy with a
+`sessionmemory local sync --adopt` command that the finding names, which replaces the copy with a
 link and adds the ignore line.
 
 ```
 1 suggestion
-  └─ local: ~/repos/invoice-api/.claude/rules/style.md: rules/style.md is not ignored by git, and a symlink to ~/repos/notes/style.md rather than the vault copy; remove it, then run local link
+  └─ local: ~/repos/invoice-api/.claude/rules/style.md: rules/style.md is not ignored by git, and a symlink to ~/repos/notes/style.md rather than the vault copy; remove it, then run local sync
 ```
 
 The checkout holds a link to another file. Remove the link, then run
-`sessionmemory local link`.
+`sessionmemory local sync`.
 
 When `.claude/`, `.claude/skills/`, or `.claude/rules/` is itself a symlink or a file, no
 entry under it can be linked, and the finding says so. Replace it with a real folder.
+
+The checkout's `.claude/settings.local.json` is reported when the two copies need your
+choice:
+
+```
+1 suggestion
+  └─ local: ~/repos/invoice-api/.claude/settings.local.json: settings.local.json differs from the vault copy; run local sync to choose which copy to keep
+```
+
+Run `sessionmemory local sync` and keep one copy. The same remedy applies when only the
+checkout or only the vault has a copy. A settings file that is a symlink is reported
+because Claude Code cannot write through it: replace it with a regular file. A settings
+file that git tracks is reported with the `git rm --cached` command that keeps it private.
+When `.claude/` is a symlink or not a folder, or a copy is a folder or a symlink, the
+settings cannot be synced and the finding says so. Replace it with a real folder or a
+regular file.
 
 The check covers the registered root only. `sessionmemory local status` covers each
 worktree.

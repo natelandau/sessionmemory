@@ -283,11 +283,11 @@ def colored_checkout(tmp_path):
     "arguments",
     [
         pytest.param(["local", "status", "--json"], id="local-status"),
-        pytest.param(["local", "link", "--json"], id="local-link"),
+        pytest.param(["local", "sync", "--json"], id="local-sync"),
     ],
 )
 def test_local_json_output_is_parseable_in_a_colored_shell(colored_checkout, arguments):
-    """Emit `local` JSON unstyled, since the SessionStart hook parses `local link --json`."""
+    """Emit `local` JSON unstyled, since the SessionStart hook parses `local sync --json`."""
     env, repo = colored_checkout
     result = _run(env, *arguments, "--cwd", str(repo))
 

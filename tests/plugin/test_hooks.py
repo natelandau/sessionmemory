@@ -1435,12 +1435,13 @@ def test_sessionstart_links_skills_and_rules_and_names_them(tmp_path: Path) -> N
 
 
 class _LinkVault:
-    """A VaultCLI stand-in whose `local link` payload is fixed."""
+    """A VaultCLI stand-in whose `local sync` payload and command name are fixed."""
 
     def __init__(self, payload: dict[str, object] | None) -> None:
         self.payload = payload
+        self.command = "/opt/plugin/bin/sessionmemory"
 
-    def link_local(self, **_kwargs: object) -> dict[str, object] | None:
+    def sync_local(self, **_kwargs: object) -> dict[str, object] | None:
         return self.payload
 
 
@@ -1514,3 +1515,71 @@ def test_local_block_names_only_skills_when_no_rule_was_created(tmp_path: Path) 
     assert "next session" in blocks[0]
     assert "Allow external CLAUDE.md file imports?" not in blocks[0]
     assert clauses == ["local created 1"]
+
+
+def test_local_block_asks_about_pending_work(tmp_path: Path) -> None:
+    """Verify pending adoptions and a settings difference become one block telling the agent to ask."""
+    payload = {
+        "entries": [],
+        "pending": {
+            "adopt": ["rules/r.md"],
+            "settings": {
+                "state": "differs",
+                "checkout": {
+                    "path": "/p/.claude/settings.local.json",
+                    "mtime": "2026-10-26T14:02:11Z",
+                },
+                "vault": {"path": "/v/settings.local.json", "mtime": "2026-10-25T09:40:00Z"},
+                "summary": ["permissions.allow: 3 only in the checkout"],
+            },
+        },
+    }
+
+    blocks, clauses = _local_block(payload, tmp_path)
+
+    assert len(blocks) == 1
+    block = blocks[0]
+    assert "rules/r.md" in block
+    assert "differs" in block
+    assert "2026-10-26T14:02:11Z" in block
+    assert "2026-10-25T09:40:00Z" in block
+    assert "permissions.allow: 3 only in the checkout" in block
+    assert "ask the person" in block
+    assert "`/opt/plugin/bin/sessionmemory local sync --adopt" in block
+    assert "--adopt" in block
+    assert "--keep-settings" in block
+    assert "new session" in block
+    assert clauses == ["local none, pending 2"]
+
+
+def test_local_block_without_pending_adds_no_ask(tmp_path: Path) -> None:
+    """Verify a payload with nothing pending adds no block."""
+    payload = {
+        "entries": [_entry("skills/a", "present")],
+        "pending": {"adopt": [], "settings": None},
+    }
+
+    blocks, clauses = _local_block(payload, tmp_path)
+
+    assert blocks == []
+    assert clauses == ["local present 1"]
+
+
+def test_sessionstart_asks_about_differing_settings(tmp_path: Path) -> None:
+    """Verify a real start links the vault's skill and asks about differing settings."""
+    proj, vault = _local_repo(tmp_path)
+    skill = vault / "projects" / proj.name / "local" / "claude" / "skills" / "deploy"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("# deploy\n", encoding="utf-8")
+    vault_settings = vault / "projects" / proj.name / "local" / "claude" / "settings.local.json"
+    vault_settings.write_text('{"permissions": {"allow": ["A"]}}', encoding="utf-8")
+    (proj / ".claude").mkdir(exist_ok=True)
+    (proj / ".claude" / "settings.local.json").write_text("{}", encoding="utf-8")
+
+    context = _start(tmp_path, proj, vault)
+
+    assert (proj / ".claude" / "skills" / "deploy").is_symlink()
+    assert "--keep-settings" in context
+    assert "permissions: only in the vault" in context
+    assert (proj / ".claude" / "settings.local.json").read_text(encoding="utf-8") == "{}"
+    assert "pending 1" in _hooks_log(tmp_path)

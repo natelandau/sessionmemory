@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sqlite3
 import subprocess
 from pathlib import Path
@@ -473,7 +474,7 @@ def test_local_reports_diverged_copy_at_root(tmp_path):
 
     expected = (
         "CLAUDE.local.md differs from the vault copy; copy the newer one over the vault "
-        "copy, delete the checkout copy, and run local link"
+        "copy, delete the checkout copy, and run local sync"
     )
     assert [f.message for f in findings] == [expected]
 
@@ -489,7 +490,7 @@ def test_local_reports_unignored_link(tmp_path):
     findings = doctor.local_instructions(vault, StubEmbedder())
 
     assert [f.message for f in findings] == [
-        "CLAUDE.local.md is not ignored by git; run local link to add it to info/exclude"
+        "CLAUDE.local.md is not ignored by git; run local sync to add it to info/exclude"
     ]
 
 
@@ -562,7 +563,7 @@ def test_local_advises_adopt_for_an_identical_unignored_file(tmp_path):
 
     assert [f.message for f in findings] == [
         (
-            "CLAUDE.local.md is not ignored by git; run local adopt CLAUDE.local.md "
+            "CLAUDE.local.md is not ignored by git; run local sync --adopt CLAUDE.local.md "
             "to replace it with an ignored link"
         )
     ]
@@ -598,7 +599,7 @@ def test_local_reports_an_unignored_foreign_link(tmp_path):
 
     expected = (
         f"CLAUDE.local.md is not ignored by git, and a symlink to {other.resolve()} rather "
-        "than the vault copy; remove it, then run local link"
+        "than the vault copy; remove it, then run local sync"
     )
     assert [f.message for f in findings] == [expected]
 
@@ -657,7 +658,7 @@ def test_local_flags_relative_import_in_rule(tmp_path):
 
 
 def test_local_flags_old_path_copy(tmp_path):
-    """Verify a CLAUDE.local.md left at the old vault path is reported with local link."""
+    """Verify a CLAUDE.local.md left at the old vault path is reported with local sync."""
     vault = tmp_path / "vault"
     vault.mkdir()
     old = vault / "projects" / "demo" / "CLAUDE.local.md"
@@ -666,7 +667,7 @@ def test_local_flags_old_path_copy(tmp_path):
 
     findings = doctor.local_instructions(vault, StubEmbedder())
 
-    assert [(f.path, "local link" in f.message) for f in findings] == [(str(old), True)]
+    assert [(f.path, "local sync" in f.message) for f in findings] == [(str(old), True)]
 
 
 def test_local_flags_diverged_skill_at_root(tmp_path):
@@ -689,7 +690,7 @@ def test_local_flags_diverged_skill_at_root(tmp_path):
             str(skill),
             (
                 "skills/deploy-check differs from the vault copy; copy the newer one over "
-                "the vault copy, delete the checkout copy, and run local link"
+                "the vault copy, delete the checkout copy, and run local sync"
             ),
         )
     ]
@@ -708,7 +709,7 @@ def test_local_flags_unignored_rule_link(tmp_path):
     findings = doctor.local_instructions(vault, StubEmbedder())
 
     assert [f.message for f in findings] == [
-        "rules/style.md is not ignored by git; run local link to add it to info/exclude"
+        "rules/style.md is not ignored by git; run local sync to add it to info/exclude"
     ]
 
 
@@ -730,7 +731,7 @@ def test_local_names_the_entry_to_adopt_and_to_untrack(tmp_path):
 
     assert messages == [
         (
-            "rules/same.md is not ignored by git; run local adopt rules/same.md "
+            "rules/same.md is not ignored by git; run local sync --adopt rules/same.md "
             "to replace it with an ignored link"
         ),
         (
@@ -753,7 +754,7 @@ def test_local_flags_a_dangling_link(tmp_path):
     findings = doctor.local_instructions(vault, StubEmbedder())
 
     assert [f.message for f in findings] == [
-        "rules/style.md is a dangling symlink; run local link to replace it"
+        "rules/style.md is a dangling symlink; run local sync to replace it"
     ]
 
 
@@ -834,7 +835,7 @@ def test_local_flags_old_path_copy_that_differs_with_keep_one(tmp_path):
             str(old),
             (
                 f"CLAUDE.local.md is at its old path and differs from {new}; keep one of "
-                "them, delete the other, then run local link"
+                "them, delete the other, then run local sync"
             ),
         )
     ]
@@ -1144,3 +1145,151 @@ def test_commits_does_not_count_a_known_orphan_in_a_shallow_clone(tmp_path):
     registry.save(vault, {"demo": registry.Project(slug="demo", remotes=(), root=str(shallow))})
 
     assert doctor.orphaned_commits(vault, StubEmbedder()) == []
+
+
+def _settings_copies(vault: Path, root: Path, *, checkout: str | None, theirs: str | None) -> Path:
+    """Write the checkout's and the vault's settings.local.json for `demo`; return the link."""
+    link = root / ".claude" / "settings.local.json"
+    if checkout is not None:
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.write_text(checkout, encoding="utf-8")
+    if theirs is not None:
+        target = vault / "projects" / "demo" / "local" / "claude" / "settings.local.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(theirs, encoding="utf-8")
+    return link
+
+
+@pytest.mark.parametrize(
+    ("ours", "theirs", "expected"),
+    [
+        (
+            '{"a": 1}',
+            '{"a": 2}',
+            (
+                "settings.local.json differs from the vault copy; run local sync to choose "
+                "which copy to keep"
+            ),
+        ),
+        (
+            '{"a": 1}',
+            None,
+            "settings.local.json is only in the checkout; run local sync to keep a copy",
+        ),
+        (
+            None,
+            '{"a": 1}',
+            "settings.local.json is only in the vault; run local sync to keep a copy",
+        ),
+    ],
+)
+def test_doctor_settings_pending_states(tmp_path, ours, theirs, expected):
+    """Verify each settings state that waits on the person is reported with local sync."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    root = tmp_path / "repo"
+    _local_project(vault, root)
+    link = _settings_copies(vault, root, checkout=ours, theirs=theirs)
+
+    findings = [
+        f for f in doctor.local_instructions(vault, StubEmbedder()) if "settings" in f.message
+    ]
+
+    assert [(f.path, f.message) for f in findings] == [(str(link), expected)]
+
+
+def test_doctor_settings_same_is_quiet(tmp_path):
+    """Verify matching settings copies produce no finding."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    root = tmp_path / "repo"
+    _local_project(vault, root)
+    _settings_copies(vault, root, checkout='{"a": 1}', theirs='{"a":1}')
+
+    findings = doctor.local_instructions(vault, StubEmbedder())
+
+    assert not [f for f in findings if "settings" in f.message]
+
+
+def test_doctor_settings_linked_tracked_and_blocked(tmp_path):
+    """Verify a symlinked, a tracked, and a blocked settings file each get their own advice."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    root = tmp_path / "repo"
+    _local_project(vault, root)
+    link = _settings_copies(vault, root, checkout=None, theirs="{}")
+    other = tmp_path / "other.json"
+    other.write_text("{}", encoding="utf-8")
+    link.parent.mkdir(parents=True)
+    link.symlink_to(other)
+
+    def settings_messages() -> list[str]:
+        found = doctor.local_instructions(vault, StubEmbedder())
+        return [f.message for f in found if "settings" in f.message]
+
+    assert settings_messages() == [
+        (
+            "settings.local.json is a symlink, which Claude Code cannot write through; "
+            "replace it with a regular file"
+        )
+    ]
+
+    link.unlink()
+    link.write_text("{}", encoding="utf-8")
+    subprocess.run(["git", "add", "-f", ".claude/settings.local.json"], cwd=root, check=True)
+    assert settings_messages() == [
+        (
+            "settings.local.json is tracked by git; run git rm --cached "
+            ".claude/settings.local.json to keep it private"
+        )
+    ]
+
+    subprocess.run(
+        ["git", "rm", "-q", "--cached", ".claude/settings.local.json"], cwd=root, check=True
+    )
+    shutil.rmtree(root / ".claude")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (root / ".claude").symlink_to(elsewhere)
+    assert settings_messages() == [
+        "settings.local.json cannot be synced; .claude is a symlink or not a folder"
+    ]
+
+
+def test_doctor_messages_name_local_sync(tmp_path):
+    """Verify no local finding tells the person to run the removed link or adopt commands."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    root = tmp_path / "repo"
+    _local_project(vault, root)
+    target = _local_entry(vault, "rules/style.md")
+    (root / ".claude" / "rules").mkdir(parents=True)
+    (root / ".claude" / "rules" / "style.md").symlink_to(target)
+    (root / ".claude" / "skills").mkdir()
+    (root / ".claude" / "skills" / "gone").symlink_to(tmp_path / "missing")
+    legacy = vault / "projects" / "demo" / "CLAUDE.local.md"
+    legacy.write_text("old\n", encoding="utf-8")
+
+    messages = [f.message for f in doctor.local_instructions(vault, StubEmbedder())]
+
+    assert messages
+    assert not [m for m in messages if "local link" in m or "local adopt" in m]
+
+
+def test_doctor_skips_settings_when_git_cannot_say_tracked(tmp_path, monkeypatch):
+    """Verify an unknown tracked state reports nothing for settings rather than a guess."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    root = tmp_path / "repo"
+    _local_project(vault, root)
+    _settings_copies(vault, root, checkout='{"a": 1}', theirs='{"a": 2}')
+
+    def broken(*_args: object, **_kwargs: object) -> set[str]:
+        msg = "git ls-files failed"
+        raise doctor.localmd.LocalMdError(msg)
+
+    monkeypatch.setattr(doctor.localmd, "tracked_names", broken)
+
+    findings = doctor.local_instructions(vault, StubEmbedder())
+
+    assert not [f for f in findings if "settings" in f.message]

@@ -95,9 +95,12 @@ never let it write an index ours reads: its Ollama vectors need not match fastem
 - An oversized page is embedded truncated, never chunked. One page, one embedding.
 - `lib/backlog.py` owns the backlog item shape. `new backlog` is the CLI's only write to
   `backlog.md`, and it only appends.
-- `lib/localmd.py` owns local entries (`CLAUDE.local.md`, `skills/<n>`, `rules/<n>`) and
-  their link states; `lib/localtree.py` holds the tree copy, compare, and link placement
-  it uses. Everything an entry keeps in the vault lives under `projects/<slug>/local/`.
+- `lib/localmd.py` owns local entries (`CLAUDE.local.md`, `skills/<n>`, `rules/<n>`,
+  `settings.local.json`) and their states. Every entry but the settings file is linked;
+  that one is copied, only in the direction the person picks, and is never part of
+  `entries()`, so no link operation reaches it. `lib/localtree.py` holds the tree copy,
+  compare, and link placement it uses, and `lib/settingsdiff.py` the settings summary.
+  Everything an entry keeps in the vault lives under `projects/<slug>/local/`.
 - `specs/` is indexed but is not a field. `plans/`, `runbooks/`, `reference/`, `local/`,
   and `backlog.md` are never indexed. There is no cross-project read.
 
