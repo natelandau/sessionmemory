@@ -9,7 +9,7 @@
 # extra-paths = ["."]
 # ///
 
-"""SessionStart hook: commit the vault, inject memory, link CLAUDE.local.md, consume a handoff.
+"""SessionStart hook: commit the vault, inject memory, link local entries, consume a handoff.
 
 Commits whatever the last session's sweep and any hand edits left behind, so the
 vault's history is never more than one session behind its files, in every case
@@ -39,10 +39,12 @@ The schema version is deliberately not checked here. This path only reads, and a
 block rendered by a vault one version ahead is still readable text; it is the
 writing paths that must refuse a schema they do not speak.
 
-After the memory block, and independently of `[inject] enabled`, it links this checkout's
-`CLAUDE.local.md` to the vault copy when `[local] link` is on. Claude Code reads that file
-before the hook runs, so a link made at this start is not loaded; the hook injects the
-content itself, once, on the start that created the link.
+After the memory block, and independently of `[inject] enabled`, it links every local entry
+the vault holds for this project (`CLAUDE.local.md`, each skill, each rule) into this
+checkout when `[local] link` is on. Claude Code reads them before the hook runs, so a link
+made at this start is not loaded. The hook injects `CLAUDE.local.md`'s content itself, once,
+on the start that created its link; a newly linked skill or rule is only named, since its
+body would cost context the session may never use.
 
 No-ops when running inside the headless sweep agent. When no vault is reachable it
 injects a hint saying so, since every hook fails open and the session would otherwise
@@ -71,7 +73,7 @@ HOOKS_ROOT = Path(__file__).resolve().parent
 if str(HOOKS_ROOT) not in sys.path:  # pragma: no cover - conftest.py always adds it first
     sys.path.insert(0, str(HOOKS_ROOT))
 
-from sessionhooks import log  # noqa: E402
+from sessionhooks import log, shape  # noqa: E402
 from sessionhooks.headless import is_headless  # noqa: E402
 from sessionhooks.hookmain import begin  # noqa: E402
 from sessionhooks.io import read_payload  # noqa: E402
@@ -101,6 +103,24 @@ LOCAL_LINKED_NOTE = (
     "so Claude Code did not load it for this session. It loads on its own from the next "
     "session. Its content follows."
 )
+
+# The order the log clause counts `local link` statuses in, whatever order the CLI lists.
+LOCAL_STATUSES = ("created", "present", "tracked", "removed", "conflict")
+
+
+def _linked_entries_note(names: list[str]) -> str:
+    """The line naming the skills and rules this start linked, and when they load."""
+    note = (
+        f"Linked from the vault during this session start: {', '.join(names)}. "
+        "They load from the next session"
+    )
+    if any(name.startswith("rules/") for name in names):
+        note += (
+            "; a linked rule loads only after the one-time Claude Code approval "
+            '"Allow external CLAUDE.md file imports?"'
+        )
+    return f"{note}."
+
 
 # Every hook fails open, so a missing vault would otherwise mean session after session
 # with no memory and no error. Both ways to name a vault are spelled out because the
@@ -196,20 +216,49 @@ def _local_block(
     clauses: list[str],
     log: logging.Logger,
 ) -> list[str]:
-    """Link CLAUDE.local.md; the block carrying its content when this start created the link."""
+    """Link every local entry; the blocks this start owes the session for links it created.
+
+    `CLAUDE.local.md`'s content is injected under `LOCAL_LINKED_NOTE`, and created skills
+    and rules are named in one line. One clause counts each status for the log.
+    """
     if vault is None or not cfg.local_link:
         return []
-    result = vault.link_local(cwd=cwd, env=os.environ)
-    status = result.get("status") if result is not None else None
-    if not isinstance(status, str):
+    payload = vault.link_local(cwd=cwd, env=os.environ)
+    if payload is not None and payload.get("status") == "refused":
+        clauses.append("local refused")
+        return []
+    entries = payload.get("entries") if payload is not None else None
+    if not isinstance(entries, list):
         clauses.append("local unavailable")
         return []
-    if status == "conflict":
-        clauses.append(f"local conflict: {result.get('link')}")
-        return []
-    clauses.append(f"local {status}")
-    target = result.get("target")
-    if status != "created" or not isinstance(target, str):
+    results = [item for item in entries if isinstance(item, dict)]
+    counts = {
+        status: sum(1 for item in results if item.get("status") == status)
+        for status in LOCAL_STATUSES
+    }
+    summary = ", ".join(f"{status} {n}" for status, n in counts.items() if n)
+    clauses.append(f"local {summary or 'none'}")
+    for item in results:
+        if item.get("status") == "conflict":
+            log.info("local conflict: %s at %s", item.get("name"), item.get("link"))
+    created = [item for item in results if item.get("status") == "created"]
+    blocks: list[str] = []
+    for item in created:
+        if item.get("name") == shape.LOCAL_MD:
+            blocks.extend(_local_md_block(item.get("target"), clauses=clauses, log=log))
+    names = [
+        name
+        for item in created
+        if isinstance(name := item.get("name"), str) and name != shape.LOCAL_MD
+    ]
+    if names:
+        blocks.append(_linked_entries_note(names))
+    return blocks
+
+
+def _local_md_block(target: object, *, clauses: list[str], log: logging.Logger) -> list[str]:
+    """The block carrying a newly linked CLAUDE.local.md's content, or none when unreadable."""
+    if not isinstance(target, str):
         return []
     try:
         content = Path(target).read_text(encoding="utf-8", errors="replace")

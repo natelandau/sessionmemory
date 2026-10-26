@@ -6,6 +6,7 @@ import errno
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -2900,7 +2901,7 @@ def test_modified_local_md_is_restored(tmp_path: Path) -> None:
     vault_root = tmp_path / "vault"
     store = _job_store(tmp_path)
     target = _target_at(vault_root)
-    local_md = target.project_dir / "CLAUDE.local.md"
+    local_md = _local_file(target, "CLAUDE.local.md")
     local_md.write_text("private notes\n", encoding="utf-8")
     _seed_git(vault_root)
     sweep = Sweep(
@@ -2913,7 +2914,7 @@ def test_modified_local_md_is_restored(tmp_path: Path) -> None:
     notes = sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="sess-local"))
 
     assert local_md.read_text(encoding="utf-8") == "private notes\n"
-    message = "CLAUDE.local.md is the person's, not the sweep's"
+    message = _LOCAL_PROBLEM
     saved = list((store.state_dir / "quarantine").glob("*-CLAUDE.local.md"))
     assert len(saved) == 1
     assert saved[0].read_text(encoding="utf-8") == "rewritten\n"
@@ -2928,7 +2929,7 @@ def test_uncommitted_local_md_edit_survives_a_run_that_changes_it(tmp_path: Path
     vault_root = tmp_path / "vault"
     store = _job_store(tmp_path)
     target = _target_at(vault_root)
-    local_md = target.project_dir / "CLAUDE.local.md"
+    local_md = _local_file(target, "CLAUDE.local.md")
     local_md.write_text("committed\n", encoding="utf-8")
     _seed_git(vault_root)
     local_md.write_text("uncommitted edit\n", encoding="utf-8")
@@ -2953,7 +2954,7 @@ def test_local_md_deleted_during_a_run_returns_with_its_pre_run_bytes(tmp_path: 
     vault_root = tmp_path / "vault"
     store = _job_store(tmp_path)
     target = _target_at(vault_root)
-    local_md = target.project_dir / "CLAUDE.local.md"
+    local_md = _local_file(target, "CLAUDE.local.md")
     local_md.write_text("committed\n", encoding="utf-8")
     _seed_git(vault_root)
     local_md.write_text("uncommitted edit\n", encoding="utf-8")
@@ -2975,7 +2976,7 @@ def test_deleted_local_md_is_restored(tmp_path: Path) -> None:
     vault_root = tmp_path / "vault"
     store = _job_store(tmp_path)
     target = _target_at(vault_root)
-    local_md = target.project_dir / "CLAUDE.local.md"
+    local_md = _local_file(target, "CLAUDE.local.md")
     local_md.write_text("private notes\n", encoding="utf-8")
     _seed_git(vault_root)
     sweep = Sweep(
@@ -2988,8 +2989,249 @@ def test_deleted_local_md_is_restored(tmp_path: Path) -> None:
     notes = sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="sess-del-local"))
 
     assert local_md.read_text(encoding="utf-8") == "private notes\n"
-    message = "CLAUDE.local.md is the person's, not the sweep's"
+    message = _LOCAL_PROBLEM
     assert any(n.startswith("deleted-restored: ") and message in n for n in notes)
+
+
+_LOCAL_PROBLEM = "local/ is the person's, not the sweep's"
+
+
+def _local_file(target: Target, relative: str) -> Path:
+    """A path under the project's local/ folder, its parent created."""
+    path = target.project_dir / "local" / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def test_modified_local_skill_file_is_restored_with_its_copy_saved(tmp_path: Path) -> None:
+    """Verify an edit to a skill file under local/ returns to its pre-run bytes."""
+    # Given a committed skill file under local/
+    vault_root = tmp_path / "vault"
+    store = _job_store(tmp_path)
+    target = _target_at(vault_root)
+    skill = _local_file(target, "claude/skills/a/SKILL.md")
+    skill.write_text("the skill\n", encoding="utf-8")
+    _seed_git(vault_root)
+    sweep = Sweep(
+        store,
+        SessionMemoryConfig(),
+        _WritingRunner(lambda: skill.write_text("rewritten\n", encoding="utf-8")),
+        _FakeVault(target, root=vault_root),
+    )
+
+    # When a sweep rewrites it
+    notes = sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="sess-skill"))
+
+    # Then the person's bytes are back and the displaced copy is in quarantine
+    assert skill.read_text(encoding="utf-8") == "the skill\n"
+    saved = list((store.state_dir / "quarantine").glob("*-SKILL.md"))
+    assert len(saved) == 1
+    assert saved[0].read_text(encoding="utf-8") == "rewritten\n"
+    expected = (
+        f"malformed-restored: {skill.resolve()} "
+        f"({_LOCAL_PROBLEM}; displaced copy saved to {saved[0]})"
+    )
+    assert expected in notes
+
+
+def test_new_local_file_not_in_head_is_left_in_place(tmp_path: Path) -> None:
+    """Verify a file that appears under local/ during a run and HEAD lacks stays with a note."""
+    # Given a committed vault with no rule under local/
+    vault_root = tmp_path / "vault"
+    store = _job_store(tmp_path)
+    target = _target_at(vault_root)
+    _local_file(target, "CLAUDE.local.md").write_text("notes\n", encoding="utf-8")
+    _seed_git(vault_root)
+    rule = _local_file(target, "claude/rules/b.md")
+    sweep = Sweep(
+        store,
+        SessionMemoryConfig(),
+        _WritingRunner(lambda: rule.write_text("a new rule\n", encoding="utf-8")),
+        _FakeVault(target, root=vault_root),
+    )
+
+    # When a rule appears there during the run
+    notes = sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="sess-new-rule"))
+
+    # Then it is left in place, nothing is quarantined, and the note says so
+    assert rule.read_text(encoding="utf-8") == "a new rule\n"
+    assert not list((store.state_dir / "quarantine").glob("*-b.md"))
+    expected = f"local-kept: {rule.resolve()} ({_LOCAL_PROBLEM}; not in HEAD, left in place)"
+    assert expected in notes
+
+
+def test_deleted_local_skill_file_returns_from_the_capture(tmp_path: Path) -> None:
+    """Verify a skill file deleted during a run comes back with its uncommitted pre-run bytes."""
+    # Given a skill file whose latest edit is not committed
+    vault_root = tmp_path / "vault"
+    store = _job_store(tmp_path)
+    target = _target_at(vault_root)
+    script = _local_file(target, "claude/skills/a/scripts/run.sh")
+    script.write_text("committed\n", encoding="utf-8")
+    _seed_git(vault_root)
+    script.write_text("uncommitted\n", encoding="utf-8")
+    sweep = Sweep(
+        store,
+        SessionMemoryConfig(),
+        _WritingRunner(script.unlink),
+        _FakeVault(target, root=vault_root),
+    )
+
+    # When the run deletes it
+    notes = sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="sess-del-skill"))
+
+    # Then the pre-run bytes are back
+    assert script.read_text(encoding="utf-8") == "uncommitted\n"
+    assert f"deleted-restored: {script.resolve()} ({_LOCAL_PROBLEM})" in notes
+
+
+_TOKEN = "token = 'ghp_" + "a" * 36 + "'\n"
+
+
+def test_new_local_file_holding_a_secret_keeps_its_exact_bytes(tmp_path: Path) -> None:
+    """Verify a file that appears under local/ is never redacted by the secret scrub."""
+    vault_root = tmp_path / "vault"
+    store = _job_store(tmp_path)
+    target = _target_at(vault_root)
+    _local_file(target, "CLAUDE.local.md").write_text("notes\n", encoding="utf-8")
+    _seed_git(vault_root)
+    rule = _local_file(target, "claude/rules/b.md")
+    sweep = Sweep(
+        store,
+        SessionMemoryConfig(),
+        _WritingRunner(lambda: rule.write_text(_TOKEN, encoding="utf-8")),
+        _FakeVault(target, root=vault_root),
+    )
+
+    notes = sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="sess-secret-new"))
+
+    assert rule.read_text(encoding="utf-8") == _TOKEN
+    assert not any(n.startswith("secret-") for n in notes)
+
+
+def test_modified_local_file_holding_a_secret_saves_the_unredacted_copy(tmp_path: Path) -> None:
+    """Verify a modified local/ file is restored and its saved copy keeps the secret verbatim."""
+    vault_root = tmp_path / "vault"
+    store = _job_store(tmp_path)
+    target = _target_at(vault_root)
+    local_md = _local_file(target, "CLAUDE.local.md")
+    local_md.write_text("notes\n", encoding="utf-8")
+    _seed_git(vault_root)
+    sweep = Sweep(
+        store,
+        SessionMemoryConfig(),
+        _WritingRunner(lambda: local_md.write_text(_TOKEN, encoding="utf-8")),
+        _FakeVault(target, root=vault_root),
+    )
+
+    notes = sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="sess-secret-mod"))
+
+    assert local_md.read_text(encoding="utf-8") == "notes\n"
+    saved = list((store.state_dir / "quarantine").glob("*-CLAUDE.local.md"))
+    assert len(saved) == 1
+    assert saved[0].read_text(encoding="utf-8") == _TOKEN
+    assert not any(n.startswith("secret-") for n in notes)
+
+
+def test_deleted_skill_folder_returns_whole(tmp_path: Path) -> None:
+    """Verify a skill folder the run removes comes back file by file, folders included."""
+    vault_root = tmp_path / "vault"
+    store = _job_store(tmp_path)
+    target = _target_at(vault_root)
+    skill = target.project_dir / "local" / "claude" / "skills" / "a"
+    _local_file(target, "claude/skills/a/SKILL.md").write_text("skill\n", encoding="utf-8")
+    _local_file(target, "claude/skills/a/scripts/run.sh").write_text("run\n", encoding="utf-8")
+    _seed_git(vault_root)
+    sweep = Sweep(
+        store,
+        SessionMemoryConfig(),
+        _WritingRunner(lambda: shutil.rmtree(skill)),
+        _FakeVault(target, root=vault_root),
+    )
+
+    sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="sess-rm-skill"))
+
+    assert (skill / "SKILL.md").read_text(encoding="utf-8") == "skill\n"
+    assert (skill / "scripts" / "run.sh").read_text(encoding="utf-8") == "run\n"
+
+
+def test_debris_under_local_is_neither_captured_nor_restored(tmp_path: Path) -> None:
+    """Verify debris under local/ is left as the run left it."""
+    vault_root = tmp_path / "vault"
+    store = _job_store(tmp_path)
+    target = _target_at(vault_root)
+    debris = _local_file(target, "claude/skills/a/.DS_Store")
+    debris.write_text("before\n", encoding="utf-8")
+    cache = _local_file(target, "claude/skills/a/__pycache__/m.pyc")
+    cache.write_text("before\n", encoding="utf-8")
+    _seed_git(vault_root)
+
+    def _write() -> None:
+        debris.write_text("after\n", encoding="utf-8")
+        cache.unlink()
+
+    guard = WriteGuard(state_dir=store.state_dir, vault_root=vault_root)
+    guard.capture_local(target)
+    sweep = Sweep(
+        store, SessionMemoryConfig(), _WritingRunner(_write), _FakeVault(target, root=vault_root)
+    )
+
+    notes = sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="sess-debris"))
+
+    assert guard.local_before == {}
+    assert debris.read_text(encoding="utf-8") == "after\n"
+    assert not cache.exists()
+    guard_notes = ("deleted-", "malformed-", "local-kept")
+    assert not any(n.startswith(guard_notes) for n in notes)
+
+
+def test_new_local_file_head_holds_is_restored_with_its_copy_saved(tmp_path: Path) -> None:
+    """Verify a file the run recreates under local/ returns to HEAD with the run's copy saved."""
+    # Given a committed rule the person has since deleted
+    vault_root = tmp_path / "vault"
+    store = _job_store(tmp_path)
+    target = _target_at(vault_root)
+    rule = _local_file(target, "claude/rules/b.md")
+    rule.write_text("committed\n", encoding="utf-8")
+    _seed_git(vault_root)
+    rule.unlink()
+    sweep = Sweep(
+        store,
+        SessionMemoryConfig(),
+        _WritingRunner(lambda: rule.write_text("recreated\n", encoding="utf-8")),
+        _FakeVault(target, root=vault_root),
+    )
+
+    # When the run writes it again
+    notes = sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="sess-recreate"))
+
+    # Then HEAD's content is back and the run's copy is in quarantine
+    assert rule.read_text(encoding="utf-8") == "committed\n"
+    saved = list((store.state_dir / "quarantine").glob("*-b.md"))
+    assert len(saved) == 1
+    assert saved[0].read_text(encoding="utf-8") == "recreated\n"
+    assert any(n.startswith(f"malformed-restored: {rule.resolve()}") for n in notes)
+
+
+def test_modified_legacy_local_md_is_still_restored(tmp_path: Path) -> None:
+    """Verify a CLAUDE.local.md not yet moved into local/ is still the person's."""
+    vault_root = tmp_path / "vault"
+    store = _job_store(tmp_path)
+    target = _target_at(vault_root)
+    legacy = target.project_dir / "CLAUDE.local.md"
+    legacy.write_text("private notes\n", encoding="utf-8")
+    _seed_git(vault_root)
+    sweep = Sweep(
+        store,
+        SessionMemoryConfig(),
+        _WritingRunner(lambda: legacy.write_text("rewritten\n", encoding="utf-8")),
+        _FakeVault(target, root=vault_root),
+    )
+
+    notes = sweep._run_job(SweepJob(window=[], cwd=str(tmp_path), session_id="sess-legacy"))
+
+    assert legacy.read_text(encoding="utf-8") == "private notes\n"
+    assert any(n.startswith(f"malformed-restored: {legacy.resolve()}") for n in notes)
 
 
 def _seed_git(root: Path) -> None:
@@ -3152,7 +3394,7 @@ def test_local_md_restore_that_raises_names_the_saved_copy(tmp_path: Path, monke
     vault_root = tmp_path / "vault"
     store = _job_store(tmp_path)
     target = _target_at(vault_root)
-    local_md = target.project_dir / "CLAUDE.local.md"
+    local_md = _local_file(target, "CLAUDE.local.md")
     local_md.write_text("private notes\n", encoding="utf-8")
     _seed_git(vault_root)
     sweep = Sweep(

@@ -44,8 +44,8 @@ Always run the check script last, whether or not you wrote anything:
 
 It runs the automatic sweep's safety checks on every file you changed in the
 project folder: it redacts secrets, sets aside a page with the wrong shape, and
-puts back `CLAUDE.local.md`. Its success is also what tells the automatic sweep
-this one finished, so never skip it and never run it in a later turn.
+puts back anything changed under `local/`. Its success is also what tells the
+automatic sweep this one finished, so never skip it and never run it in a later turn.
 
 ## Step 4: report
 

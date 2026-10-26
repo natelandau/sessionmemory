@@ -49,7 +49,7 @@ class Started:
     session_id: str
     target: Target
     before: dict[Path, str]
-    local_md: dict[Path, bytes]
+    local: dict[Path, bytes]
 
     def save(self, path: Path) -> None:
         """Write the record as JSON, creating the state directory when missing."""
@@ -62,7 +62,7 @@ class Started:
                 "logs": str(self.target.logs_dir),
             },
             "before": {str(p): digest for p, digest in self.before.items()},
-            "local_md": {str(p): base64.b64encode(b).decode() for p, b in self.local_md.items()},
+            "local": {str(p): base64.b64encode(b).decode() for p, b in self.local.items()},
         }
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(payload), encoding="utf-8")
@@ -79,7 +79,11 @@ class Started:
                 session_id=str(payload["session_id"]),
                 target=target,
                 before={Path(p): str(d) for p, d in payload["before"].items()},
-                local_md={Path(p): base64.b64decode(b) for p, b in payload["local_md"].items()},
+                local={
+                    Path(p): base64.b64decode(b)
+                    # `local_md` is the key a record from an earlier plugin version uses.
+                    for p, b in payload["local" if "local" in payload else "local_md"].items()
+                },
             )
         except (OSError, ValueError, KeyError, TypeError, AttributeError, binascii.Error):
             return None
@@ -142,12 +146,12 @@ class ManualSweep:
             raise ManualSweepError(composed)
         target, prompt = composed
         guard = WriteGuard(state_dir=self.store.state_dir, vault_root=self.vault_root)
-        guard.capture_local_md(target)
+        guard.capture_local(target)
         Started(
             session_id=session_id,
             target=target,
             before=snapshot.take(target.project_dir),
-            local_md=guard.local_md_before,
+            local=guard.local_before,
         ).save(self.state_path)
         _log.info("manual sweep started")
         return prompt
@@ -170,7 +174,7 @@ class ManualSweep:
         guard = WriteGuard(
             state_dir=self.store.state_dir,
             vault_root=self.vault_root,
-            local_md_before=started.local_md,
+            local_before=started.local,
         )
         changes = snapshot.diff(started.before, snapshot.take(target.project_dir))
         notes = guard.validate_writes([], target, changes)

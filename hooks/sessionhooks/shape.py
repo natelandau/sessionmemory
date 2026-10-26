@@ -26,6 +26,7 @@ _KEY = re.compile(r"^([A-Za-z_][\w-]*):(.*)$")
 _FENCE = "---"
 _BACKLOG = "backlog.md"
 LOCAL_MD = "CLAUDE.local.md"
+LOCAL_DIR = "local"
 
 
 def is_debris(name: str) -> bool:
@@ -84,9 +85,17 @@ def stray_problem(path: Path, project_dir: Path) -> str | None:
     return None
 
 
-def local_md_problem(path: Path, project_dir: Path) -> str | None:
-    """Return a reason when `path` is the person's CLAUDE.local.md, which the sweep never edits."""
-    if path.parent.resolve() == project_dir.resolve() and path.name == LOCAL_MD:
+def local_problem(path: Path, project_dir: Path) -> str | None:
+    """Return a reason when `path` is the person's, under `local/`, which the sweep never edits.
+
+    A CLAUDE.local.md still at the project folder's top counts too, since the CLI moves it
+    into `local/` only when one of its `local` commands next runs.
+    """
+    project = project_dir.resolve()
+    resolved = path.resolve()
+    if project / LOCAL_DIR in resolved.parents:
+        return "local/ is the person's, not the sweep's"
+    if resolved.parent == project and path.name == LOCAL_MD:
         return "CLAUDE.local.md is the person's, not the sweep's"
     return None
 

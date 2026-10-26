@@ -12,7 +12,7 @@
 """Finish a manual sweep: run the worker's backstops on what the agent wrote.
 
 The second half of `/sessionmemory:sweep`. Containment, the secret scrub, the shape
-checks, and the CLAUDE.local.md guard run on every file that changed since
+checks, and the `local/` guard run on every file that changed since
 `sweep-prompt.py` ran. A zero exit inside the skill's turn is what the automatic
 sweep reads as a finished manual sweep, so any failure exits non-zero and leaves
 the session to the automatic sweep.

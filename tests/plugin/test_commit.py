@@ -803,3 +803,92 @@ def test_commit_ignores_other_ignored_files_when_clean(tmp_path):
     (root / "index.sqlite3").write_text("x", encoding="utf-8")
 
     assert commit_vault(root, env=clean_environ()).reason == "clean"
+
+
+def test_commit_force_stages_the_local_folder_copy_hidden_by_a_global_ignore(tmp_path):
+    """Verify local/CLAUDE.local.md is committed when a global ignore names it."""
+    # Given a vault whose only change is a local/ copy the global ignore hides
+    root = _repo(tmp_path)
+    _hide_local_md_globally(root, tmp_path)
+    local = root / "projects" / "p" / "local"
+    local.mkdir(parents=True)
+    (local / "CLAUDE.local.md").write_text("private", encoding="utf-8")
+
+    # When committing the vault
+    outcome = commit_vault(root, env=clean_environ())
+
+    # Then the copy is tracked
+    assert outcome.sha
+    assert "projects/p/local/CLAUDE.local.md" in _tracked(root).splitlines()
+
+
+def test_commit_stages_skill_files_a_global_ignore_names_through_the_vault_gitignore(tmp_path):
+    """Verify the vault .gitignore re-include lets `add -A` stage every skill file."""
+    # Given a global ignore naming what a skill may hold, and the vault's re-include lines
+    root = _repo(tmp_path)
+    excludes = tmp_path / "global-ignore"
+    excludes.write_text("env/\n*.log\nsuperpowers/\n", encoding="utf-8")
+    _git("config", "core.excludesFile", str(excludes), cwd=root)
+    (root / ".gitignore").write_text(
+        "!projects/*/local/**\nprojects/*/local/**/.DS_Store\nprojects/*/local/**/__pycache__/\n",
+        encoding="utf-8",
+    )
+    skill = root / "projects" / "p" / "local" / "claude" / "skills" / "superpowers"
+    (skill / "env").mkdir(parents=True)
+    (skill / "SKILL.md").write_text("skill", encoding="utf-8")
+    (skill / "env" / "run.log").write_text("log", encoding="utf-8")
+    (skill / ".DS_Store").write_text("debris", encoding="utf-8")
+
+    # When committing the vault
+    outcome = commit_vault(root, env=clean_environ())
+
+    # Then every skill file is tracked except debris
+    assert outcome.sha
+    tracked = _tracked(root).splitlines()
+    prefix = "projects/p/local/claude/skills/superpowers"
+    assert f"{prefix}/SKILL.md" in tracked
+    assert f"{prefix}/env/run.log" in tracked
+    assert f"{prefix}/.DS_Store" not in tracked
+
+
+def test_commit_force_stages_local_md_when_a_global_ignore_names_the_local_folder(tmp_path):
+    """Verify local/CLAUDE.local.md commits when a global ignore hides the whole folder."""
+    # Given a vault with no re-include lines and a global ignore naming `local/`
+    root = _repo(tmp_path)
+    excludes = tmp_path / "global-ignore"
+    excludes.write_text("local/\n", encoding="utf-8")
+    _git("config", "core.excludesFile", str(excludes), cwd=root)
+    local = root / "projects" / "p" / "local"
+    local.mkdir(parents=True)
+    (local / "CLAUDE.local.md").write_text("private", encoding="utf-8")
+
+    # When committing the vault
+    outcome = commit_vault(root, env=clean_environ())
+
+    # Then the force-staged copy is committed rather than the vault reading as clean
+    assert outcome.sha
+    assert "projects/p/local/CLAUDE.local.md" in _tracked(root).splitlines()
+
+
+def test_commit_stages_skills_when_a_global_ignore_names_the_local_folder(tmp_path):
+    """Verify the vault's folder re-include line lets `add -A` reach skills under `local/`."""
+    root = _repo(tmp_path)
+    excludes = tmp_path / "global-ignore"
+    excludes.write_text("local/\nnode_modules/\n", encoding="utf-8")
+    _git("config", "core.excludesFile", str(excludes), cwd=root)
+    (root / ".gitignore").write_text(
+        "!projects/*/local/\n!projects/*/local/**\nprojects/*/local/**/.DS_Store\n"
+        "projects/*/local/**/__pycache__/\nprojects/*/local/**/node_modules/\n",
+        encoding="utf-8",
+    )
+    skill = root / "projects" / "p" / "local" / "claude" / "skills" / "s"
+    (skill / "node_modules").mkdir(parents=True)
+    (skill / "SKILL.md").write_text("skill", encoding="utf-8")
+    (skill / "node_modules" / "x.js").write_text("x", encoding="utf-8")
+
+    outcome = commit_vault(root, env=clean_environ())
+
+    assert outcome.sha
+    tracked = _tracked(root).splitlines()
+    assert "projects/p/local/claude/skills/s/SKILL.md" in tracked
+    assert "projects/p/local/claude/skills/s/node_modules/x.js" not in tracked

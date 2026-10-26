@@ -93,10 +93,13 @@ never let it write an index ours reads: its Ollama vectors need not match fastem
   is unchanged so a markdown formatter's reshaping reads as no change. A second write path
   goes into `write_page`, not beside it.
 - An oversized page is embedded truncated, never chunked. One page, one embedding.
-- `lib/backlog.py` owns the backlog item shape; `lib/localmd.py` owns `CLAUDE.local.md`
-  link states. `new backlog` is the CLI's only write to `backlog.md`, and it only appends.
-- `specs/` is indexed but is not a field. `plans/`, `runbooks/`, `reference/`, and
-  `backlog.md` are never indexed. There is no cross-project read.
+- `lib/backlog.py` owns the backlog item shape. `new backlog` is the CLI's only write to
+  `backlog.md`, and it only appends.
+- `lib/localmd.py` owns local entries (`CLAUDE.local.md`, `skills/<n>`, `rules/<n>`) and
+  their link states; `lib/localtree.py` holds the tree copy, compare, and link placement
+  it uses. Everything an entry keeps in the vault lives under `projects/<slug>/local/`.
+- `specs/` is indexed but is not a field. `plans/`, `runbooks/`, `reference/`, `local/`,
+  and `backlog.md` are never indexed. There is no cross-project read.
 
 ### The index
 
@@ -152,8 +155,9 @@ must update it.
   decision, and every fail-open `except` logs at ERROR before swallowing.
 - Every git subprocess runs under `store.git_safe_env`. Commit staging and its skip
   reasons are documented in `hooks/sessionhooks/commit.py`.
-- Sweep backstops (containment, secret scrub, shape checks, `CLAUDE.local.md`
-  protection) live on `WriteGuard` in `hooks/sessionhooks/guard.py`.
+- Sweep backstops (containment, secret scrub, shape checks, protection of every file
+  under `local/`) live on `WriteGuard` in `hooks/sessionhooks/guard.py`. The secret scrub
+  skips `local/`, since the local guard restores those files byte for byte.
 
 ### Hook timeouts
 
