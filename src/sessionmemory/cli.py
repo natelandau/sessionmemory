@@ -17,6 +17,7 @@ from sessionmemory.commands import log as log_commands
 from sessionmemory.commands import new as new_commands
 from sessionmemory.commands import path as path_commands
 from sessionmemory.commands import project
+from sessionmemory.commands import reconcile as reconcile_commands
 from sessionmemory.commands import reindex as reindex_commands
 from sessionmemory.commands import search as search_commands
 from sessionmemory.commands._common import VersionedGroup, emit_value
@@ -67,6 +68,9 @@ app.command("log", help="Record this session's work in one upserted page.")(
 app.command("path", help="Print one of this project's vault paths.")(path_commands.path_command)
 app.command("project", help="Report this directory's project, or register it.")(
     project.project_command
+)
+app.command("reconcile", help="Bring this project's logs in line with what landed on the trunk.")(
+    reconcile_commands.reconcile_command
 )
 app.command("reindex", help="Rebuild this project's search indexes, or every project's.")(
     reindex_commands.reindex_command
