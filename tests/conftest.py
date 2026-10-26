@@ -5,7 +5,9 @@ from __future__ import annotations
 import os
 
 import pytest
+from nclutils import ask
 
+from sessionmemory.commands import _common
 from sessionmemory.lib import config
 from sessionmemory.lib.bootstrap import initialize
 
@@ -66,3 +68,29 @@ def _git_identity(tmp_path_factory, monkeypatch) -> None:
     home = tmp_path_factory.mktemp("home")
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
+
+
+@pytest.fixture
+def on_terminal(monkeypatch):
+    """Return a factory that puts commands on a terminal and answers each question from a map.
+
+    Each key is a fragment of a question and its value the start of the answer to pick.
+    The factory returns the list the questions asked are appended to.
+    """
+
+    def factory(answers: dict[str, str]) -> list[str]:
+        asked: list[str] = []
+
+        def choose(choices: list[tuple[str, object]], message: str) -> object:
+            asked.append(message)
+            for fragment, answer in answers.items():
+                if fragment in message:
+                    return next(value for title, value in choices if title.startswith(answer))
+            msg = f"unexpected question: {message}"
+            raise AssertionError(msg)
+
+        monkeypatch.setattr(_common, "interactive", lambda: True)
+        monkeypatch.setattr(ask, "choose_one_from_list", choose)
+        return asked
+
+    return factory

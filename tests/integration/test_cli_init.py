@@ -168,3 +168,74 @@ def test_init_through_a_symlink_records_the_resolved_target(tmp_path):
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
     assert payload["vault"] == str(real.resolve())
+
+
+def test_init_on_a_terminal_asks_before_initializing_a_non_empty_directory(tmp_path, on_terminal):
+    """Verify init on a terminal asks about a non-empty directory and initializes on yes."""
+    (tmp_path / "some-file.txt").write_text("x", encoding="utf-8")
+    asked = on_terminal({"anyway": "Yes"})
+
+    result = runner.invoke(app, ["init", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    assert asked == [
+        f"{tmp_path} holds files but no vault marker. Initialize a vault there anyway?"
+    ]
+    assert (tmp_path / "_system" / "vault.toml").is_file()
+    assert (tmp_path / "some-file.txt").read_text() == "x"
+
+
+def test_init_on_a_terminal_declined_leaves_the_directory(tmp_path, on_terminal):
+    """Verify declining leaves the directory uninitialized and names no flag to pass."""
+    (tmp_path / "some-file.txt").write_text("x", encoding="utf-8")
+    on_terminal({"anyway": "No"})
+
+    result = runner.invoke(app, ["init", str(tmp_path)])
+
+    assert result.exit_code == 1
+    assert "--force" not in result.output
+    assert not (tmp_path / "_system").exists()
+
+
+def test_require_vault_on_a_terminal_offers_to_initialize_an_empty_directory(
+    tmp_path, monkeypatch, on_terminal
+):
+    """Verify a command pointed at an empty directory on a terminal offers to initialize it."""
+    monkeypatch.setenv("SESSIONMEMORY_VAULT", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    asked = on_terminal({"Initialize": "Yes", "registered project": "No"})
+
+    result = runner.invoke(app, ["project"])
+
+    assert asked[0] == f"{tmp_path} is not a vault yet. Initialize one there?"
+    assert (tmp_path / "_system" / "vault.toml").is_file()
+    assert "run: sessionmemory init" not in result.output
+
+
+def test_require_vault_on_a_terminal_offers_to_initialize_a_non_empty_directory(
+    tmp_path, monkeypatch, on_terminal
+):
+    """Verify a command pointed at files with no marker on a terminal offers to initialize."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / "a-note.md").write_text("x", encoding="utf-8")
+    monkeypatch.setenv("SESSIONMEMORY_VAULT", str(vault))
+    asked = on_terminal({"anyway": "Yes", "registered project": "No"})
+
+    runner.invoke(app, ["project", "--cwd", str(tmp_path)])
+
+    assert asked[0] == f"{vault} holds files but no vault marker. Initialize a vault there anyway?"
+    assert (vault / "_system" / "vault.toml").is_file()
+    assert (vault / "a-note.md").read_text() == "x"
+
+
+def test_require_vault_on_a_terminal_declined_exits_one(tmp_path, monkeypatch, on_terminal):
+    """Verify declining to initialize stops the command without naming another command."""
+    monkeypatch.setenv("SESSIONMEMORY_VAULT", str(tmp_path))
+    on_terminal({"Initialize": "No"})
+
+    result = runner.invoke(app, ["project"])
+
+    assert result.exit_code == 1
+    assert "run:" not in result.output
+    assert not (tmp_path / "_system").exists()

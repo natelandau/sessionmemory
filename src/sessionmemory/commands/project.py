@@ -7,6 +7,7 @@ from pathlib import Path
 import typer
 from nclutils import pp
 
+from sessionmemory.commands import _common
 from sessionmemory.commands._common import (
     CWD_OPTION,
     VersionedGroup,
@@ -215,7 +216,7 @@ def _report(
     else:
         pp.error(
             f"{target} is not a registered project",
-            details=["run: sessionmemory project register"],
+            details=[] if _common.interactive() else ["run: sessionmemory project register"],
         )
 
     if not result.registered:
@@ -276,8 +277,7 @@ def _register(
     # itself is the only key it can be registered and resolved under.
     root = context.repo_root or target
 
-    if slug is not None:
-        _require_slug_form(slug)
+    slug = _chosen_slug(vault, context.remotes, root, slug)
 
     # Held from load to save, so a registration racing this one cannot be lost.
     with registry.locked(vault):
@@ -326,6 +326,76 @@ def _register(
         )
 
 
+def _free_slug(vault: Path, remotes: tuple[str, ...], root: Path, slug: str | None) -> str | None:
+    """Ask a person at a terminal for another slug while the one in hand is taken.
+
+    The registry is read without its lock, since a person may take a while to answer;
+    registration still checks the slug again under the lock.
+
+    Returns:
+        str | None: A slug no project holds, or `slug` unchanged when the directory is
+            already registered and registration will refuse it anyway.
+
+    Raises:
+        Exit: When the person cancels the prompt.
+    """
+    try:
+        projects = registry.load(vault)
+    except registry.RegistryError as error:
+        report_malformed_registry(vault, error)
+    if registry.find_by_remote(projects, remotes) or registry.find_by_root(projects, str(root)):
+        return slug
+    wanted = slug if slug is not None else _derived_slug(remotes, root)
+    problem = f"slug {wanted!r} is already in use"
+    while wanted in projects:
+        pp.warning(problem)
+        answer = _common.ask_text("Another slug for this project")
+        if answer is None:
+            raise typer.Exit(1)
+        try:
+            normalized: str | None = slugify(answer)
+        except ValueError:
+            normalized = None
+        if normalized != answer:
+            problem = f"{answer!r} is not a slug: use lowercase letters, digits, and hyphens"
+            continue
+        wanted = answer
+        problem = f"slug {wanted!r} is already in use"
+    return wanted
+
+
+def _chosen_slug(vault: Path, remotes: tuple[str, ...], root: Path, slug: str | None) -> str | None:
+    """Check an explicit slug's form, and on a terminal swap a taken slug for a free one.
+
+    Returns:
+        str | None: The slug to register under, or None to derive one.
+    """
+    if slug is not None:
+        _require_slug_form(slug)
+    if _common.interactive():
+        return _free_slug(vault, remotes, root, slug)
+    return slug
+
+
+def offer_registration(vault: Path, target: Path) -> bool:
+    """Ask a person at a terminal whether to register an unregistered directory.
+
+    Args:
+        vault (Path): The vault root.
+        target (Path): The unregistered directory.
+
+    Returns:
+        bool: True when the person agreed and the directory is now registered.
+    """
+    context = git_context(target)
+    slug = _derived_slug(context.remotes, context.repo_root or target)
+    question = f"{target} is not a registered project. Register it as {slug!r}?"
+    if not _common.confirm(question=question, yes="Yes, register it"):
+        return False
+    _register(vault, target, None)
+    return True
+
+
 @app.callback()
 def project_command(
     ctx: typer.Context,
@@ -362,7 +432,17 @@ def project_command(
         pp.warning("--mark-reviewed is deprecated; run: sessionmemory project mark-reviewed")
         mark_reviewed_command(cwd=cwd, as_json=as_json)
     else:
-        _report(require_vault(), _target(cwd), None, as_json=as_json)
+        vault, target = require_vault(), _target(cwd)
+        action: str | None = None
+        resolved: Resolution | None = None
+        if not as_json and _common.interactive():
+            try:
+                resolved = resolve_project(vault, target)
+            except registry.RegistryError as error:
+                report_malformed_registry(vault, error)
+            if not resolved.registered and offer_registration(vault, target):
+                action, resolved = "registered", None
+        _report(vault, target, action, as_json=as_json, resolved=resolved)
 
 
 @app.command("register")

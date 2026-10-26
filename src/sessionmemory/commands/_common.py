@@ -18,7 +18,7 @@ from typer._click import core as click_core
 from typer._click import exceptions as click_exceptions
 
 from sessionmemory.lib import embed, registry
-from sessionmemory.lib.bootstrap import is_empty
+from sessionmemory.lib.bootstrap import InitResult, initialize, is_empty
 from sessionmemory.lib.config import (
     CONFIG_FILE,
     VaultNotConfiguredError,
@@ -187,6 +187,55 @@ def confirm(question: str, yes: str) -> bool:
     return ask.choose_one_from_list(choices=choices, message=question) == "yes"
 
 
+def init_question(vault: Path, *, force: bool) -> tuple[str, str]:
+    """Word the question that offers to initialize a vault, and its yes answer.
+
+    Args:
+        vault (Path): The directory to initialize.
+        force (bool): Whether the directory holds files but no vault marker.
+
+    Returns:
+        tuple[str, str]: The question and the yes answer.
+    """
+    if force:
+        return (
+            f"{vault} holds files but no vault marker. Initialize a vault there anyway?",
+            "Yes, initialize it (its files are kept)",
+        )
+    return f"{vault} is not a vault yet. Initialize one there?", "Yes, initialize it"
+
+
+def offer_init(vault: Path) -> InitResult | None:
+    """Ask a person at a terminal whether to initialize `vault`, and do it on a yes.
+
+    Args:
+        vault (Path): The uninitialized directory.
+
+    Returns:
+        InitResult | None: What was created, or None when the person declined.
+    """
+    force = not is_empty(vault)
+    question, yes = init_question(vault, force=force)
+    if not confirm(question=question, yes=yes):
+        return None
+    return initialize(vault, force=force)
+
+
+def ask_text(message: str) -> str | None:
+    """Ask a person at a terminal to type an answer.
+
+    Args:
+        message (str): The prompt.
+
+    Returns:
+        str | None: The answer, or None when the person cancelled.
+    """
+    try:
+        return str(typer.prompt(message)).strip() or None
+    except typer.Abort:
+        return None
+
+
 def require_vault() -> Path:
     """Return an initialized vault root, or exit with the command that fixes it.
 
@@ -206,6 +255,13 @@ def require_vault() -> Path:
     except VaultNotConfiguredError as error:
         pp.error(str(error), details=VAULT_FIX)
         raise typer.Exit(1) from error
+
+    if not is_initialized(vault) and interactive():
+        if offer_init(vault) is None:
+            pp.error(f"{vault} is not a vault")
+            raise typer.Exit(1)
+        pp.success(f"initialized {vault}")
+        return vault
 
     if not is_initialized(vault):
         # An empty directory is the ordinary bootstrap case, and `sessionmemory init` is safe
@@ -280,6 +336,15 @@ def require_project(vault: Path, cwd: Path | None = None) -> str:
         report_malformed_registry(vault, error)
 
     if not result.registered or result.slug is None:
+        if interactive():
+            # Imported here, since the project command imports this module.
+            from sessionmemory.commands.project import offer_registration
+
+            target = (cwd if cwd is not None else Path.cwd()).resolve()
+            if offer_registration(vault, target):
+                return require_project(vault, target)
+            pp.error("this directory is not a registered project")
+            raise typer.Exit(1)
         pp.error(
             "this directory is not a registered project",
             details=["run: sessionmemory project register"],

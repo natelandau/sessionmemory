@@ -9,6 +9,7 @@ from pathlib import Path  # noqa: TC003
 import typer
 from nclutils import pp
 
+from sessionmemory.commands import _common
 from sessionmemory.commands._common import VAULT_FIX, emit_json
 from sessionmemory.lib.bootstrap import InitResult, NotAVaultError, initialize
 from sessionmemory.lib.config import VaultNotConfiguredError, vault_root
@@ -58,9 +59,10 @@ def init(
 ) -> None:
     """Create the files a new vault needs.
 
-    A vault cannot be created through `require_vault`, since that helper refuses an
-    uninitialized directory and this command is what fixes that. When no directory is
-    given, the configured root is read directly instead.
+    Off a terminal, `require_vault` refuses an uninitialized directory, and this command is
+    what fixes that. When no directory is given, the configured root is read directly
+    instead. On a terminal, a directory holding unrelated files is initialized once the
+    person agrees, as if `--force` were given.
 
     Raises:
         Exit: When no directory is given and no vault root is configured or the
@@ -82,7 +84,13 @@ def init(
     try:
         result = initialize(vault, force=force)
     except NotAVaultError as error:
-        pp.error(str(error))
-        raise typer.Exit(1) from error
+        if not _common.interactive():
+            pp.error(str(error))
+            raise typer.Exit(1) from error
+        question, yes = _common.init_question(vault, force=True)
+        if not _common.confirm(question=question, yes=yes):
+            pp.error(f"{vault} was not initialized")
+            raise typer.Exit(1) from error
+        result = initialize(vault, force=True)
 
     _report(result, as_json=as_json)

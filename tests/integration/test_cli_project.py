@@ -777,3 +777,94 @@ def test_project_refuses_group_options_before_a_subcommand(vault, repo, argument
     assert result.exit_code == 1
     assert "go after it" in result.output
     assert registry.load(vault) == {}
+
+
+def test_require_project_on_a_terminal_offers_to_register(vault, repo, on_terminal):
+    """Verify a command in an unregistered directory on a terminal offers to register it."""
+    asked = on_terminal({"registered project": "Yes"})
+
+    result = runner.invoke(app, ["path", "project", "--cwd", str(repo)])
+
+    assert result.exit_code == 0, result.output
+    assert asked == [f"{repo} is not a registered project. Register it as 'demo'?"]
+    assert "demo" in registry.load(vault)
+    assert result.stdout.strip().endswith("projects/demo")
+
+
+def test_require_project_on_a_terminal_declined_exits_one(vault, repo, on_terminal):
+    """Verify declining registration stops the command without naming another command."""
+    on_terminal({"registered project": "No"})
+
+    result = runner.invoke(app, ["path", "project", "--cwd", str(repo)])
+
+    assert result.exit_code == 1
+    assert "run:" not in result.output
+    assert "demo" not in registry.load(vault)
+
+
+def test_project_view_on_a_terminal_offers_to_register(vault, repo, on_terminal):
+    """Verify viewing an unregistered directory on a terminal offers to register it."""
+    on_terminal({"registered project": "Yes"})
+
+    result = runner.invoke(app, ["project", "--cwd", str(repo)])
+
+    assert result.exit_code == 0, result.output
+    assert "demo" in registry.load(vault)
+
+
+def test_register_on_a_terminal_asks_for_another_slug_when_taken(
+    vault, repo, tmp_path, on_terminal
+):
+    """Verify a taken slug on a terminal prompts for another and registers under it."""
+    runner.invoke(app, ["project", "register", "--cwd", str(repo)])
+    other = tmp_path / "other"
+    other.mkdir()
+    _run("init", "-q", ".", cwd=other)
+    _run("commit", "-q", "--allow-empty", "-m", "init", cwd=other)
+    on_terminal({})
+
+    result = runner.invoke(
+        app, ["project", "register", "--cwd", str(other), "--slug", "demo"], input="other-demo\n"
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "already in use" in result.output
+    assert registry.load(vault)["other-demo"].root == str(other.resolve())
+
+
+def test_register_on_a_terminal_asks_again_after_a_malformed_slug(
+    vault, repo, tmp_path, on_terminal
+):
+    """Verify a typed slug that is not slug-shaped is asked for again, not refused."""
+    runner.invoke(app, ["project", "register", "--cwd", str(repo)])
+    other = tmp_path / "other"
+    other.mkdir()
+    _run("init", "-q", ".", cwd=other)
+    _run("commit", "-q", "--allow-empty", "-m", "init", cwd=other)
+    on_terminal({})
+
+    result = runner.invoke(
+        app,
+        ["project", "register", "--cwd", str(other), "--slug", "demo"],
+        input="Other Demo\nother-demo\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "not a slug" in result.output
+    assert registry.load(vault)["other-demo"].root == str(other.resolve())
+
+
+def test_register_on_a_terminal_cancelled_slug_prompt_exits_one(vault, repo, tmp_path, on_terminal):
+    """Verify cancelling the slug prompt registers nothing and exits 1 without a traceback."""
+    runner.invoke(app, ["project", "register", "--cwd", str(repo)])
+    other = tmp_path / "other"
+    other.mkdir()
+    _run("init", "-q", ".", cwd=other)
+    _run("commit", "-q", "--allow-empty", "-m", "init", cwd=other)
+    on_terminal({})
+
+    result = runner.invoke(app, ["project", "register", "--cwd", str(other), "--slug", "demo"])
+
+    assert result.exit_code == 1
+    assert not isinstance(result.exception, AttributeError)
+    assert list(registry.load(vault)) == ["demo"]
