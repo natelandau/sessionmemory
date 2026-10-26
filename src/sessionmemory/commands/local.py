@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import shlex
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import typer
 from nclutils import ask, pp
 
+from sessionmemory.commands import _common
 from sessionmemory.commands._common import (
     CWD_OPTION,
     VersionedGroup,
@@ -21,6 +21,9 @@ from sessionmemory.commands._common import (
     require_vault,
 )
 from sessionmemory.lib import localmanifest, localmd, paths
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 app = typer.Typer(
     cls=VersionedGroup,
@@ -47,11 +50,6 @@ KEEP_SETTINGS = typer.Option(
 
 # Wide enough for the longest link or copy state, so names line up.
 _STATE_WIDTH = max(len(state) for state in [*localmd.State, *localmd.CopyState])
-
-
-def _interactive() -> bool:
-    """Report whether a person can answer a prompt, so an agent's call never blocks."""
-    return sys.stdin.isatty() and sys.stdout.isatty()
 
 
 def _checkout(cwd: Path | None) -> localmd.Checkout:
@@ -92,12 +90,19 @@ def _migrate(co: localmd.Checkout) -> None:
 Side = Literal["checkout", "vault"]
 
 
+# How the person settled a conflict: point a foreign link at the vault, keep one side of
+# a differing entry, or keep one of the two vault copies of CLAUDE.local.md.
+Settle = Literal["relink", "checkout", "vault", "old", "local"]
+
+
 @dataclass
 class _Plan:
     """What one sync run was asked to do beyond the safe link work."""
 
     adopt: list[str] = field(default_factory=list)
     keep: Side | None = None
+    settle: list[tuple[localmd.Entry, Settle]] = field(default_factory=list)
+    declined: set[str] = field(default_factory=set)
 
 
 def _pending_settings(
@@ -136,20 +141,6 @@ def _waiting(co: localmd.Checkout, tracked: set[str]) -> tuple[list[localmd.Entr
     return [], False
 
 
-_LEAVE = "No, leave it alone"
-
-
-def _confirm(question: str, yes: str) -> bool:
-    """Ask one yes-or-no question whose answers say what each choice does.
-
-    Returns:
-        bool: True only when the person chose yes; cancelling counts as no.
-    """
-    return ask.choose_one_from_list(choices=[(yes, "yes"), (_LEAVE, "no")], message=question) == (
-        "yes"
-    )
-
-
 def _ask_settings(pending: localmd.SettingsPending) -> Side | None:
     """Ask the one question that fits the settings state, naming what each answer writes.
 
@@ -159,25 +150,22 @@ def _ask_settings(pending: localmd.SettingsPending) -> Side | None:
     if pending.state is localmd.CopyState.CHECKOUT_ONLY:
         question = f"Copy {pending.relpath} into the vault?"
         yes = "Yes, copy it into the vault (this checkout keeps its copy)"
-        return "checkout" if _confirm(question=question, yes=yes) else None
+        return "checkout" if _common.confirm(question=question, yes=yes) else None
     if pending.state is localmd.CopyState.VAULT_ONLY:
         question = (
             f"The vault has a {pending.relpath} for this project, but this checkout has none. "
             "Copy it into this checkout?"
         )
-        return "vault" if _confirm(question=question, yes="Yes, copy it here") else None
+        return "vault" if _common.confirm(question=question, yes="Yes, copy it here") else None
     if pending.summary:
         pp.info(
             f"What each copy of {pending.relpath} has that the other lacks:",
             details=list(pending.summary),
         )
     choices: list[tuple[str, Side | Literal["neither"]]] = [
-        (
-            f"This checkout's (modified {pending.checkout_mtime}): copy it over the vault's",
-            "checkout",
-        ),
-        (f"The vault's (modified {pending.vault_mtime}): copy it over this checkout's", "vault"),
-        ("Neither: leave both as they are", "neither"),
+        (f"local (modified {pending.checkout_mtime})", "checkout"),
+        (f"vault (modified {pending.vault_mtime})", "vault"),
+        ("exit (leave both as they are)", "neither"),
     ]
     side = ask.choose_one_from_list(
         choices=choices,
@@ -186,22 +174,122 @@ def _ask_settings(pending: localmd.SettingsPending) -> Side | None:
     return side if side in {"checkout", "vault"} else None
 
 
-def _ask(waiting: list[localmd.Entry], pending: localmd.SettingsPending | None) -> _Plan:
-    """Ask the person about each pending item in turn, one plain question per item."""
-    adopt = [
-        item.name
-        for item in waiting
-        if _confirm(
-            question=f"Adopt {item.relpath} into the vault?",
-            yes="Yes, move it into the vault and link it back here",
+_EXIT = "exit (leave both as they are)"
+
+
+def _which(question: str, choices: list[tuple[str, Settle]]) -> Settle | None:
+    """Ask which of two copies wins, offering exit as the last answer.
+
+    Returns:
+        Settle | None: The chosen action, or None for exit or a cancel.
+    """
+    answer = ask.choose_one_from_list(choices=[*choices, (_EXIT, "exit")], message=question)
+    return next((action for _, action in choices if action == answer), None)
+
+
+def _settleable(co: localmd.Checkout, result: localmd.LinkResult) -> Settle | None:
+    """Name the kind of conflict a person can settle by answering, or None for the rest.
+
+    A conflict whose fix is outside the command, such as a symlinked `.claude/` or a
+    misshapen vault entry, is reported as before.
+    """
+    item = result.entry
+    try:
+        if localmd.blocked(co, item) or localmd.target_misshapen(item):
+            return None
+        if item.kind == "local-md" and paths.legacy_local_md_path(co.vault, co.slug).is_file():
+            return "old"
+        if result.state is localmd.State.FOREIGN_LINK:
+            return "relink"
+        # An identical copy is offered with the adopt questions instead.
+        if result.state is localmd.State.DIVERGED and localmd.contents_match(item) is False:
+            return "checkout"
+    except OSError:
+        # An entry that cannot be read is reported as a conflict rather than asked about.
+        return None
+    return None
+
+
+def _ask_conflict(co: localmd.Checkout, item: localmd.Entry, kind: Settle) -> Settle | None:
+    """Ask the one question that settles a conflict, naming what each answer does.
+
+    Returns:
+        Settle | None: The action to take, or None to leave the conflict as it is.
+    """
+    if kind == "relink":
+        question = (
+            f"{item.relpath} is a link to {item.link.resolve()}, not to the vault copy. "
+            "Point it at the vault copy?"
         )
-    ]
-    keep = _ask_settings(pending) if pending is not None else None
-    return _Plan(adopt=adopt, keep=keep)
+        yes = "Yes, point it at the vault copy (what it points at now is kept)"
+        return "relink" if _common.confirm(question=question, yes=yes) else None
+    if kind == "old":
+        old = paths.legacy_local_md_path(co.vault, co.slug)
+        return _which(
+            f"The vault holds two copies of {item.name} that differ. Which one wins?",
+            [
+                (f"old copy at {old} (modified {localmd.modified(old)})", "old"),
+                (
+                    f"local/ copy at {item.target} (modified {localmd.modified(item.target)})",
+                    "local",
+                ),
+            ],
+        )
+    return _which(
+        f"{item.relpath} differs from the vault copy. Which copy wins?",
+        [
+            (f"local (modified {localmd.modified(item.link)})", "checkout"),
+            (f"vault (modified {localmd.modified(item.target)})", "vault"),
+        ],
+    )
 
 
-def _entries(co: localmd.Checkout, names: list[str], cwd: Path) -> tuple[list[localmd.Entry], bool]:
+def _ask_adopt(item: localmd.Entry) -> bool:
+    """Ask whether to adopt one entry, or to link over a copy identical to the vault's."""
+    if localmd.state(item) is localmd.State.DIVERGED:
+        return _common.confirm(
+            question=f"{item.relpath} is identical to the vault copy. Replace it with a link?",
+            yes="Yes, replace it with a link to the vault copy",
+        )
+    return _common.confirm(
+        question=f"Adopt {item.relpath} into the vault?",
+        yes="Yes, move it into the vault and link it back here",
+    )
+
+
+def _ask(
+    co: localmd.Checkout,
+    conflicts: list[localmd.LinkResult],
+    waiting: list[localmd.Entry],
+    pending: localmd.SettingsPending | None,
+) -> _Plan:
+    """Ask the person about each conflict and pending item in turn, one question per item."""
+    plan = _Plan()
+    for result in conflicts:
+        kind = _settleable(co, result)
+        if kind is None:
+            continue
+        action = _ask_conflict(co, result.entry, kind)
+        if action is None:
+            plan.declined.add(result.entry.name)
+        else:
+            plan.settle.append((result.entry, action))
+    for item in waiting:
+        if _ask_adopt(item):
+            plan.adopt.append(item.name)
+        else:
+            plan.declined.add(item.name)
+    plan.keep = _ask_settings(pending) if pending is not None else None
+    return plan
+
+
+def _entries(
+    co: localmd.Checkout, names: list[str], cwd: Path, *, settings_asked: bool = False
+) -> tuple[list[localmd.Entry], bool]:
     """Build the link entries a person named, reporting each name that is not one.
+
+    With `settings_asked`, naming the settings file is skipped quietly, since the settings
+    question that follows is the answer to it.
 
     Returns:
         tuple[list[localmd.Entry], bool]: The valid entries, and whether any name failed.
@@ -211,6 +299,11 @@ def _entries(co: localmd.Checkout, names: list[str], cwd: Path) -> tuple[list[lo
     for name in names:
         try:
             item = localmd.resolve_adopt(co=co, raw=name, cwd=cwd)
+        except localmd.SettingsNotAdoptedError as err:
+            if not settings_asked:
+                pp.error(err.message, details=err.details)
+                failed = True
+            continue
         except localmd.LocalMdError as err:
             pp.error(err.message, details=err.details)
             failed = True
@@ -250,14 +343,19 @@ def _adopt_one(
 
 
 def _adopt_all(
-    co: localmd.Checkout, names: list[str], tracked: set[str], cwd: Path
+    co: localmd.Checkout,
+    names: list[str],
+    tracked: set[str],
+    cwd: Path,
+    *,
+    settings_asked: bool = False,
 ) -> tuple[list[localmd.AdoptResult], bool]:
-    """Adopt each named entry, warning once about rule approval.
+    """Adopt each named entry, reporting each failure so the rest still run.
 
     Returns:
         tuple[list[localmd.AdoptResult], bool]: The adopted entries, and whether any failed.
     """
-    items, failed = _entries(co=co, names=names, cwd=cwd)
+    items, failed = _entries(co=co, names=names, cwd=cwd, settings_asked=settings_asked)
     if not items:
         return [], failed
     # A path named for the first time is in no listing git was asked about yet.
@@ -275,11 +373,6 @@ def _adopt_all(
             failed = True
         else:
             adopted.append(result)
-    copied = [result for result in adopted if not result.already_linked]
-    if any(result.entry.kind == "rule" for result in copied):
-        pp.warning(
-            "Claude Code asks once per checkout to allow a linked rule as an external import"
-        )
     return adopted, failed
 
 
@@ -307,6 +400,85 @@ def _keep(co: localmd.Checkout, side: Side, tracked: set[str]) -> tuple[Path | N
             "approving anything so it does not write the old copy back"
         )
     return written, changed
+
+
+_SETTLED: dict[Settle, Callable[[localmd.Entry], str]] = {
+    "relink": lambda item: f"pointed {item.relpath} at the vault copy",
+    "checkout": lambda item: f"kept this checkout's {item.relpath} and linked it to the vault",
+    "vault": lambda item: f"kept the vault's {item.relpath} and linked it here",
+    "old": lambda item: f"kept the vault's old copy of {item.name} and linked it here",
+    "local": lambda item: f"kept the vault's local/ copy of {item.name} and linked it here",
+}
+
+_RULE_NOTICE = "Claude Code asks once per checkout to allow a linked rule as an external import"
+_COMMIT_NOTICE = "the vault's hooks commit the vault copy to the vault's git history"
+
+
+@dataclass
+class _Done:
+    """What carrying out one or more plans wrote, and what the person should know about it."""
+
+    adopted: list[localmd.AdoptResult] = field(default_factory=list)
+    kept: Path | None = None
+    kept_side: Side | None = None
+    failed: bool = False
+    notices: list[str] = field(default_factory=list)
+    settings_asked: bool = False
+
+    settled: dict[str, tuple[localmd.LinkResult, Settle]] = field(default_factory=dict)
+
+    def carry_out(self, co: localmd.Checkout, plan: _Plan, tracked: set[str]) -> None:
+        """Settle, adopt, and keep settings as `plan` asks, adding the outcome to this record."""
+        for item, action in plan.settle:
+            self._settle(co=co, item=item, action=action, tracked=item.name in tracked)
+        if plan.adopt:
+            adopted, failed = _adopt_all(
+                co=co,
+                names=plan.adopt,
+                tracked=tracked,
+                cwd=Path.cwd(),
+                settings_asked=self.settings_asked,
+            )
+            self.adopted.extend(adopted)
+            self.failed = self.failed or failed
+        changed = False
+        if plan.keep is not None:
+            kept, changed = _keep(co=co, side=plan.keep, tracked=tracked)
+            self.failed = self.failed or kept is None
+            if kept is not None:
+                self.kept, self.kept_side = kept, plan.keep
+        copied = [result for result in self.adopted if not result.already_linked]
+        if any(result.entry.kind == "rule" for result in copied):
+            self._notice(_RULE_NOTICE)
+        vault_written = any(
+            action in {"checkout", "old", "local"} for _, action in self.settled.values()
+        )
+        if copied or vault_written or (changed and plan.keep == "checkout"):
+            self._notice(_COMMIT_NOTICE)
+
+    def _settle(
+        self, co: localmd.Checkout, item: localmd.Entry, action: Settle, *, tracked: bool
+    ) -> None:
+        try:
+            if action == "relink":
+                result = localmd.relink(co=co, item=item, tracked=tracked)
+            elif action in {"old", "local"}:
+                result = localmd.keep_legacy(co=co, keep=action, tracked=tracked)
+            else:
+                result = localmd.keep_copy(co=co, item=item, side=action, tracked=tracked)
+        except localmd.LocalMdError as err:
+            pp.error(err.message, details=err.details)
+            self.failed = True
+            return
+        except OSError as err:
+            pp.error(f"could not settle {item.name}: {err}")
+            self.failed = True
+            return
+        self.settled[item.name] = (result, action)
+
+    def _notice(self, text: str) -> None:
+        if text not in self.notices:
+            self.notices.append(text)
 
 
 def _link_warning(result: localmd.LinkResult) -> None:
@@ -397,8 +569,7 @@ class _Report:
     """Everything one sync run did and found, for its JSON or prose output."""
 
     results: list[localmd.LinkResult]
-    adopted: list[localmd.AdoptResult]
-    kept: Path | None
+    done: _Done
     waiting: list[localmd.Entry]
     pending: localmd.SettingsPending | None
     manifest_problems: tuple[str, ...] = ()
@@ -415,21 +586,54 @@ class _Report:
         }
         if plan.adopt:
             payload["adopted"] = [
-                {"name": result.entry.name, "target": str(result.target)} for result in self.adopted
+                {"name": result.entry.name, "target": str(result.target)}
+                for result in self.done.adopted
             ]
-        if plan.keep is not None and self.kept is not None:
-            payload["settings"] = {"kept": plan.keep, "path": str(self.kept)}
+        if plan.keep is not None and self.done.kept is not None:
+            payload["settings"] = {"kept": plan.keep, "path": str(self.done.kept)}
         return payload
+
+    @property
+    def _empty(self) -> bool:
+        return not (
+            self.results or self.done.adopted or self.done.kept or self.waiting or self.pending
+        )
 
     def prose(self) -> None:
         """Print written paths on stdout and everything else, pending work included, off it."""
         _report_links(self.results)
-        for result in self.adopted:
+        for result in self.done.adopted:
             emit_value(str(result.target))
-        if self.kept is not None:
-            emit_value(str(self.kept))
+        if self.done.kept is not None:
+            emit_value(str(self.done.kept))
+        for notice in self.done.notices:
+            pp.warning(notice)
         _report_pending(waiting=self.waiting, pending=self.pending)
-        if not (self.results or self.adopted or self.kept or self.waiting or self.pending):
+        if self._empty:
+            pp.info("nothing to sync for this project")
+
+    def terminal(self) -> None:
+        """Tell a person at a terminal what changed, leaving out what they just declined."""
+        for result in self.results:
+            if result.status != "created":
+                _report_links([result])
+            elif result.entry.name in self.done.settled:
+                pp.success(_SETTLED[self.done.settled[result.entry.name][1]](result.entry))
+            else:
+                pp.success(f"linked {result.entry.relpath} from the vault")
+        for result in self.done.adopted:
+            verb = "was already linked to" if result.already_linked else "moved into"
+            pp.success(f"{result.entry.relpath} {verb} the vault")
+        if self.done.kept is not None:
+            source, dest = (
+                ("this checkout's", "the vault's")
+                if self.done.kept_side == "checkout"
+                else ("the vault's", "this checkout's")
+            )
+            pp.success(f"copied {source} settings.local.json over {dest}")
+        for notice in self.done.notices:
+            pp.info(notice)
+        if self._empty:
             pp.info("nothing to sync for this project")
 
 
@@ -437,7 +641,7 @@ class _Report:
     "sync",
     help=(
         "Link the vault's entries into this checkout, then adopt entries and keep a settings "
-        "copy as asked. With no flags on a terminal, answer one question per pending item."
+        "copy as asked. On a terminal, answer one question per item still pending."
     ),
 )
 def sync_command(
@@ -468,43 +672,46 @@ def sync_command(
             details=[*problems, "Fix the file, then run local sync."],
         )
 
+    # A person is asked about whatever the flags left pending, rather than handed commands.
+    ask_inline = not as_json and _common.interactive()
     plan = _Plan(adopt=list(adopt or []), keep=keep_settings)
-    flagged = bool(plan.adopt) or plan.keep is not None
-    waiting, listed = _waiting(co, tracked) if not flagged else ([], True)
-    pending, compared = _pending_settings(co, tracked) if not flagged else (None, True)
-    if not flagged and not as_json and _interactive():
-        plan = _ask(waiting=waiting, pending=pending)
-
-    adopted, failed = (
-        _adopt_all(co=co, names=plan.adopt, tracked=tracked, cwd=Path.cwd())
-        if plan.adopt
-        else ([], False)
-    )
-    kept, changed = _keep(co=co, side=plan.keep, tracked=tracked) if plan.keep else (None, False)
-    if any(not result.already_linked for result in adopted) or (
-        changed and plan.keep == "checkout"
-    ):
-        pp.warning("the hooks commit the vault copy to the vault's git remote")
-    failed = failed or (plan.keep is not None and kept is None)
-    # Linking runs first, so an entry adopted by this run was in its way.
-    done = {result.entry.name for result in adopted}
-    results = [r for r in results if not (r.status == "conflict" and r.entry.name in done)]
-    # Recomputed only after an adopt or keep, which change what is still pending.
-    if plan.adopt or plan.keep is not None:
-        waiting, listed = _waiting(co, tracked)
-        pending, compared = _pending_settings(co, tracked)
-    failed = failed or not (listed and compared) or bool(problems)
+    done = _Done(settings_asked=ask_inline)
+    done.carry_out(co=co, plan=plan, tracked=tracked)
+    waiting, listed = _waiting(co, tracked)
+    pending, compared = _pending_settings(co, tracked)
+    declined: set[str] = set()
+    if ask_inline:
+        adopted_now = {result.entry.name for result in done.adopted}
+        conflicts = [
+            r for r in results if r.status == "conflict" and r.entry.name not in adopted_now
+        ]
+        answers = _ask(co=co, conflicts=conflicts, waiting=waiting, pending=pending)
+        declined = answers.declined
+        if answers.settle or answers.adopt or answers.keep is not None:
+            done.carry_out(co=co, plan=answers, tracked=tracked)
+            waiting, listed = _waiting(co, tracked)
+            pending, compared = _pending_settings(co, tracked)
+    # Linking runs first, so an entry adopted by this run was in its way. A conflict the
+    # person settled shows its new outcome, and one they chose to leave is not repeated.
+    adopted = {result.entry.name for result in done.adopted}
+    results = [
+        done.settled[r.entry.name][0] if r.entry.name in done.settled else r
+        for r in results
+        if not (r.status == "conflict" and (r.entry.name in adopted or r.entry.name in declined))
+    ]
+    failed = done.failed or not (listed and compared) or bool(problems)
 
     report = _Report(
         results=results,
-        adopted=adopted,
-        kept=kept,
+        done=done,
         waiting=waiting,
         pending=pending,
         manifest_problems=problems,
     )
     if as_json:
         emit_json(report.payload(plan))
+    elif ask_inline:
+        report.terminal()
     else:
         report.prose()
     if failed or any(result.status == "conflict" for result in results):

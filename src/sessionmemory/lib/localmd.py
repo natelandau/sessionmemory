@@ -29,6 +29,7 @@ worktree of a repository.
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import enum
 import os
@@ -108,6 +109,10 @@ class LocalMdError(Exception):
         super().__init__(message)
         self.message = message
         self.details = details or []
+
+
+class SettingsNotAdoptedError(LocalMdError):
+    """The settings file was named for adopt, though it is kept by copying one side."""
 
 
 class State(enum.StrEnum):
@@ -362,8 +367,8 @@ def resolve_adopt(co: Checkout, raw: str, cwd: Path) -> Entry:
     relpath = _work_tree_path(co, raw, cwd)
     if relpath == f"{_CHECKOUT_CLAUDE}/{SETTINGS_NAME}":
         msg = f"{relpath} is kept by copy, not adopted"
-        raise LocalMdError(
-            msg, ["Answer the settings question, or pass --keep-settings checkout or vault."]
+        raise SettingsNotAdoptedError(
+            msg, ["Choose a copy with --keep-settings checkout or --keep-settings vault."]
         )
     if relpath == paths.LOCAL_MD_FILE:
         return entry(co, relpath)
@@ -1385,6 +1390,142 @@ def adopt(co: Checkout, item: Entry, *, tracked: bool) -> AdoptResult:
     return result(imports=relative_imports(text) if text is not None else [])
 
 
+def relink(co: Checkout, item: Entry, *, tracked: bool) -> LinkResult:
+    """Point a link aimed somewhere else at the vault copy, as the person chose.
+
+    Only the symlink is removed, so whatever it pointed at is left as it was. When the
+    vault copy cannot be linked, the old link is put back.
+
+    Args:
+        co (Checkout): The checkout holding the link.
+        item (Entry): An entry whose link points away from its vault copy.
+        tracked (bool): Whether git tracks the entry's path, from `tracked_names`.
+
+    Returns:
+        LinkResult: The outcome of linking once the old link is gone.
+
+    Raises:
+        LocalMdError: When the entry is not a link to somewhere else, or it cannot be removed.
+    """
+    if state(item) is not State.FOREIGN_LINK:
+        msg = f"{item.link} is not a symlink to somewhere other than the vault copy"
+        raise LocalMdError(msg)
+    try:
+        previous = item.link.readlink()
+        item.link.unlink()
+    except OSError as err:
+        msg = f"could not remove {item.link}: {err}"
+        raise LocalMdError(msg) from err
+    result = _link_contained(co, item, tracked=tracked)
+    if result.status == "created":
+        return result
+    try:
+        if not item.link.is_symlink() and not item.link.exists():
+            item.link.symlink_to(previous)
+    except OSError as err:
+        msg = f"could not link {item.link}, and could not restore its link to {previous}: {err}"
+        raise LocalMdError(msg, [result.reason] if result.reason else []) from err
+    return result
+
+
+def _remove(path: Path) -> None:
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    else:
+        path.unlink()
+
+
+def _restore(co: Checkout, item: Entry, aside: Path, discarded: Path) -> None:
+    """Put a set-aside copy back, relisting a path entry a failed adopt dropped."""
+    aside.rename(discarded)
+    if item.kind == "path":
+        # Best effort: the error being raised already names what went wrong.
+        with contextlib.suppress(localmanifest.ManifestError, OSError):
+            localmanifest.add(co.local, item.name)
+
+
+def keep_copy(
+    co: Checkout, item: Entry, side: Literal["checkout", "vault"], *, tracked: bool
+) -> LinkResult:
+    """Settle an entry whose checkout and vault copies differ by keeping the chosen one.
+
+    The discarded copy is set aside until the kept one is linked, so a failure puts it
+    back. Keeping the checkout's copy runs it through `adopt`, so every check adopt makes
+    still applies.
+
+    Args:
+        co (Checkout): The checkout holding the entry.
+        item (Entry): An entry whose two copies differ.
+        side (Literal["checkout", "vault"]): The copy to keep.
+        tracked (bool): Whether git tracks the entry's path, from `tracked_names`.
+
+    Returns:
+        LinkResult: `created` once the kept copy is in the vault and linked.
+
+    Raises:
+        LocalMdError: When there are not two copies, adopt refuses the checkout copy, or
+            a copy cannot be moved.
+    """
+    if state(item) is not State.DIVERGED:
+        msg = f"{item.link} and {item.target} are not two copies to choose between"
+        raise LocalMdError(msg)
+    discarded = item.target if side == "checkout" else item.link
+    try:
+        aside = localtree.set_aside(discarded)
+    except OSError as err:
+        msg = f"could not move {discarded} aside: {err}"
+        raise LocalMdError(msg, [f"{item.link} and {item.target} were left untouched."]) from err
+    try:
+        if side == "checkout":
+            adopt(co, item, tracked=tracked)
+            result = LinkResult(item, "created", State.DIVERGED)
+        else:
+            result = link(co, item, tracked=tracked)
+    except (LocalMdError, OSError):
+        _restore(co, item, aside, discarded)
+        raise
+    if result.status != "created":
+        _restore(co, item, aside, discarded)
+        return result
+    try:
+        _remove(aside)
+    except OSError as err:
+        msg = f"{item.link} is linked, but {aside} could not be removed: {err}"
+        raise LocalMdError(msg, ["Delete it by hand."]) from err
+    return result
+
+
+def keep_legacy(co: Checkout, keep: Literal["old", "local"], *, tracked: bool) -> LinkResult:
+    """Settle two differing vault copies of CLAUDE.local.md by keeping the chosen one.
+
+    Args:
+        co (Checkout): The checkout to link once one copy remains.
+        keep (Literal["old", "local"]): The copy at the project folder's top, or the one
+            in `local/`.
+        tracked (bool): Whether git tracks CLAUDE.local.md, from `tracked_names`.
+
+    Returns:
+        LinkResult: The outcome of linking the copy that remains.
+
+    Raises:
+        LocalMdError: When there are not two copies, or the other cannot be removed.
+    """
+    old = paths.legacy_local_md_path(co.vault, co.slug)
+    item = entry(co, paths.LOCAL_MD_FILE)
+    if not (old.is_file() and item.target.is_file()):
+        msg = f"there are not two vault copies of {paths.LOCAL_MD_FILE} to choose between"
+        raise LocalMdError(msg)
+    try:
+        if keep == "old":
+            old.replace(item.target)
+        else:
+            old.unlink()
+    except OSError as err:
+        msg = f"could not keep the {keep} copy of {paths.LOCAL_MD_FILE}: {err}"
+        raise LocalMdError(msg) from err
+    return _link_contained(co, item, tracked=tracked)
+
+
 def settings_entry(co: Checkout) -> Entry:
     """Return the checkout's `.claude/settings.local.json` entry, which is kept by copy.
 
@@ -1467,12 +1608,24 @@ class SettingsPending:
     summary: tuple[str, ...]
 
 
-def _mtime(path: Path) -> str | None:
-    """Return a file's modification time as ISO-8601 UTC, or None when it is absent."""
-    if not path.is_file():
+def modified(path: Path) -> str | None:
+    """Return a file's or folder's modification time as ISO-8601 UTC, for a person choosing.
+
+    Args:
+        path (Path): The file or folder.
+
+    Returns:
+        str | None: The time, or None when nothing is there.
+    """
+    if not path.exists():
         return None
     stamp = dt.datetime.fromtimestamp(path.stat().st_mtime, tz=dt.UTC)
     return stamp.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _mtime(path: Path) -> str | None:
+    """Return a file's modification time as ISO-8601 UTC, or None when it is absent."""
+    return modified(path) if path.is_file() else None
 
 
 def _settings_summary(item: Entry) -> tuple[str, ...]:

@@ -2084,3 +2084,122 @@ def test_adopt_failed_listing_removes_created_folders(co, monkeypatch):
 
     assert not (co.local / "notes").exists()
     assert (co.worktree / "notes" / "private.md").read_text() == "x\n"
+
+
+# Resolving a conflict the person chose how to settle
+
+
+def test_relink_replaces_a_foreign_link(co, md, tmp_path):
+    """Verify relink points a link aimed elsewhere at the vault copy, leaving its old target."""
+    _vault_copy(md)
+    other = tmp_path / "other.md"
+    other.write_text("mine\n")
+    md.link.symlink_to(other)
+
+    result = localmd.relink(co, md, tracked=False)
+
+    assert result.status == "created"
+    assert localmd.state(md) is State.LINKED
+    assert other.read_text() == "mine\n"
+
+
+def test_relink_restores_the_old_link_when_linking_fails(co, md, tmp_path, monkeypatch):
+    """Verify relink puts the person's link back when the vault copy cannot be linked."""
+    _vault_copy(md)
+    other = tmp_path / "other.md"
+    other.write_text("mine\n")
+    md.link.symlink_to(other)
+
+    def refuse(*_args: object, **_kwargs: object) -> bool:
+        msg = "no space"
+        raise OSError(msg)
+
+    monkeypatch.setattr(localmd.localtree, "create_link", refuse)
+
+    result = localmd.relink(co, md, tracked=False)
+
+    assert result.status == "conflict"
+    assert md.link.resolve() == other.resolve()
+
+
+def test_relink_refuses_a_regular_file(co, md):
+    """Verify relink never removes a file, only a symlink pointing elsewhere."""
+    _vault_copy(md)
+    md.link.write_text("mine\n")
+
+    with pytest.raises(LocalMdError):
+        localmd.relink(co, md, tracked=False)
+
+    assert md.link.read_text() == "mine\n"
+
+
+def test_keep_copy_checkout_writes_it_over_the_vault_copy(co, md):
+    """Verify keeping the checkout's copy replaces the vault copy and links it back."""
+    _vault_copy(md, "vault\n")
+    md.link.write_text("checkout\n")
+
+    result = localmd.keep_copy(co, md, "checkout", tracked=False)
+
+    assert result.status == "created"
+    assert md.target.read_text() == "checkout\n"
+    assert localmd.state(md) is State.LINKED
+
+
+def test_keep_copy_vault_replaces_the_checkout_copy(co, md):
+    """Verify keeping the vault's copy replaces the checkout copy with the link."""
+    _vault_copy(md, "vault\n")
+    md.link.write_text("checkout\n")
+
+    result = localmd.keep_copy(co, md, "vault", tracked=False)
+
+    assert result.status == "created"
+    assert md.link.read_text() == "vault\n"
+    assert localmd.state(md) is State.LINKED
+
+
+@pytest.mark.parametrize(("side", "expected"), [("checkout", "a.md"), ("vault", "b.md")])
+def test_keep_copy_handles_a_skill_folder(co, side, expected):
+    """Verify keeping either copy of a skill folder leaves that folder's files, linked."""
+    item = localmd.entry(co, "skills/s")
+    item.target.mkdir(parents=True)
+    (item.target / "b.md").write_text("vault\n")
+    item.link.mkdir(parents=True)
+    (item.link / "a.md").write_text("checkout\n")
+
+    localmd.keep_copy(co, item, side, tracked=False)
+
+    assert localmd.state(item) is State.LINKED
+    assert sorted(path.name for path in item.target.iterdir()) == [expected]
+    assert not [path for path in item.target.parent.iterdir() if path.name.startswith(".")]
+
+
+def test_keep_copy_refuses_an_entry_that_is_not_diverged(co, md):
+    """Verify keep_copy refuses when there are not two copies to choose between."""
+    _vault_copy(md)
+
+    with pytest.raises(LocalMdError):
+        localmd.keep_copy(co, md, "checkout", tracked=False)
+
+
+@pytest.mark.parametrize(("keep", "expected"), [("old", "# old\n"), ("local", "# new\n")])
+def test_keep_legacy_keeps_the_chosen_copy_and_links_it(co, md, vault, keep, expected):
+    """Verify keeping one of two differing vault copies removes the other and links."""
+    old = _legacy(vault)
+    _vault_copy(md, "# new\n")
+
+    result = localmd.keep_legacy(co, keep, tracked=False)
+
+    assert result.status == "created"
+    assert not old.exists()
+    assert md.target.read_text() == expected
+    assert localmd.state(md) is State.LINKED
+
+
+@pytest.mark.parametrize("raw", [".claude/settings.local.json", "settings.local.json"])
+def test_resolve_adopt_names_the_settings_file_apart(co, raw):
+    """Verify adopting the settings file raises the error a caller turns into the settings choice."""
+    (co.worktree / ".claude").mkdir()
+    cwd = co.worktree / ".claude" if raw == "settings.local.json" else co.worktree
+
+    with pytest.raises(localmd.SettingsNotAdoptedError):
+        localmd.resolve_adopt(co, raw, cwd)

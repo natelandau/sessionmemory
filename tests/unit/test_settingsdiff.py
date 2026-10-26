@@ -8,7 +8,7 @@ from sessionmemory.lib import settingsdiff
 
 
 def test_summarize_lists_objects_and_one_sided_keys():
-    """Verify lists, scalar objects, and one-sided keys each get one line."""
+    """Verify lists, scalar objects, and one-sided keys each get their own lines."""
     checkout = {"permissions": {"allow": ["A", "B", "C"]}, "enabledPlugins": {"x@y": True}}
     vault = {
         "permissions": {"allow": ["A", "D"]},
@@ -18,7 +18,8 @@ def test_summarize_lists_objects_and_one_sided_keys():
 
     assert settingsdiff.summarize(checkout, vault) == [
         "permissions.allow: 2 only in the checkout (B, C), 1 only in the vault (D)",
-        "enabledPlugins: z@y only in the vault; x@y differs",
+        "enabledPlugins: z@y only in the vault",
+        "enabledPlugins.x@y: true in the checkout, false in the vault",
         "env: only in the vault",
     ]
 
@@ -33,9 +34,16 @@ def test_summarize_caps_listed_items():
     ]
 
 
-def test_summarize_names_other_differing_keys():
-    """Verify a scalar or mixed value that differs is named, not described."""
-    assert settingsdiff.summarize({"model": "a"}, {"model": "b"}) == ["model: differs"]
+def test_summarize_shows_both_values_of_a_differing_scalar():
+    """Verify a scalar that differs shows each side's value."""
+    assert settingsdiff.summarize({"model": "a"}, {"model": "b"}) == [
+        "model: a in the checkout, b in the vault"
+    ]
+
+
+def test_summarize_names_a_differing_mixed_value():
+    """Verify a value whose type differs between the copies is named, not described."""
+    assert settingsdiff.summarize({"model": "a"}, {"model": ["a"]}) == ["model: differs"]
 
 
 def test_summarize_keeps_list_items_of_different_types_apart():
@@ -62,3 +70,11 @@ def test_load(tmp_path, text, expected):
     path.write_text(text, encoding="utf-8")
 
     assert settingsdiff.load(path) == expected
+
+
+def test_summarize_never_shows_env_values():
+    """Verify a differing env value is named without printing either side's value."""
+    checkout = {"env": {"API_KEY": "secret-one", "MODE": "a"}}
+    vault = {"env": {"API_KEY": "secret-two", "MODE": "a"}}
+
+    assert settingsdiff.summarize(checkout, vault) == ["env.API_KEY: differs"]

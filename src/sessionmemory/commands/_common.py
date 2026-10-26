@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, NoReturn
 
 import typer
 import typer.core
-from nclutils import pp
+from nclutils import ask, pp
 
 # Typer vendors Click, so the `click` package's classes never match its errors.
 from typer._click import core as click_core
@@ -162,6 +162,29 @@ def emit_json(payload: object) -> None:
         payload (object): Any JSON-serializable value.
     """
     emit_value(json.dumps(payload, indent=2))
+
+
+def interactive() -> bool:
+    """Report whether a person can answer a prompt, so an agent's call never blocks.
+
+    Returns:
+        bool: True when both stdin and stdout are terminals.
+    """
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def confirm(question: str, yes: str) -> bool:
+    """Ask one yes-or-no question whose answers say what each choice does.
+
+    Args:
+        question (str): The question.
+        yes (str): The yes answer, naming what it does.
+
+    Returns:
+        bool: True only when the person chose yes; cancelling counts as no.
+    """
+    choices = [(yes, "yes"), ("No, leave it alone", "no")]
+    return ask.choose_one_from_list(choices=choices, message=question) == "yes"
 
 
 def require_vault() -> Path:

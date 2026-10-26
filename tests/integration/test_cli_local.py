@@ -11,8 +11,9 @@ import pytest
 from typer.testing import CliRunner
 
 from sessionmemory.cli import app
+from sessionmemory.commands import _common
 from sessionmemory.commands import local as local_commands
-from sessionmemory.lib import localmd
+from sessionmemory.lib import localmd, paths
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -35,7 +36,7 @@ def workspace(vault, tmp_path, monkeypatch):
     _git("remote", "add", "origin", "git@example.org:nate/demo.git", cwd=repo)
     assert runner.invoke(app, ["project", "register", "--cwd", str(repo)]).exit_code == 0
     monkeypatch.chdir(repo)
-    monkeypatch.setattr(local_commands, "_interactive", lambda: False)
+    monkeypatch.setattr(_common, "interactive", lambda: False)
     return vault, repo
 
 
@@ -97,7 +98,7 @@ def test_adopt_warns_on_relative_import(workspace):
 
     assert result.exit_code == 0
     assert "@./sibling.md" in result.stderr
-    assert "commit the vault copy" in result.stderr
+    assert "commit the vault copy to the vault's git history" in result.stderr
 
 
 def test_adopt_when_already_linked_prints_the_path(workspace):
@@ -122,7 +123,7 @@ def test_adopt_without_a_file_is_refused(workspace):
 
 def test_adopt_with_no_candidates_exits_0(workspace, monkeypatch):
     """Verify a bare adopt with nothing waiting exits 0 without prompting."""
-    monkeypatch.setattr(local_commands, "_interactive", lambda: True)
+    monkeypatch.setattr(_common, "interactive", lambda: True)
     monkeypatch.setattr(local_commands.ask, "choose_one_from_list", _fail_prompt)
 
     result = runner.invoke(app, ["local", "sync"])
@@ -147,13 +148,13 @@ def _answer(answers: dict[str, str], asked: list[str]) -> Callable[..., object]:
 
 def test_sync_asks_one_question_per_entry(workspace, monkeypatch):
     """Verify each candidate gets its own question and only a yes is adopted."""
-    vault, repo = workspace
+    _, repo = workspace
     (repo / "CLAUDE.local.md").write_text("notes\n")
     _checkout_skill(repo, "a")
     _checkout_skill(repo, "b")
     asked: list[str] = []
     answers = {"CLAUDE.local.md": "Yes", "skills/a": "No", "skills/b": "Yes"}
-    monkeypatch.setattr(local_commands, "_interactive", lambda: True)
+    monkeypatch.setattr(_common, "interactive", lambda: True)
     monkeypatch.setattr(local_commands.ask, "choose_one_from_list", _answer(answers, asked))
 
     result = runner.invoke(app, ["local", "sync"])
@@ -164,10 +165,9 @@ def test_sync_asks_one_question_per_entry(workspace, monkeypatch):
         "Adopt .claude/skills/a into the vault?",
         "Adopt .claude/skills/b into the vault?",
     ]
-    assert result.stdout.splitlines() == [
-        str(_local(vault) / "CLAUDE.local.md"),
-        str(_local(vault) / "claude" / "skills" / "b"),
-    ]
+    assert "CLAUDE.local.md moved into the vault" in result.stdout
+    assert ".claude/skills/b moved into the vault" in result.stdout
+    assert "skills/a" not in result.stdout
     assert (repo / "CLAUDE.local.md").is_symlink()
     assert (repo / ".claude" / "skills" / "b").is_symlink()
     assert not (repo / ".claude" / "skills" / "a").is_symlink()
@@ -177,7 +177,7 @@ def test_sync_cancelled_question_adopts_nothing(workspace, monkeypatch):
     """Verify cancelling a question counts as no and exits 0."""
     _, repo = workspace
     (repo / "CLAUDE.local.md").write_text("notes\n")
-    monkeypatch.setattr(local_commands, "_interactive", lambda: True)
+    monkeypatch.setattr(_common, "interactive", lambda: True)
     monkeypatch.setattr(local_commands.ask, "choose_one_from_list", lambda *_a, **_k: None)
 
     result = runner.invoke(app, ["local", "sync"])
@@ -873,7 +873,7 @@ def test_sync_asks_to_track_checkout_only_settings(workspace, monkeypatch):
     _settings(repo, vault, checkout='{"a": 1}', theirs=None)
     asked: list[str] = []
     answers = {"Copy .claude/settings.local.json into the vault?": "Yes"}
-    monkeypatch.setattr(local_commands, "_interactive", lambda: True)
+    monkeypatch.setattr(_common, "interactive", lambda: True)
     monkeypatch.setattr(local_commands.ask, "choose_one_from_list", _answer(answers, asked))
 
     result = runner.invoke(app, ["local", "sync"])
@@ -889,7 +889,7 @@ def test_sync_declining_settings_leaves_both_alone(workspace, monkeypatch):
     vault, repo = workspace
     _settings(repo, vault, checkout='{"a": 1}', theirs=None)
     asked: list[str] = []
-    monkeypatch.setattr(local_commands, "_interactive", lambda: True)
+    monkeypatch.setattr(_common, "interactive", lambda: True)
     monkeypatch.setattr(
         local_commands.ask, "choose_one_from_list", _answer({"settings": "No"}, asked)
     )
@@ -905,7 +905,7 @@ def test_sync_asks_to_copy_vault_only_settings(workspace, monkeypatch):
     vault, repo = workspace
     _settings(repo, vault, checkout=None, theirs='{"a": 2}')
     asked: list[str] = []
-    monkeypatch.setattr(local_commands, "_interactive", lambda: True)
+    monkeypatch.setattr(_common, "interactive", lambda: True)
     monkeypatch.setattr(
         local_commands.ask, "choose_one_from_list", _answer({"Copy it into": "Yes"}, asked)
     )
@@ -925,9 +925,9 @@ def test_sync_asks_to_copy_vault_only_settings(workspace, monkeypatch):
 @pytest.mark.parametrize(
     ("answer", "checkout", "theirs"),
     [
-        ("This checkout's", '{"a": 1}', '{"a": 1}'),
-        ("The vault's", '{"a": 2}', '{"a": 2}'),
-        ("Neither", '{"a": 1}', '{"a": 2}'),
+        ("local", '{"a": 1}', '{"a": 1}'),
+        ("vault", '{"a": 2}', '{"a": 2}'),
+        ("exit", '{"a": 1}', '{"a": 2}'),
     ],
 )
 def test_sync_differing_settings_asks_which_wins(workspace, monkeypatch, answer, checkout, theirs):
@@ -937,7 +937,7 @@ def test_sync_differing_settings_asks_which_wins(workspace, monkeypatch, answer,
     _settings(repo, vault, checkout='{"a": 1}', theirs='{"a": 2}')
     asked: list[str] = []
     answers = {"r.md": "Yes", "differs": answer}
-    monkeypatch.setattr(local_commands, "_interactive", lambda: True)
+    monkeypatch.setattr(_common, "interactive", lambda: True)
     monkeypatch.setattr(local_commands.ask, "choose_one_from_list", _answer(answers, asked))
 
     result = runner.invoke(app, ["local", "sync"])
@@ -949,6 +949,59 @@ def test_sync_differing_settings_asks_which_wins(workspace, monkeypatch, answer,
     assert (repo / ".claude" / "rules" / "r.md").is_symlink()
     assert (repo / ".claude" / "settings.local.json").read_text() == checkout
     assert (_local(vault) / "claude" / "settings.local.json").read_text() == theirs
+
+
+def test_terminal_adopt_asks_about_differing_settings(workspace, monkeypatch):
+    """Verify an adopt on a terminal asks which settings copy wins instead of naming commands."""
+    vault, repo = workspace
+    (repo / "CLAUDE.local.md").write_text("notes\n")
+    _settings(
+        repo, vault, checkout='{"enabledPlugins": {"x@y": true}}', theirs='{"enabledPlugins": {}}'
+    )
+    asked: list[str] = []
+    monkeypatch.setattr(_common, "interactive", lambda: True)
+    monkeypatch.setattr(
+        local_commands.ask, "choose_one_from_list", _answer({"differs": "vault"}, asked)
+    )
+
+    result = runner.invoke(app, ["local", "sync", "--adopt", "CLAUDE.local.md"])
+
+    assert result.exit_code == 0, result.output
+    assert len(asked) == 1
+    assert (repo / "CLAUDE.local.md").is_symlink()
+    assert (repo / ".claude" / "settings.local.json").read_text() == '{"enabledPlugins": {}}'
+    assert "--keep-settings" not in result.output
+    assert "copied the vault's settings.local.json over this checkout's" in result.stdout
+
+
+def test_terminal_exit_answer_names_no_commands(workspace, monkeypatch):
+    """Verify answering exit leaves both settings copies alone and prints no command to run."""
+    vault, repo = workspace
+    _settings(repo, vault, checkout='{"a": 1}', theirs='{"a": 2}')
+    monkeypatch.setattr(_common, "interactive", lambda: True)
+    monkeypatch.setattr(
+        local_commands.ask, "choose_one_from_list", _answer({"differs": "exit"}, [])
+    )
+
+    result = runner.invoke(app, ["local", "sync"])
+
+    assert result.exit_code == 0, result.output
+    assert "sessionmemory local sync" not in result.output
+    assert (repo / ".claude" / "settings.local.json").read_text() == '{"a": 1}'
+
+
+def test_off_terminal_adopt_still_names_settings_commands(workspace, monkeypatch):
+    """Verify an adopt off a terminal never prompts and names the settings commands."""
+    vault, repo = workspace
+    (repo / "CLAUDE.local.md").write_text("notes\n")
+    _settings(repo, vault, checkout='{"a": 1}', theirs='{"a": 2}')
+    monkeypatch.setattr(local_commands.ask, "choose_one_from_list", _fail_prompt)
+
+    result = runner.invoke(app, ["local", "sync", "--adopt", "CLAUDE.local.md"])
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout == f"{_local(vault)}/CLAUDE.local.md\n"
+    assert "--keep-settings vault" in result.stderr
 
 
 @pytest.mark.parametrize("command", ["adopt", "link"])
@@ -1141,3 +1194,131 @@ def test_sync_json_carries_manifest_problems(workspace):
     problems = json.loads(result.stdout)["manifest_problems"]
     assert len(problems) == 1
     assert "../x" in problems[0]
+
+
+# Conflicts asked about on a terminal
+
+
+def _on_terminal(monkeypatch, answers: dict[str, str]) -> list[str]:
+    asked: list[str] = []
+    monkeypatch.setattr(_common, "interactive", lambda: True)
+    monkeypatch.setattr(local_commands.ask, "choose_one_from_list", _answer(answers, asked))
+    return asked
+
+
+def _vault_rule(vault: Path, name: str, text: str) -> Path:
+    path = _local(vault) / "claude" / "rules" / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    return path
+
+
+def test_terminal_identical_copy_is_offered_as_a_link(workspace, monkeypatch):
+    """Verify a checkout copy identical to the vault copy is offered as a link, once."""
+    vault, repo = workspace
+    _vault_md(vault, "notes\n")
+    (repo / "CLAUDE.local.md").write_text("notes\n")
+    asked = _on_terminal(monkeypatch, {"identical": "Yes"})
+
+    result = runner.invoke(app, ["local", "sync"])
+
+    assert result.exit_code == 0, result.output
+    assert asked == ["CLAUDE.local.md is identical to the vault copy. Replace it with a link?"]
+    assert (repo / "CLAUDE.local.md").is_symlink()
+
+
+def test_terminal_declined_identical_copy_names_no_command(workspace, monkeypatch):
+    """Verify declining the link leaves the copy, names no command, and exits 0."""
+    vault, repo = workspace
+    _vault_md(vault, "notes\n")
+    (repo / "CLAUDE.local.md").write_text("notes\n")
+    _on_terminal(monkeypatch, {"identical": "No"})
+
+    result = runner.invoke(app, ["local", "sync"])
+
+    assert result.exit_code == 0, result.output
+    assert "local sync" not in result.output
+    assert not (repo / "CLAUDE.local.md").is_symlink()
+
+
+@pytest.mark.parametrize(
+    ("answer", "checkout", "theirs", "linked"),
+    [
+        ("local", "mine\n", "mine\n", True),
+        ("vault", "theirs\n", "theirs\n", True),
+        ("exit", "mine\n", "theirs\n", False),
+    ],
+)
+def test_terminal_differing_entry_asks_which_copy_wins(
+    workspace, monkeypatch, answer, checkout, theirs, linked
+):
+    """Verify a rule that differs from its vault copy asks which wins and does that."""
+    vault, repo = workspace
+    rule = _checkout_rule(repo, "r.md", "mine\n")
+    target = _vault_rule(vault, "r.md", "theirs\n")
+    asked = _on_terminal(monkeypatch, {"differs from the vault copy": answer})
+
+    result = runner.invoke(app, ["local", "sync"])
+
+    assert result.exit_code == 0, result.output
+    assert asked == [".claude/rules/r.md differs from the vault copy. Which copy wins?"]
+    assert rule.read_text() == checkout
+    assert target.read_text() == theirs
+    assert rule.is_symlink() is linked
+    assert "local sync" not in result.output
+
+
+def test_terminal_foreign_link_is_offered_for_relinking(workspace, monkeypatch, tmp_path):
+    """Verify a link aimed elsewhere is offered for pointing at the vault copy."""
+    vault, repo = workspace
+    _vault_md(vault, "notes\n")
+    other = tmp_path / "other.md"
+    other.write_text("mine\n")
+    (repo / "CLAUDE.local.md").symlink_to(other)
+    asked = _on_terminal(monkeypatch, {"is a link to": "Yes"})
+
+    result = runner.invoke(app, ["local", "sync"])
+
+    assert result.exit_code == 0, result.output
+    assert asked == [
+        (
+            f"CLAUDE.local.md is a link to {other.resolve()}, not to the vault copy. "
+            "Point it at the vault copy?"
+        )
+    ]
+    assert (repo / "CLAUDE.local.md").resolve() == (_local(vault) / "CLAUDE.local.md").resolve()
+    assert other.read_text() == "mine\n"
+
+
+@pytest.mark.parametrize(
+    ("answer", "kept", "old_left"),
+    [("old", "# old\n", False), ("local", "# new\n", False), ("exit", "# new\n", True)],
+)
+def test_terminal_legacy_copies_ask_which_to_keep(workspace, monkeypatch, answer, kept, old_left):
+    """Verify two differing vault copies of CLAUDE.local.md ask which one to keep."""
+    vault, repo = workspace
+    old = paths.legacy_local_md_path(vault, "demo")
+    old.write_text("# old\n")
+    new = _vault_md(vault, "# new\n")
+    asked = _on_terminal(monkeypatch, {"two copies": answer})
+
+    result = runner.invoke(app, ["local", "sync"])
+
+    assert result.exit_code == 0, result.output
+    assert asked == ["The vault holds two copies of CLAUDE.local.md that differ. Which one wins?"]
+    assert new.read_text() == kept
+    assert old.exists() is old_left
+    assert (repo / "CLAUDE.local.md").is_symlink() is not old_left
+
+
+def test_terminal_adopting_settings_asks_the_settings_question(workspace, monkeypatch):
+    """Verify naming the settings file for adopt on a terminal asks which copy wins."""
+    vault, repo = workspace
+    _settings(repo, vault, checkout='{"a": 1}', theirs='{"a": 2}')
+    asked = _on_terminal(monkeypatch, {"differs": "vault"})
+
+    result = runner.invoke(app, ["local", "sync", "--adopt", ".claude/settings.local.json"])
+
+    assert result.exit_code == 0, result.output
+    assert len(asked) == 1
+    assert (repo / ".claude" / "settings.local.json").read_text() == '{"a": 2}'

@@ -1,7 +1,8 @@
 """Summarize how two copies of a Claude Code `settings.local.json` differ.
 
 The person chooses which whole copy to keep, so the summary only has to show enough to
-choose: the list items and object keys each side has that the other lacks. Lists such as
+choose: the list items and object keys each side has that the other lacks, and both
+values of a scalar that differs. Lists such as
 `permissions.allow` compare as sets, since Claude Code appends to them and their order
 carries no meaning.
 """
@@ -78,16 +79,25 @@ def _list_line(key: str, checkout: list[object], vault: list[object]) -> str | N
     return f"{key}: {', '.join(parts)}" if parts else None
 
 
-def _object_line(key: str, checkout: dict, vault: dict) -> str | None:
-    parts = []
-    for side, mine, other in (("checkout", checkout, vault), ("vault", vault, checkout)):
-        if only := [name for name in mine if name not in other]:
-            parts.append(f"{', '.join(only)} only in the {side}")
-    if differs := [
-        name for name in checkout if name in vault and not same(checkout[name], vault[name])
-    ]:
-        parts.append(f"{', '.join(differs)} differs")
-    return f"{key}: {'; '.join(parts)}" if parts else None
+def _values(key: str, checkout: object, vault: object) -> str:
+    # Environment variables hold tokens, and the summary prints where others can see it.
+    if key == "env" or key.startswith("env."):
+        return f"{key}: differs"
+    return f"{key}: {_render(checkout)} in the checkout, {_render(vault)} in the vault"
+
+
+def _object_lines(key: str, checkout: dict, vault: dict) -> list[str]:
+    lines = [
+        f"{key}: {_items(only)} only in the {side}"
+        for side, mine, other in (("checkout", checkout, vault), ("vault", vault, checkout))
+        if (only := [name for name in mine if name not in other])
+    ]
+    lines.extend(
+        _values(f"{key}.{name}", checkout[name], vault[name])
+        for name in checkout
+        if name in vault and not same(checkout[name], vault[name])
+    )
+    return lines
 
 
 def _walk(prefix: str, checkout: dict, vault: dict) -> list[str]:
@@ -102,17 +112,17 @@ def _walk(prefix: str, checkout: dict, vault: dict) -> list[str]:
         if same(ours, theirs):
             continue
         if isinstance(ours, list) and isinstance(theirs, list):
-            line = _list_line(key, ours, theirs)
+            if line := _list_line(key, ours, theirs):
+                lines.append(line)
         elif isinstance(ours, dict) and isinstance(theirs, dict):
             if all(_scalar(value) for value in [*ours.values(), *theirs.values()]):
-                line = _object_line(key, ours, theirs)
+                lines.extend(_object_lines(key, ours, theirs))
             else:
                 lines.extend(_walk(f"{key}.", ours, theirs))
-                continue
+        elif _scalar(ours) and _scalar(theirs):
+            lines.append(_values(key, ours, theirs))
         else:
-            line = f"{key}: differs"
-        if line:
-            lines.append(line)
+            lines.append(f"{key}: differs")
     return lines
 
 

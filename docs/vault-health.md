@@ -257,7 +257,7 @@ vault copy cannot be linked:
 
 ```
 1 suggestion
-  └─ local: ~/repos/my-vault/projects/invoice-api/local/claude/natelandau-toolkit.toml: .claude/natelandau-toolkit.toml is listed in entries.toml but the vault holds no copy; remove the line from entries.toml
+  └─ local: ~/repos/my-vault/projects/invoice-api/local/claude/review.toml: .claude/review.toml is listed in entries.toml but the vault holds no copy; remove the line from entries.toml
 ```
 
 Delete the line from `entries.toml`, or adopt the file again from a checkout that still

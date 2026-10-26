@@ -100,6 +100,8 @@ sessionmemory init --force ~/old-notes   # a directory that already has contents
   └─ _system/vault.toml
 ```
 
+Without `--force`, a directory that already has contents exits 1.
+
 It never overwrites a file, so it is safe to run again. Run it again after an upgrade
 that adds a file to that list. The `.gitignore` it writes ignores the derived index files
 and `projects/*/plans/`, since a plan is scratch that never belongs in history. It also
@@ -439,66 +441,44 @@ sessionmemory local sync --cwd .
 
 Every run does the linking that can never lose content. It creates a missing link,
 replaces a link to nothing, and deletes a link whose vault entry is gone. Nothing that
-moves or overwrites your files happens without your choice: adopting an entry needs
-`--adopt`, and copying settings needs `--keep-settings`.
+moves or overwrites your files happens without your choice.
 
-On a terminal with no options, the command links, then asks one question per pending
-item. Each answer says what it does, and a no or a cancel leaves the file alone:
-
-- An entry only in the checkout: `Adopt .claude/skills/deploy-check into the vault?` Yes
-  moves it into the vault and links it back.
-- Settings only in the checkout: `Copy .claude/settings.local.json into the vault?` Yes
-  copies it into the vault, and the checkout keeps its copy.
-- Settings only in the vault: `The vault has a .claude/settings.local.json for this
-  project, but this checkout has none. Copy it into this checkout?`
-- Settings that differ: `.claude/settings.local.json differs between this checkout and
-  the vault. Which copy wins?`
-
-For differing settings, the answers are this checkout's copy, the vault's copy, or
-neither. Each copy's answer shows its modification time, and a summary of what each copy
-has that the other lacks prints above the question.
-
-Off a terminal with no options, the command never prompts. It links, then names each
-pending item and the command that resolves it, and exits 0:
-
-```
-! not tracked in the vault yet: CLAUDE.local.md, .claude/skills/deploy-check, .claude/rules/style.md
-  └─ Adopt them into the vault with: sessionmemory local sync --adopt CLAUDE.local.md --adopt skills/deploy-check --adopt rules/style.md --cwd .
-! .claude/settings.local.json is not tracked in the vault yet
-  └─ Copy it into the vault with: sessionmemory local sync --keep-settings checkout --cwd .
-```
-
-When the settings differ, the warning lists what each copy has that the other lacks:
+The command then reports what is still pending: entries in the checkout that the vault
+does not hold yet, and a `settings.local.json` that only one side has or that differs
+between the two. For differing settings, the report lists what each copy has that the
+other lacks:
 
 ```
 ! .claude/settings.local.json differs between this checkout and the vault
   ├─ permissions.allow: 1 only in the checkout (Bash(just docs))
   ├─ enabledPlugins: only in the checkout
+  ├─ model: opus in the checkout, sonnet in the vault
   ├─ Copy this checkout's over the vault's with: sessionmemory local sync --keep-settings checkout --cwd .
   └─ Copy the vault's over this checkout's with: sessionmemory local sync --keep-settings vault --cwd .
 ```
 
-Lists such as `permissions.allow` compare item by item, in any order. The modification
-time of each copy is in the JSON output and in the question. It is a hint, not a rule:
-a vault copy that arrived through `git pull` carries the time of the pull.
+Lists such as `permissions.allow` compare item by item, in any order. The JSON output
+carries each copy's modification time. It is a hint, not a rule: a vault copy that
+arrived through `git pull` carries the time of the pull.
 
-The command prints each path it wrote on stdout and nothing else. Adopting all three
-entries and keeping the checkout's settings prints this:
+The command prints each path it wrote on stdout. Adopting all three entries and keeping
+the checkout's settings:
 
 ```bash
 sessionmemory local sync --adopt CLAUDE.local.md --adopt skills/deploy-check --adopt rules/style.md --keep-settings checkout --cwd .
 ```
 
 ```
-! Claude Code asks once per checkout to allow a linked rule as an external import
-! the hooks commit the vault copy to the vault's git remote
 ~/repos/my-vault/projects/invoice-api/local/CLAUDE.local.md
 ~/repos/my-vault/projects/invoice-api/local/claude/skills/deploy-check
 ~/repos/my-vault/projects/invoice-api/local/claude/rules/style.md
 ~/repos/my-vault/projects/invoice-api/local/claude/settings.local.json
+! Claude Code asks once per checkout to allow a linked rule as an external import
+! the vault's hooks commit the vault copy to the vault's git history
 ```
 
-In a second worktree, the same command links the entries and asks about the settings:
+In a second worktree, the same command links the entries and reports the settings copy
+that the checkout lacks:
 
 ```
 ~/repos/invoice-api-pdf/CLAUDE.local.md
@@ -684,13 +664,13 @@ linked skill loads with no approval.
 file that is not `CLAUDE.local.md`, a skill, or a rule, such as a tool's config file:
 
 ```bash
-sessionmemory local sync --adopt .claude/natelandau-toolkit.toml --adopt .claude/agents --cwd .
+sessionmemory local sync --adopt .claude/review.toml --adopt .claude/agents --cwd .
 ```
 
 ```
-! the hooks commit the vault copy to the vault's git remote
-~/repos/my-vault/projects/invoice-api/local/claude/natelandau-toolkit.toml
+~/repos/my-vault/projects/invoice-api/local/claude/review.toml
 ~/repos/my-vault/projects/invoice-api/local/claude/agents
+! the vault's hooks commit the vault copy to the vault's git history
 ```
 
 A relative path starts from the shell's directory, not from `--cwd`. A path that names a
@@ -706,7 +686,7 @@ command lists each one in `local/entries.toml`:
 # checkout's top level. Each is linked into every checkout of the project.
 paths = [
     ".claude/agents",
-    ".claude/natelandau-toolkit.toml",
+    ".claude/review.toml",
 ]
 ```
 
