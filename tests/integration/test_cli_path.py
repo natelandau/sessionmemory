@@ -43,7 +43,7 @@ def workspace(vault, tmp_path, monkeypatch):
         ("runbooks", "projects/demo/runbooks"),
         ("reference", "projects/demo/reference"),
         ("backlog", "projects/demo/backlog.md"),
-        ("local", "projects/demo/CLAUDE.local.md"),
+        ("local", "projects/demo/local"),
     ],
 )
 def test_path_prints_one_absolute_path(workspace, kind, tail):
@@ -61,7 +61,7 @@ def test_path_prints_one_absolute_path(workspace, kind, tail):
     [
         ("runbooks", "projects/demo/runbooks"),
         ("backlog", "projects/demo/backlog.md"),
-        ("local", "projects/demo/CLAUDE.local.md"),
+        ("local", "projects/demo/local"),
     ],
 )
 def test_path_prints_a_path_that_does_not_exist_yet(workspace, kind, tail):
@@ -86,7 +86,7 @@ def test_path_kinds_match_the_project_paths_keys(workspace):
     vault, _ = workspace
     keys = set(paths.project_paths(vault, "demo"))
 
-    renamed = {"project": "project_dir", "local": "local_md"}
+    renamed = {"project": "project_dir"}
     kinds = {renamed.get(kind.value, kind.value) for kind in PathKind}
 
     assert kinds == keys

@@ -1,7 +1,8 @@
 # Vault health
 
 `sessionmemory doctor` reads every project in the vault and reports what is off. It never
-edits a file, and it always exits 0.
+edits a file, and it always exits 0. If a check stops with an error, `doctor` reports it
+as a `doctor` finding that names the check, and runs the other checks.
 
 ```bash
 sessionmemory doctor
@@ -181,71 +182,128 @@ field nobody has searched since its pages changed.
 
 ### `local`
 
-A project's `CLAUDE.local.md` in the vault has a problem. The check runs for each project
-whose vault copy exists.
+A file in a project's `local/` folder has a problem, or a checkout's link to it does. The
+check runs for each project, and for each entry that the vault holds (see
+[Local files](concepts.md#local-files)).
 
-A relative `@` import in the vault copy cannot load, because Claude Code resolves it from
-the vault folder:
-
-```
-1 suggestion
-  └─ local: ~/repos/my-vault/projects/invoice-api/CLAUDE.local.md: @./sandbox-notes.md resolves from the vault folder and will not load
-```
-
-Write the content of the imported file into `CLAUDE.local.md`, or remove the import.
-
-When the registered root exists on this machine, the check also looks at the file there.
-It reports at most one finding for that file, with the remedy that fits its state.
-
-A file that git tracks is not private, and `sessionmemory local adopt` and
-`sessionmemory local link` both refuse it:
+A `CLAUDE.local.md` directly in the project's vault folder, outside `local/`, is at its
+old path:
 
 ```
 1 suggestion
-  └─ local: ~/repos/invoice-api/CLAUDE.local.md: tracked by git; run git rm --cached CLAUDE.local.md before adopting it
+  └─ local: ~/repos/my-vault/projects/invoice-api/CLAUDE.local.md: CLAUDE.local.md is at its old path; run local link to move it into local/
 ```
 
-Run the command, commit the removal in the project, then run `sessionmemory local adopt`.
-The file stays in the project's earlier commits.
-
-A regular file whose bytes differ from the vault copy is `diverged`:
+Run `sessionmemory local link`. It moves the file into `local/`. If `local/` already holds
+a different copy, the finding says so:
 
 ```
 1 suggestion
-  └─ local: ~/repos/invoice-api/CLAUDE.local.md: differs from the vault copy; copy the newer one over the vault copy, delete the checkout file, and run local link
+  └─ local: ~/repos/my-vault/projects/invoice-api/CLAUDE.local.md: CLAUDE.local.md is at its old path and differs from ~/repos/my-vault/projects/invoice-api/local/CLAUDE.local.md; keep one of them, delete the other, then run local link
+```
+
+Keep the copy you want, delete the other one, then run `sessionmemory local link`.
+
+An entry in `local/` that does not have the shape of its kind is never linked. Examples
+are a file among the skills, which must be folders, and a folder at
+`local/CLAUDE.local.md`:
+
+```
+1 suggestion
+  └─ local: ~/repos/my-vault/projects/invoice-api/local/claude/skills/notes.md: skills/notes.md in the vault is not a folder; fix or remove it in the vault
+```
+
+Move the file into a skill folder, or delete it. Until then, `sessionmemory local link`
+reports a conflict for it and exits 1.
+
+A skill or rule folder in the vault that holds a `.git` folder is a separate repository.
+Git records it in the vault as a reference to that repository, not as its files, so a
+second machine gets an empty folder:
+
+```
+1 suggestion
+  └─ local: ~/repos/my-vault/projects/invoice-api/local/claude/skills/deploy-check/vendor/.git: skills/deploy-check holds a git repository, which the vault commits as an embedded repository rather than its files; move it out of the vault
+```
+
+Move the repository out of the vault, and clone it again where you need it.
+`sessionmemory local adopt` refuses a folder like this.
+
+A relative `@` import in `CLAUDE.local.md` or in a `.md` file of a rule cannot load,
+because Claude Code resolves it from the vault folder:
+
+```
+1 suggestion
+  └─ local: ~/repos/my-vault/projects/invoice-api/local/CLAUDE.local.md: @./sandbox-notes.md resolves from the vault folder and will not load
+```
+
+Write the content of the imported file into the file itself, or remove the import. Skills
+and the other files of a rule are not scanned.
+
+When the registered root exists on this machine, the check also looks at each entry
+there. It reports at most one finding for each entry, with the remedy that fits its state.
+
+An entry that git tracks belongs to the project, and `sessionmemory local link` leaves it
+alone:
+
+```
+1 suggestion
+  └─ local: ~/repos/invoice-api/.claude/skills/release-notes: skills/release-notes is tracked by git; run git rm --cached .claude/skills/release-notes before adopting it
+```
+
+If the entry is yours, run the command, commit the removal in the project, then run
+`sessionmemory local adopt skills/release-notes`. The files stay in the project's earlier
+commits. If the project means to share the entry, delete the vault copy instead.
+
+A real file or folder whose content differs from the vault copy is `diverged`:
+
+```
+1 suggestion
+  └─ local: ~/repos/invoice-api/.claude/rules/style.md: rules/style.md differs from the vault copy; copy the newer one over the vault copy, delete the checkout copy, and run local link
 ```
 
 An editor that saves by renaming a temporary file over the link leaves this state behind.
-Run `sessionmemory local status` to compare both files. Then copy the newer content over
-the vault copy, delete the checkout file, and run `sessionmemory local link`.
+Run `sessionmemory local status` to compare both copies. Then copy the newer content over
+the vault copy, delete the checkout copy, and run `sessionmemory local link`.
 
-The other findings are for a file or link that git does not ignore, which shows up as an
+A link to nothing is reported whether or not git ignores it:
+
+```
+1 suggestion
+  └─ local: ~/repos/invoice-api/.claude/skills/deploy-check: skills/deploy-check is a dangling symlink; run local link to replace it
+```
+
+Run `sessionmemory local link`, which replaces the link.
+
+The other findings are for a link or a copy that git does not ignore, which shows up as an
 untracked file in the project. The remedy depends on what is there:
 
 ```
 1 suggestion
-  └─ local: ~/repos/invoice-api/CLAUDE.local.md: not ignored by git; run local link to add it to info/exclude
+  └─ local: ~/repos/invoice-api/CLAUDE.local.md: CLAUDE.local.md is not ignored by git; run local link to add it to info/exclude
 ```
 
-The checkout links to the vault copy, or holds a link to nothing. Run
-`sessionmemory local link`, which adds `CLAUDE.local.md` to the file that
-`git rev-parse --git-path info/exclude` prints.
-
-```
-1 suggestion
-  └─ local: ~/repos/invoice-api/CLAUDE.local.md: not ignored by git; run local adopt to replace it with an ignored link
-```
-
-The checkout holds a regular file with the same bytes as the vault copy. Run
-`sessionmemory local adopt`, which replaces it with a link and adds the ignore entry.
+The checkout links to the vault copy. Run `sessionmemory local link`, which adds the entry
+to the file that `git rev-parse --git-path info/exclude` prints.
 
 ```
 1 suggestion
-  └─ local: ~/repos/invoice-api/CLAUDE.local.md: not ignored by git, and a symlink to ~/repos/notes/CLAUDE.local.md rather than the vault copy; remove it, then run local link
+  └─ local: ~/repos/invoice-api/.claude/rules/style.md: rules/style.md is not ignored by git; run local adopt rules/style.md to replace it with an ignored link
+```
+
+The checkout holds a real copy with the same content as the vault copy. Run the
+`sessionmemory local adopt` command that the finding names, which replaces the copy with a
+link and adds the ignore line.
+
+```
+1 suggestion
+  └─ local: ~/repos/invoice-api/.claude/rules/style.md: rules/style.md is not ignored by git, and a symlink to ~/repos/notes/style.md rather than the vault copy; remove it, then run local link
 ```
 
 The checkout holds a link to another file. Remove the link, then run
 `sessionmemory local link`.
+
+When `.claude/`, `.claude/skills/`, or `.claude/rules/` is itself a symlink or a file, no
+entry under it can be linked, and the finding says so. Replace it with a real folder.
 
 The check covers the registered root only. `sessionmemory local status` covers each
 worktree.

@@ -440,7 +440,7 @@ def _local_project(vault: Path, root: Path, text: str = "# local\n") -> Path:
     """Register `demo` at a git repository `root` and write its vault copy."""
     root.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=root, check=True)
-    copy = vault / "projects" / "demo" / "CLAUDE.local.md"
+    copy = vault / "projects" / "demo" / "local" / "CLAUDE.local.md"
     copy.parent.mkdir(parents=True)
     copy.write_text(text, encoding="utf-8")
     registry.save(vault, {"demo": registry.Project(slug="demo", remotes=(), root=str(root))})
@@ -472,8 +472,8 @@ def test_local_reports_diverged_copy_at_root(tmp_path):
     findings = doctor.local_instructions(vault, StubEmbedder())
 
     expected = (
-        "differs from the vault copy; copy the newer one over the vault copy, "
-        "delete the checkout file, and run local link"
+        "CLAUDE.local.md differs from the vault copy; copy the newer one over the vault "
+        "copy, delete the checkout copy, and run local link"
     )
     assert [f.message for f in findings] == [expected]
 
@@ -489,7 +489,7 @@ def test_local_reports_unignored_link(tmp_path):
     findings = doctor.local_instructions(vault, StubEmbedder())
 
     assert [f.message for f in findings] == [
-        "not ignored by git; run local link to add it to info/exclude"
+        "CLAUDE.local.md is not ignored by git; run local link to add it to info/exclude"
     ]
 
 
@@ -525,7 +525,7 @@ def test_run_includes_the_local_check():
 def test_local_silent_when_root_is_not_a_git_repository(tmp_path):
     """Verify a git failure outside a repository is not read as "not ignored"."""
     vault = tmp_path / "vault"
-    copy = vault / "projects" / "demo" / "CLAUDE.local.md"
+    copy = vault / "projects" / "demo" / "local" / "CLAUDE.local.md"
     copy.parent.mkdir(parents=True)
     copy.write_text("# local\n", encoding="utf-8")
     root = tmp_path / "plain"
@@ -547,7 +547,7 @@ def test_local_reports_a_diverged_unignored_file_once(tmp_path):
     findings = doctor.local_instructions(vault, StubEmbedder())
 
     assert len(findings) == 1
-    assert findings[0].message.startswith("differs from the vault copy")
+    assert " differs from the vault copy" in findings[0].message
 
 
 def test_local_advises_adopt_for_an_identical_unignored_file(tmp_path):
@@ -561,7 +561,10 @@ def test_local_advises_adopt_for_an_identical_unignored_file(tmp_path):
     findings = doctor.local_instructions(vault, StubEmbedder())
 
     assert [f.message for f in findings] == [
-        "not ignored by git; run local adopt to replace it with an ignored link"
+        (
+            "CLAUDE.local.md is not ignored by git; run local adopt CLAUDE.local.md "
+            "to replace it with an ignored link"
+        )
     ]
 
 
@@ -577,7 +580,7 @@ def test_local_reports_a_tracked_file(tmp_path):
     findings = doctor.local_instructions(vault, StubEmbedder())
 
     assert [f.message for f in findings] == [
-        "tracked by git; run git rm --cached CLAUDE.local.md before adopting it"
+        "CLAUDE.local.md is tracked by git; run git rm --cached CLAUDE.local.md before adopting it"
     ]
 
 
@@ -594,8 +597,8 @@ def test_local_reports_an_unignored_foreign_link(tmp_path):
     findings = doctor.local_instructions(vault, StubEmbedder())
 
     expected = (
-        f"not ignored by git, and a symlink to {other.resolve()} rather than the vault copy; "
-        "remove it, then run local link"
+        f"CLAUDE.local.md is not ignored by git, and a symlink to {other.resolve()} rather "
+        "than the vault copy; remove it, then run local link"
     )
     assert [f.message for f in findings] == [expected]
 
@@ -627,3 +630,296 @@ def test_local_skips_an_unreadable_checkout_file(tmp_path):
         assert doctor.local_instructions(vault, StubEmbedder()) == []
     finally:
         local.chmod(0o644)
+
+
+def _local_entry(vault: Path, name: str, text: str = "# x\n") -> Path:
+    """Write a vault entry for `demo` (a file for `rules/x.md`, a folder holding SKILL.md)."""
+    base = vault / "projects" / "demo" / "local" / "claude"
+    path = base / name / "SKILL.md" if name.startswith("skills/") else base / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_local_flags_relative_import_in_rule(tmp_path):
+    """Verify a relative @import in a rule file is reported, and one in a skill is not."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    _local_project(vault, tmp_path / "repo")
+    rule = _local_entry(vault, "rules/style.md", "see @docs/a.md\n")
+    _local_entry(vault, "skills/deploy", "see @docs/b.md\n")
+
+    findings = doctor.local_instructions(vault, StubEmbedder())
+
+    assert [(f.path, f.message) for f in findings if "resolves" in f.message] == [
+        (str(rule), "@docs/a.md resolves from the vault folder and will not load")
+    ]
+
+
+def test_local_flags_old_path_copy(tmp_path):
+    """Verify a CLAUDE.local.md left at the old vault path is reported with local link."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    old = vault / "projects" / "demo" / "CLAUDE.local.md"
+    old.parent.mkdir(parents=True)
+    old.write_text("x\n", encoding="utf-8")
+
+    findings = doctor.local_instructions(vault, StubEmbedder())
+
+    assert [(f.path, "local link" in f.message) for f in findings] == [(str(old), True)]
+
+
+def test_local_flags_diverged_skill_at_root(tmp_path):
+    """Verify a skill folder differing from the vault copy is reported by name."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    root = tmp_path / "repo"
+    _local_project(vault, root)
+    _local_entry(vault, "skills/deploy-check")
+    skill = root / ".claude" / "skills" / "deploy-check"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("other\n", encoding="utf-8")
+    exclude = root / ".git" / "info" / "exclude"
+    exclude.write_text("/.claude/skills/deploy-check\n", encoding="utf-8")
+
+    findings = doctor.local_instructions(vault, StubEmbedder())
+
+    assert [(f.path, f.message) for f in findings] == [
+        (
+            str(skill),
+            (
+                "skills/deploy-check differs from the vault copy; copy the newer one over "
+                "the vault copy, delete the checkout copy, and run local link"
+            ),
+        )
+    ]
+
+
+def test_local_flags_unignored_rule_link(tmp_path):
+    """Verify an unignored rule link is reported with local link advice."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    root = tmp_path / "repo"
+    _local_project(vault, root)
+    target = _local_entry(vault, "rules/style.md")
+    (root / ".claude" / "rules").mkdir(parents=True)
+    (root / ".claude" / "rules" / "style.md").symlink_to(target)
+
+    findings = doctor.local_instructions(vault, StubEmbedder())
+
+    assert [f.message for f in findings] == [
+        "rules/style.md is not ignored by git; run local link to add it to info/exclude"
+    ]
+
+
+def test_local_names_the_entry_to_adopt_and_to_untrack(tmp_path):
+    """Verify adopt and git rm advice name the entry and its checkout path."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    root = tmp_path / "repo"
+    _local_project(vault, root)
+    _local_entry(vault, "rules/same.md", "a\n")
+    _local_entry(vault, "rules/tracked.md", "b\n")
+    rules = root / ".claude" / "rules"
+    rules.mkdir(parents=True)
+    (rules / "same.md").write_text("a\n", encoding="utf-8")
+    (rules / "tracked.md").write_text("c\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-f", ".claude/rules/tracked.md"], cwd=root, check=True)
+
+    messages = sorted(f.message for f in doctor.local_instructions(vault, StubEmbedder()))
+
+    assert messages == [
+        (
+            "rules/same.md is not ignored by git; run local adopt rules/same.md "
+            "to replace it with an ignored link"
+        ),
+        (
+            "rules/tracked.md is tracked by git; run git rm --cached "
+            ".claude/rules/tracked.md before adopting it"
+        ),
+    ]
+
+
+def test_local_flags_a_dangling_link(tmp_path):
+    """Verify a dangling symlink at an entry's path is reported with local link advice."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    root = tmp_path / "repo"
+    _local_project(vault, root)
+    _local_entry(vault, "rules/style.md")
+    (root / ".claude" / "rules").mkdir(parents=True)
+    (root / ".claude" / "rules" / "style.md").symlink_to(tmp_path / "gone.md")
+
+    findings = doctor.local_instructions(vault, StubEmbedder())
+
+    assert [f.message for f in findings] == [
+        "rules/style.md is a dangling symlink; run local link to replace it"
+    ]
+
+
+def test_local_reports_an_entry_behind_a_symlinked_claude_once(tmp_path):
+    """Verify a symlinked .claude yields one finding and never asks git about the path."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    root = tmp_path / "repo"
+    _local_project(vault, root)
+    _local_entry(vault, "rules/style.md")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (root / ".claude").symlink_to(elsewhere)
+
+    findings = doctor.local_instructions(vault, StubEmbedder())
+
+    assert [f.message for f in findings] == [
+        "rules/style.md cannot be linked; .claude or .claude/rules is a symlink or not a folder"
+    ]
+
+
+def test_local_keeps_non_git_findings_when_git_fails(tmp_path, monkeypatch):
+    """Verify a git failure drops only the tracked and ignored checks."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    root = tmp_path / "repo"
+    _local_project(vault, root)
+    old = vault / "projects" / "demo" / "CLAUDE.local.md"
+    old.write_text("x\n", encoding="utf-8")
+    rule = _local_entry(vault, "rules/style.md", "see @docs/a.md\n")
+    (root / "CLAUDE.local.md").write_text("other\n", encoding="utf-8")
+
+    error = doctor.localmd.LocalMdError("git failed")
+
+    def fail(*_args: object, **_kwargs: object) -> set[str]:
+        raise error
+
+    monkeypatch.setattr(doctor.localmd, "tracked_names", fail)
+
+    findings = doctor.local_instructions(vault, StubEmbedder())
+
+    assert sorted(f.path for f in findings) == sorted([str(old), str(rule)])
+
+
+def test_local_reports_a_never_linked_skill_behind_a_symlinked_claude(tmp_path):
+    """Verify a skill with no link yet is still reported when .claude is a symlink."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    root = tmp_path / "repo"
+    _local_project(vault, root)
+    _local_entry(vault, "skills/deploy")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (root / ".claude").symlink_to(elsewhere)
+
+    findings = doctor.local_instructions(vault, StubEmbedder())
+
+    assert [f.message for f in findings] == [
+        "skills/deploy cannot be linked; .claude or .claude/skills is a symlink or not a folder"
+    ]
+
+
+def test_local_flags_old_path_copy_that_differs_with_keep_one(tmp_path):
+    """Verify an old-path copy differing from local/ says to keep one, not to move it."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    old = vault / "projects" / "demo" / "CLAUDE.local.md"
+    old.parent.mkdir(parents=True)
+    old.write_text("old\n", encoding="utf-8")
+    new = vault / "projects" / "demo" / "local" / "CLAUDE.local.md"
+    new.parent.mkdir(parents=True)
+    new.write_text("new\n", encoding="utf-8")
+
+    findings = doctor.local_instructions(vault, StubEmbedder())
+
+    assert [(f.path, f.message) for f in findings] == [
+        (
+            str(old),
+            (
+                f"CLAUDE.local.md is at its old path and differs from {new}; keep one of "
+                "them, delete the other, then run local link"
+            ),
+        )
+    ]
+
+
+def test_local_flags_a_wrong_shape_vault_entry(tmp_path):
+    """Verify a file among the vault's skills is reported as not a folder."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    stray = vault / "projects" / "demo" / "local" / "claude" / "skills" / "README.md"
+    stray.parent.mkdir(parents=True)
+    stray.write_text("x\n", encoding="utf-8")
+
+    findings = doctor.local_instructions(vault, StubEmbedder())
+
+    assert [(f.path, f.message) for f in findings] == [
+        (
+            str(stray),
+            "skills/README.md in the vault is not a folder; fix or remove it in the vault",
+        )
+    ]
+
+
+def test_local_does_not_scan_a_non_markdown_rule(tmp_path):
+    """Verify a rule file that is not markdown is never scanned for imports."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    _local_entry(vault, "rules/notes.txt", "see @docs/a.md\n")
+
+    assert doctor.local_instructions(vault, StubEmbedder()) == []
+
+
+def test_local_flags_a_git_folder_inside_a_vault_skill(tmp_path):
+    """Verify a skill in the vault holding a `.git` folder is reported."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    skill = _local_entry(vault, "skills/deploy").parent
+    (skill / "vendor" / ".git").mkdir(parents=True)
+
+    findings = doctor.local_instructions(vault, StubEmbedder())
+
+    assert [(f.path, f.message) for f in findings] == [
+        (
+            str(skill / "vendor" / ".git"),
+            (
+                "skills/deploy holds a git repository, which the vault commits as an "
+                "embedded repository rather than its files; move it out of the vault"
+            ),
+        )
+    ]
+
+
+def test_local_survives_an_unreadable_local_folder(tmp_path, monkeypatch):
+    """Verify a vault folder that cannot be listed is a finding, not a crash."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    _local_entry(vault, "skills/deploy")
+
+    def broken(_co: object) -> list[object]:
+        msg = "permission denied"
+        raise PermissionError(msg)
+
+    monkeypatch.setattr(doctor.localmd, "vault_entries", broken)
+
+    findings = doctor.local_instructions(vault, StubEmbedder())
+
+    assert [f.check for f in findings] == ["local"]
+    assert "permission denied" in findings[0].message
+
+
+def test_run_reports_a_failing_check_and_runs_the_rest(tmp_path, monkeypatch):
+    """Verify one check that raises becomes a finding while the other checks still run."""
+
+    def exploding(_vault: Path, _embedder: object) -> list[doctor.Finding]:
+        msg = "boom"
+        raise OSError(msg)
+
+    def finding(_vault: Path, _embedder: object) -> list[doctor.Finding]:
+        return [doctor.Finding("x", "p", "m")]
+
+    monkeypatch.setattr(doctor, "CHECKS", (exploding, finding))
+
+    findings = doctor.run(tmp_path, StubEmbedder())
+
+    assert findings[0].check == "doctor"
+    assert "exploding" in findings[0].message
+    assert "boom" in findings[0].message
+    assert findings[1:] == [doctor.Finding("x", "p", "m")]

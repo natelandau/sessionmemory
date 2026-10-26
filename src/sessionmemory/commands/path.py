@@ -11,8 +11,8 @@ from sessionmemory.commands._common import emit_value, require_project, require_
 from sessionmemory.lib import paths
 
 # Typer lists an Enum's members in --help and rejects anything else at parse time. The
-# members are the keys of `paths.project_paths`, with `project` standing for `project_dir`
-# and `local` for `local_md`.
+# members are the keys of `paths.project_paths`, with `project` standing for
+# `project_dir`.
 PathKind = enum.Enum(
     "PathKind",
     {
@@ -40,5 +40,5 @@ def path_command(kind: PathKind = KIND_ARGUMENT, cwd: Path | None = CWD_OPTION) 
     """Print one of this project's vault paths."""
     vault = require_vault()
     slug = require_project(vault, cwd)
-    key = {"project": "project_dir", "local": "local_md"}.get(kind.value, kind.value)
+    key = {"project": "project_dir"}.get(kind.value, kind.value)
     emit_value(paths.project_paths(vault, slug)[key])

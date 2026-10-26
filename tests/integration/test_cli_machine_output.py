@@ -269,7 +269,11 @@ def colored_checkout(tmp_path):
         "SESSIONMEMORY_EMBEDDER": "stub",
     }
     assert _run(env, "project", "--register", "--cwd", str(repo)).returncode == 0
-    (vault / "projects" / repo.name / "CLAUDE.local.md").write_text("notes\n")
+    (vault / "projects" / repo.name / "local").mkdir(parents=True, exist_ok=True)
+    (vault / "projects" / repo.name / "local" / "CLAUDE.local.md").write_text("notes\n")
+    skill = vault / "projects" / repo.name / "local" / "claude" / "skills" / "deploy-check"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("# deploy-check\n")
     return env, repo
 
 
@@ -287,4 +291,5 @@ def test_local_json_output_is_parseable_in_a_colored_shell(colored_checkout, arg
 
     assert result.returncode == 0
     assert ESCAPE not in result.stdout
-    assert isinstance(json.loads(result.stdout), dict)
+    names = [item["name"] for item in json.loads(result.stdout)["entries"]]
+    assert names == ["CLAUDE.local.md", "skills/deploy-check"]

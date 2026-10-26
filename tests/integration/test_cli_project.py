@@ -507,7 +507,7 @@ def test_project_json_names_the_project_directory(vault, repo):
 
     assert payload["project_dir"] == str(vault / "projects" / "demo")
     assert payload["paths"]["logs"].startswith(payload["project_dir"])
-    assert payload["paths"]["local_md"] == str(vault / "projects" / "demo" / "CLAUDE.local.md")
+    assert payload["paths"]["local"] == str(vault / "projects" / "demo" / "local")
 
 
 def test_project_json_has_no_project_directory_when_unregistered(vault, repo):
