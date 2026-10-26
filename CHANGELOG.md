@@ -1,3 +1,11 @@
+## v0.16.0 (2026-10-26)
+
+### Feat
+
+- **local**: move adopting into its own local adopt command
+- **cli**: offer to initialize and register instead of naming a command
+- **local**: ask about pending items and conflicts during sync
+
 ## v0.15.0 (2026-10-26)
 
 ### Feat
