@@ -32,15 +32,18 @@ commits the vault when a session starts and again when a session ends.
     runbooks/<slug>.md
     reference/<slug>.md
     backlog.md                       a list of open work, not a page
-    CLAUDE.local.md                  private instructions that checkouts link to
+    local/                           private files that checkouts link to
+      CLAUDE.local.md
+      claude/skills/<name>/
+      claude/rules/<name>.md
 ```
 
 `learnings/` and `logs/` are fields: flat directories of pages, each with its own
 index file. `specs/` has an index file of the same kind, but it is not a field. A spec has
 no summary field and no size limit, and the index embeds a derived text rather than the
 file (see [The index](#the-index)). `plans/`, `runbooks/`, `reference/`, `backlog.md`, and
-`CLAUDE.local.md` are never indexed, which is what keeps the backlog or a plan from being
-embedded as memory.
+`local/` are never indexed, which is what keeps the backlog or a plan from being embedded
+as memory.
 
 A project's files are found by its slug and nothing else. There is no global folder, and
 no page belongs to more than one project.
@@ -155,38 +158,60 @@ bullets the file holds, and nothing more. An indented bullet is a note under an 
 is not counted. A ticked `- [x]` line is not an open item either, and
 `sessionmemory doctor` reports it.
 
-## CLAUDE.local.md
+## Local files
 
-A `CLAUDE.local.md` holds private instructions for one project: a sandbox URL, which
-account to use, where a credential lives. It must not reach the project's repository, so
-it normally exists in one clone only. A second machine, a fresh clone, and a new git
-worktree start without it.
+Some Claude Code files belong to you and not to the project: a `CLAUDE.local.md` with a
+sandbox URL, which account to use, or where a credential lives, a skill that only you run,
+a rule for how you like to work. They must not reach the project's repository, so they
+normally exist in one clone only. A second machine, a fresh clone, and a new git worktree
+start without them.
 
-The vault holds one copy, `projects/<name>/CLAUDE.local.md`. Each checkout holds an
-absolute symlink to that copy, at the top level of its git work tree. Claude Code loads the
-link as it loads a regular file, and an edit made through Claude Code changes the vault
-copy. The vault's remote carries the copy to your other machines. The file is not a page,
-and nothing indexes, lists, or searches it. Record where a credential lives in it, never
-the credential, because the vault is committed.
+The vault keeps one copy of each in the project's `local/` folder:
 
-`sessionmemory local adopt` moves an existing file into the vault. The plugin then links
-every other checkout at session start. Git ignores the link through the repository's
-`info/exclude` file, which all worktrees of a clone share, so the link never reaches a
+| Entry             | In the checkout          | In the vault                         |
+| ----------------- | ------------------------ | ------------------------------------ |
+| `CLAUDE.local.md` | `CLAUDE.local.md`        | `local/CLAUDE.local.md`              |
+| `skills/<name>`   | `.claude/skills/<name>/` | `local/claude/skills/<name>/`        |
+| `rules/<name>`    | `.claude/rules/<name>`   | `local/claude/rules/<name>`          |
+
+The vault folder is `claude/`, with no dot, so Finder, Obsidian, and `ls` show it. Each
+checkout holds an absolute symlink to each vault copy. Claude Code loads a link as it
+loads a regular file, and an edit made through Claude Code changes the vault copy. The
+vault's remote carries the copies to your other machines. Nothing in `local/` is a page,
+and nothing indexes, lists, or searches it. Record where a credential lives, never the
+credential, because the vault is committed.
+
+Each skill and each rule is linked on its own, not the whole `.claude/skills/` or
+`.claude/rules/` folder. Git cannot track a file behind a symlinked folder, so per-entry
+links are what let a skill that the project commits sit beside your private ones. A skill
+or rule that git tracks is the project's, and the `local` commands leave it alone.
+
+`sessionmemory local adopt` moves existing files into the vault. The plugin then links
+every other checkout at session start. Git ignores each link through the repository's
+`info/exclude` file, which all worktrees of a clone share, so a link never reaches a
 commit of the project.
 
-Two limits come from how Claude Code loads the file:
+`.claude/settings.local.json` is not kept in the vault. Claude Code refuses to write
+through a symlinked settings file. With a link in its place, a permission you approve, a
+plugin installed at local scope, and every other local-scope change fails or is lost.
+
+Three limits come from how Claude Code loads these files:
 
 - A relative `@` import, such as `@./notes.md`, resolves from the vault folder, where the
   imported file does not exist. Claude Code also asks you to approve the import as an
-  external file. Put the content into `CLAUDE.local.md` itself, or remove the import.
-  `local adopt` and `doctor` report each relative import.
+  external file. Put the content into the file itself, or remove the import.
+  `local adopt` and `doctor` report each relative import in `CLAUDE.local.md` and in the
+  `.md` files of a rule.
+- Claude Code treats a linked rule as an external import. It loads only after you approve
+  the dialog "Allow external CLAUDE.md file imports?" once in each checkout. Until then a
+  headless session skips the rule. A linked skill needs no approval.
 - Claude Code reads its memory files before `SessionStart` runs. A link that the hook
-  creates loads from the next session. The hook adds the file's content to the injected
-  block in the session that created the link.
+  creates loads from the next session. For `CLAUDE.local.md`, the hook adds the file's
+  content to the injected block in the session that created the link.
 
-Only the `CLAUDE.local.md` at the root of the work tree is managed. Files of that name in
-subdirectories stay as they are. See [`sessionmemory local`](cli.md#sessionmemory-local)
-for the commands.
+Only the `CLAUDE.local.md` at the root of the work tree, and the entries directly inside
+`.claude/skills/` and `.claude/rules/`, are managed. See
+[`sessionmemory local`](cli.md#sessionmemory-local) for the commands.
 
 ## Logs
 

@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from sessionmemory.lib import field, fieldindex, localmd, paths, registry, specs
+from sessionmemory.lib import field, fieldindex, localmd, localtree, paths, registry, specs
 from sessionmemory.lib.frontmatter import (
     FrontmatterError,
     MissingFrontmatterError,
@@ -236,59 +236,135 @@ def spec_statuses(vault: Path, _embedder: Embedder) -> list[Finding]:
     return findings
 
 
-_DIVERGED = (
-    "differs from the vault copy; copy the newer one over the vault copy, "
-    "delete the checkout file, and run local link"
-)
-_TRACKED = "tracked by git; run git rm --cached CLAUDE.local.md before adopting it"
-_UNIGNORED_LINK = "not ignored by git; run local link to add it to info/exclude"
-_UNIGNORED_FILE = "not ignored by git; run local adopt to replace it with an ignored link"
+def _diverged_message(item: localmd.Entry, *, ignored: bool) -> str | None:
+    """Name what is wrong with a real file or folder where the link belongs."""
+    try:
+        match = localmd.contents_match(item)
+    except OSError:
+        return None
+    if match is False:
+        return f"{item.name} differs from the vault copy; {localmd.REPLACE_VAULT_COPY}"
+    if match is None or ignored:
+        return None
+    return (
+        f"{item.name} is not ignored by git; run local adopt {item.name} "
+        "to replace it with an ignored link"
+    )
 
 
-def _state_message(co: localmd.Checkout, *, ignored: bool) -> str | None:
+def _state_message(item: localmd.Entry, *, ignored: bool) -> str | None:
     """Name what is wrong with an untracked entry at the link path, given its state."""
-    current = localmd.state(co)
+    name = item.name
+    current = localmd.state(item)
+    if current is localmd.State.DANGLING:
+        return f"{name} is a dangling symlink; run local link to replace it"
     if current is localmd.State.DIVERGED:
-        try:
-            match = localmd.contents_match(co)
-        except OSError:
-            return None
-        if match is False:
-            return _DIVERGED
-        return None if match is None or ignored else _UNIGNORED_FILE
+        return _diverged_message(item, ignored=ignored)
     if ignored:
         return None
     if current is localmd.State.FOREIGN_LINK:
         return (
-            f"not ignored by git, and a symlink to {co.link.resolve()} rather than the "
-            "vault copy; remove it, then run local link"
+            f"{name} is not ignored by git, and a symlink to {item.link.resolve()} rather "
+            "than the vault copy; remove it, then run local link"
         )
-    return _UNIGNORED_LINK
+    return f"{name} is not ignored by git; run local link to add it to info/exclude"
 
 
-def _checkout_message(co: localmd.Checkout) -> str | None:
-    """Name what is wrong at one checkout's link path, with advice that fits its state.
+def _checkout_message(
+    co: localmd.Checkout, item: localmd.Entry, *, tracked: bool | None
+) -> str | None:
+    """Name what is wrong at one entry's link path, with advice that fits its state.
 
-    A tracked file and a diverged file each get one finding and no ignore advice, since
-    `local link` refuses both and the first remedy is a different command. An
-    unreadable file, or one git cannot inspect, is not judged.
+    A tracked entry and a diverged one each get one finding and no ignore advice, since
+    `local link` refuses both and the first remedy is a different command. An entry
+    behind a symlinked or non-folder `.claude` path is reported once, since git cannot
+    be asked about it. An unreadable entry is not judged, and `tracked` is None when git
+    could not be asked, which leaves only the checks that need no git.
     """
-    if not (co.link.is_symlink() or co.link.exists()):
+    if localmd.blocked(co, item):
+        folder = item.name.partition("/")[0]
+        return (
+            f"{item.name} cannot be linked; .claude or .claude/{folder} is a symlink "
+            "or not a folder"
+        )
+    if tracked is None or not (item.link.is_symlink() or item.link.exists()):
         return None
+    if tracked:
+        return (
+            f"{item.name} is tracked by git; run git rm --cached {item.relpath} before adopting it"
+        )
     try:
-        tracked = co.tracked()
-        ignored = co.ignored()
-    except localmd.LocalMdError:
+        return _state_message(item, ignored=localmd.ignored(co, item))
+    except (localmd.LocalMdError, OSError):
         return None
-    return _TRACKED if tracked else _state_message(co, ignored=ignored)
+
+
+def _repository_findings(item: localmd.Entry) -> list[Finding]:
+    """Report a `.git` folder inside a vault skill or rule, which git commits as a gitlink."""
+    if not item.target.is_dir() or item.target.is_symlink():
+        return []
+    try:
+        inner = localtree.first_folder_named(item.target, frozenset({".git"}))
+    except OSError:
+        return []
+    if inner is None:
+        return []
+    return [
+        Finding(
+            "local",
+            str(inner),
+            f"{item.name} holds a git repository, which the vault commits as an embedded "
+            "repository rather than its files; move it out of the vault",
+        )
+    ]
+
+
+def _import_findings(item: localmd.Entry) -> list[Finding]:
+    """Report each relative `@` import in an entry that cannot resolve from the vault."""
+    findings = []
+    for source in localmd.import_sources(item, item.target):
+        try:
+            text = source.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        findings.extend(
+            Finding(
+                "local", str(source), f"@{target} resolves from the vault folder and will not load"
+            )
+            for target in localmd.relative_imports(text)
+        )
+    return findings
+
+
+def _legacy_finding(vault: Path, slug: str) -> Finding | None:
+    """Report a CLAUDE.local.md left at the project folder's top, with the remedy that fits."""
+    legacy = paths.legacy_local_md_path(vault, slug)
+    if not legacy.is_file():
+        return None
+    new = paths.local_dir(vault, slug) / paths.LOCAL_MD_FILE
+    try:
+        differs = new.exists() and new.read_bytes() != legacy.read_bytes()
+    except OSError:
+        differs = False
+    if differs:
+        message = (
+            f"CLAUDE.local.md is at its old path and differs from {new}; keep one of them, "
+            "delete the other, then run local link"
+        )
+    else:
+        message = (
+            f"CLAUDE.local.md is at its old path; run local link to move it into {paths.LOCAL_DIR}/"
+        )
+    return Finding("local", str(legacy), message)
 
 
 def local_instructions(vault: Path, _embedder: Embedder) -> list[Finding]:
-    """Report problems with a project's vault copy of CLAUDE.local.md.
+    """Report problems with a project's local entries kept in the vault.
 
-    Covers a relative `@import` that cannot resolve from the vault folder, and at the
-    registered root a tracked file, a regular file that has drifted from the vault
-    copy, and a link or file that git does not ignore.
+    Covers a vault copy of CLAUDE.local.md left at its old path, a relative `@import`
+    that cannot resolve from the vault folder, and at the registered root, per entry, a
+    tracked path, a dangling link, a copy that has drifted from the vault, and a link or
+    copy that git does not ignore.
     """
     try:
         projects = registry.load(vault)
@@ -297,27 +373,45 @@ def local_instructions(vault: Path, _embedder: Embedder) -> list[Finding]:
         projects = {}
     findings = []
     for slug in paths.iter_project_slugs(vault):
-        copy = paths.local_md_path(vault, slug)
-        if not copy.is_file():
-            continue
+        legacy = _legacy_finding(vault, slug)
+        if legacy is not None:
+            findings.append(legacy)
+        project = projects.get(slug)
+        root = Path(project.root) if project and project.root else None
+        # With no registered root nothing below reaches git, so the vault is a harmless stand-in.
+        co = localmd.Checkout(
+            worktree=root or vault, vault=vault, slug=slug, local=paths.local_dir(vault, slug)
+        )
         try:
-            text = copy.read_text(encoding="utf-8", errors="replace")
-        except OSError:
+            items = localmd.vault_entries(co)
+            odd = localmd.misshapen(co)
+        except OSError as err:
+            findings.append(Finding("local", str(co.local), f"cannot be read: {err}"))
             continue
         findings.extend(
             Finding(
-                "local", str(copy), f"@{target} resolves from the vault folder and will not load"
+                "local",
+                str(item.target),
+                f"{item.name} in the vault is not a {localmd.SHAPES[item.kind]}; "
+                "fix or remove it in the vault",
             )
-            for target in localmd.relative_imports(text)
+            for item in odd
         )
-        project = projects.get(slug)
-        if not project or not project.root or not Path(project.root).is_dir():
+        for item in items:
+            findings.extend(_import_findings(item))
+            findings.extend(_repository_findings(item))
+        if root is None or not root.is_dir():
             continue
-        root = Path(project.root)
-        co = localmd.Checkout(worktree=root, link=root / paths.LOCAL_MD_FILE, target=copy)
-        message = _checkout_message(co)
-        if message is not None:
-            findings.append(Finding("local", str(co.link), message))
+        try:
+            tracked: set[str] | None = localmd.tracked_names(co, items)
+        except localmd.LocalMdError:
+            tracked = None
+        for item in items:
+            message = _checkout_message(
+                co, item, tracked=None if tracked is None else item.name in tracked
+            )
+            if message is not None:
+                findings.append(Finding("local", str(item.link), message))
     return findings
 
 
@@ -371,5 +465,14 @@ CHECKS: tuple[Callable[[Path, Embedder], list[Finding]], ...] = (
 
 
 def run(vault: Path, embedder: Embedder) -> list[Finding]:
-    """Run every check and return what they found."""
-    return [finding for check in CHECKS for finding in check(vault, embedder)]
+    """Run every check and return what they found, one failing check never stopping the rest."""
+    findings: list[Finding] = []
+    for check in CHECKS:
+        try:
+            findings.extend(check(vault, embedder))
+        # Doctor always exits 0, so a check that fails in any way is reported as a finding.
+        except Exception as err:  # noqa: BLE001
+            findings.append(
+                Finding("doctor", str(vault), f"{getattr(check, '__name__', check)} failed: {err}")
+            )
+    return findings

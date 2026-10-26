@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NoReturn
 
 import pytest
 
-from sessionmemory.lib import field, inject, registry
+from sessionmemory.lib import field, inject, localmd, registry
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -343,32 +343,35 @@ def test_build_flags_unadopted_local(tmp_path):
     vault = tmp_path / "vault"
     repo = _git_repo(tmp_path / "repo")
     (repo / "CLAUDE.local.md").write_text("# mine\n", encoding="utf-8")
+    (repo / ".claude" / "skills" / "a").mkdir(parents=True)
+    (repo / ".claude" / "skills" / "a" / "SKILL.md").write_text("a\n", encoding="utf-8")
 
     result = inject.build(vault, "demo", cwd=repo)
 
-    assert result.unadopted_local is True
+    assert result.unadopted_local == ("CLAUDE.local.md", "skills/a")
     text = inject.render(result, command="sessionmemory")
-    assert "`sessionmemory local adopt --cwd .`" in text
-    assert text.endswith("moves it there")
+    assert text.endswith(
+        "  Not in the vault yet: CLAUDE.local.md, skills/a; "
+        "`sessionmemory local adopt CLAUDE.local.md skills/a --cwd .` moves them there"
+    )
 
 
 def test_build_ignores_linked_local(tmp_path):
     """Verify a CLAUDE.local.md already linked into the vault is not flagged."""
-    from sessionmemory.lib import localmd
-
     vault = tmp_path / "vault"
     repo = _git_repo(tmp_path / "repo")
     co = localmd.checkout(vault, "demo", repo)
-    co.target.parent.mkdir(parents=True)
-    co.target.write_text("# mine\n", encoding="utf-8")
-    localmd.link(co)
+    md = localmd.entry(co, "CLAUDE.local.md")
+    md.target.parent.mkdir(parents=True)
+    md.target.write_text("# mine\n", encoding="utf-8")
+    localmd.link(co, md, tracked=False)
 
-    assert inject.build(vault, "demo", cwd=repo).unadopted_local is False
+    assert inject.build(vault, "demo", cwd=repo).unadopted_local == ()
 
 
 def test_build_without_cwd_never_flags(tmp_path):
     """Verify no cwd means no checkout is inspected."""
-    assert inject.build(tmp_path, "demo").unadopted_local is False
+    assert inject.build(tmp_path, "demo").unadopted_local == ()
 
 
 def test_build_outside_a_work_tree_never_flags(tmp_path):
@@ -376,7 +379,7 @@ def test_build_outside_a_work_tree_never_flags(tmp_path):
     plain = tmp_path / "plain"
     plain.mkdir()
 
-    assert inject.build(tmp_path, "demo", cwd=plain).unadopted_local is False
+    assert inject.build(tmp_path, "demo", cwd=plain).unadopted_local == ()
 
 
 def test_build_ignores_a_tracked_local(tmp_path):
@@ -390,7 +393,7 @@ def test_build_ignores_a_tracked_local(tmp_path):
         ["git", "add", "-f", "CLAUDE.local.md"], cwd=repo, check=True, capture_output=True
     )
 
-    assert inject.build(vault, "demo", cwd=repo).unadopted_local is False
+    assert inject.build(vault, "demo", cwd=repo).unadopted_local == ()
 
 
 def test_build_ignores_a_diverged_local(tmp_path):
@@ -398,8 +401,97 @@ def test_build_ignores_a_diverged_local(tmp_path):
     vault = tmp_path / "vault"
     repo = _git_repo(tmp_path / "repo")
     (repo / "CLAUDE.local.md").write_text("# mine\n", encoding="utf-8")
-    copy = vault / "projects" / "demo" / "CLAUDE.local.md"
+    copy = vault / "projects" / "demo" / "local" / "CLAUDE.local.md"
     copy.parent.mkdir(parents=True)
     copy.write_text("# vault\n", encoding="utf-8")
 
-    assert inject.build(vault, "demo", cwd=repo).unadopted_local is False
+    assert inject.build(vault, "demo", cwd=repo).unadopted_local == ()
+
+
+def test_build_ignores_diverged_entry(tmp_path):
+    """Verify a skill held on both sides as separate copies is left out of the hint."""
+    vault = tmp_path / "vault"
+    repo = _git_repo(tmp_path / "repo")
+    (repo / ".claude" / "skills" / "a").mkdir(parents=True)
+    (repo / ".claude" / "skills" / "a" / "SKILL.md").write_text("mine\n", encoding="utf-8")
+    copy = vault / "projects" / "demo" / "local" / "claude" / "skills" / "a"
+    copy.mkdir(parents=True)
+    (copy / "SKILL.md").write_text("vault\n", encoding="utf-8")
+
+    assert inject.build(vault, "demo", cwd=repo).unadopted_local == ()
+
+
+def test_render_quotes_names_in_the_hint():
+    """Verify a name with a space is shell-quoted in the suggested command."""
+    result = inject.Injection(
+        project="demo",
+        titles=(),
+        open_backlog=0,
+        specs=0,
+        reference=(),
+        unadopted_local=("skills/my skill",),
+    )
+
+    assert "local adopt 'skills/my skill' --cwd ." in inject.render(result, command="sm")
+
+
+def _two_waiting(tmp_path: Path) -> Path:
+    repo = _git_repo(tmp_path / "repo")
+    (repo / "CLAUDE.local.md").write_text("# mine\n", encoding="utf-8")
+    (repo / ".claude" / "skills" / "a").mkdir(parents=True)
+    (repo / ".claude" / "skills" / "a" / "SKILL.md").write_text("a\n", encoding="utf-8")
+    return repo
+
+
+def test_build_reads_an_os_error_as_no_hint(tmp_path, monkeypatch):
+    """Verify a filesystem failure while inspecting entries yields no hint, not an error."""
+    repo = _two_waiting(tmp_path)
+
+    def boom(_item: object) -> NoReturn:
+        msg = "unreadable"
+        raise OSError(msg)
+
+    monkeypatch.setattr(localmd, "state", boom)
+
+    assert inject.build(tmp_path / "vault", "demo", cwd=repo).unadopted_local == ()
+
+
+def test_build_leaves_out_an_entry_behind_a_symlinked_claude_dir(tmp_path):
+    """Verify a skill behind a symlinked .claude is not listed while CLAUDE.local.md is."""
+    vault = tmp_path / "vault"
+    repo = _git_repo(tmp_path / "repo")
+    (repo / "CLAUDE.local.md").write_text("# mine\n", encoding="utf-8")
+    elsewhere = tmp_path / "elsewhere"
+    (elsewhere / "skills" / "a").mkdir(parents=True)
+    (elsewhere / "skills" / "a" / "SKILL.md").write_text("a\n", encoding="utf-8")
+    (repo / ".claude").symlink_to(elsewhere, target_is_directory=True)
+
+    assert inject.build(vault, "demo", cwd=repo).unadopted_local == ("CLAUDE.local.md",)
+
+
+def test_build_asks_git_once_however_many_entries_wait(tmp_path, monkeypatch):
+    """Verify several waiting entries cost a single tracked_names call."""
+    repo = _two_waiting(tmp_path)
+    real = localmd.tracked_names
+    calls = []
+
+    def counting(co: localmd.Checkout, items: list[localmd.Entry]) -> set[str]:
+        calls.append([item.name for item in items])
+        return real(co, items)
+
+    monkeypatch.setattr(localmd, "tracked_names", counting)
+
+    result = inject.build(tmp_path / "vault", "demo", cwd=repo)
+
+    assert result.unadopted_local == ("CLAUDE.local.md", "skills/a")
+    assert calls == [["CLAUDE.local.md", "skills/a"]]
+
+
+def test_build_never_names_a_file_among_skills(tmp_path):
+    """Verify a plain file in `.claude/skills/` is not offered as a skill to adopt."""
+    vault = tmp_path / "vault"
+    repo = _git_repo(tmp_path / "repo")
+    (repo / ".claude" / "skills").mkdir(parents=True)
+    (repo / ".claude" / "skills" / "README.md").write_text("notes\n", encoding="utf-8")
+
+    assert inject.build(vault, "demo", cwd=repo).unadopted_local == ()

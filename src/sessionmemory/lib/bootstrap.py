@@ -27,7 +27,25 @@ from sessionmemory.lib.paths import SYSTEM_DIR
 if TYPE_CHECKING:
     from pathlib import Path
 
-GITIGNORE = """\
+# The folder line comes first because git cannot re-include a file whose parent folder
+# is ignored, and a global rule such as `local/` would otherwise hide all of it.
+LOCAL_IGNORE_LINES: tuple[str, ...] = (
+    "!projects/*/local/",
+    "!projects/*/local/**",
+    "projects/*/local/**/.DS_Store",
+    "projects/*/local/**/__pycache__/",
+    "projects/*/local/**/node_modules/",
+    "projects/*/local/**/.venv/",
+    "projects/*/local/**/venv/",
+)
+
+_LOCAL_IGNORE_COMMENT = (
+    "# A project's local/ folder is private to its person but belongs in the vault. The vault's\n"
+    "# own rules outrank a global ignore, so it is re-included over any rule that names it or\n"
+    "# its files. Caches and installed dependencies inside it stay out."
+)
+
+GITIGNORE = f"""\
 # Each field's vector index is derived from the pages beside it and is
 # rebuilt by `sessionmemory reindex`. Committing it would churn history on every write.
 *.sqlite3
@@ -36,9 +54,8 @@ GITIGNORE = """\
 # Plans are scratch for the session that writes them and never belong in history.
 projects/*/plans/
 
-# A project's CLAUDE.local.md is private to its person but belongs in the vault, so it is
-# re-included over a global ignore rule that names it.
-!projects/*/CLAUDE.local.md
+{_LOCAL_IGNORE_COMMENT}
+{chr(10).join(LOCAL_IGNORE_LINES)}
 
 # Obsidian's per-machine window state, which conflicts on every sync.
 .obsidian/workspace*.json
@@ -108,6 +125,34 @@ def _marker_contents() -> str:
         str: The TOML text for `_system/vault.toml`.
     """
     return tomli_w.dumps({"created": today()})
+
+
+def ensure_local_ignore(vault: Path) -> bool:
+    """Append any missing `local/` lines to the vault's `.gitignore`, creating it if absent.
+
+    Args:
+        vault (Path): The vault root.
+
+    Returns:
+        bool: True when the file was written, False when every line was already present.
+    """
+    gitignore = vault / ".gitignore"
+    text = gitignore.read_text(encoding="utf-8") if gitignore.is_file() else ""
+    present = set(text.splitlines())
+    # The last matching line wins, so a re-include appended below the exclusions would
+    # override them; when it is missing, the exclusions are repeated after it.
+    reinclude_missing = LOCAL_IGNORE_LINES[1] not in present
+    missing = [
+        line
+        for index, line in enumerate(LOCAL_IGNORE_LINES)
+        if line not in present or (reinclude_missing and index > 1)
+    ]
+    if not missing:
+        return False
+    if text and not text.endswith("\n"):
+        text += "\n"
+    atomic.write_text(gitignore, text + "\n".join([_LOCAL_IGNORE_COMMENT, *missing]) + "\n")
+    return True
 
 
 def initialize(vault: Path, *, force: bool = False) -> InitResult:

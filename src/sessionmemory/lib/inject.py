@@ -7,6 +7,7 @@ and must stay small. Bodies never enter an injection.
 
 from __future__ import annotations
 
+import shlex
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import TYPE_CHECKING
@@ -33,7 +34,7 @@ class Injection:
     runbooks: tuple[str, ...] = ()
     reviewed: str = ""
     review_due: bool = False
-    unadopted_local: bool = False
+    unadopted_local: tuple[str, ...] = ()
 
 
 def _sort_key(title: str) -> str:
@@ -96,19 +97,30 @@ def _review_due(*, learnings: int, reviewed: str, today: str) -> bool:
     return elapsed > timedelta(days=REVIEW_INTERVAL_DAYS)
 
 
-def _unadopted_local(vault: Path, slug: str, cwd: Path | None) -> bool:
-    """Report whether `cwd` holds a plain CLAUDE.local.md the vault does not have yet.
+def _unadopted_local(vault: Path, slug: str, cwd: Path | None) -> tuple[str, ...]:
+    """Name the untracked entries in `cwd` the vault does not have yet.
 
-    A hint must never fail a session start, so any git or checkout failure reads as no hint.
-    `tracked` runs only for an unadopted file, so a project without one costs no extra git call.
+    A hint must never fail a session start, so any git, checkout, or filesystem failure
+    reads as no hint. Diverged entries are left out, since judging one reads both copies.
+    `tracked_names` is the only git call, and it runs only when an entry is unadopted.
     """
     if cwd is None:
-        return False
+        return ()
     try:
         co = localmd.checkout(vault, slug, cwd)
-        return localmd.state(co) is localmd.State.UNADOPTED and not co.tracked()
-    except localmd.LocalMdError:
-        return False
+        waiting = [
+            item
+            for item in localmd.entries(co)
+            if localmd.state(item) is localmd.State.UNADOPTED
+            and not localmd.blocked(co, item)
+            and not localmd.target_misshapen(item)
+        ]
+        if not waiting:
+            return ()
+        tracked = localmd.tracked_names(co, waiting)
+    except (localmd.LocalMdError, OSError):
+        return ()
+    return tuple(item.name for item in waiting if item.name not in tracked)
 
 
 def build(
@@ -223,8 +235,11 @@ def render(injection: Injection, *, command: str = "sessionmemory") -> str:
     spec = "spec" if injection.specs == 1 else "specs"
     lines.append(f"  {injection.specs} {spec} in specs/")
     if injection.unadopted_local:
+        names = ", ".join(injection.unadopted_local)
+        quoted = " ".join(shlex.quote(name) for name in injection.unadopted_local)
+        pronoun = "it" if len(injection.unadopted_local) == 1 else "them"
         lines.append(
-            f"  CLAUDE.local.md here is not in the vault yet; `{command} local adopt --cwd .` moves it there"
+            f"  Not in the vault yet: {names}; `{command} local adopt {quoted} --cwd .` moves {pronoun} there"
         )
     return "\n".join(lines)
 
@@ -241,5 +256,5 @@ def payload(injection: Injection, *, command: str) -> dict[str, object]:
         "runbooks": list(injection.runbooks),
         "reviewed": injection.reviewed,
         "review_due": injection.review_due,
-        "unadopted_local": injection.unadopted_local,
+        "unadopted_local": list(injection.unadopted_local),
     }

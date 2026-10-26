@@ -18,16 +18,21 @@ def test_project_paths_names_every_location(tmp_path):
         "runbooks": str(tmp_path / "projects" / "demo" / "runbooks"),
         "reference": str(tmp_path / "projects" / "demo" / "reference"),
         "backlog": str(tmp_path / "projects" / "demo" / "backlog.md"),
-        "local_md": str(tmp_path / "projects" / "demo" / "CLAUDE.local.md"),
+        "local": str(tmp_path / "projects" / "demo" / "local"),
     }
 
 
-def test_local_md_path_sits_beside_backlog(tmp_path):
-    """Verify the local instructions file lives at the project folder's top level."""
-    expected = tmp_path / "projects" / "demo" / "CLAUDE.local.md"
+def test_project_paths_names_local_dir(tmp_path):
+    """Verify the local folder replaces the single-file key and the old copy keeps a helper."""
+    result = paths.project_paths(tmp_path, "demo")
 
-    assert paths.local_md_path(tmp_path, "demo") == expected
-    assert paths.project_paths(tmp_path, "demo")["local_md"] == str(expected)
+    assert result["local"] == str(tmp_path / "projects" / "demo" / "local")
+    assert "local_md" not in result
+    assert paths.local_dir(tmp_path, "demo") == tmp_path / "projects" / "demo" / "local"
+    assert (
+        paths.legacy_local_md_path(tmp_path, "demo")
+        == tmp_path / "projects" / "demo" / "CLAUDE.local.md"
+    )
 
 
 def test_iter_project_slugs_lists_folders_sorted(tmp_path):
