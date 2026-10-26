@@ -6,7 +6,7 @@ import subprocess
 
 import pytest
 
-from sessionmemory.lib.gitinfo import git_context
+from sessionmemory.lib.gitinfo import git_context, run_git
 
 REMOTE = "ssh://git@gitea.example.org:2222/nate/demo.git"
 
@@ -204,3 +204,23 @@ def test_a_refused_directory_reports_that_git_did_not_answer(repo, monkeypatch):
     ctx = git_context(repo)
     assert ctx.repo_root is None
     assert not ctx.git_answered
+
+
+def test_run_git_feeds_input_text_on_stdin(repo):
+    """Verify input_text reaches git's standard input."""
+    done = run_git(repo, "hash-object", "--stdin", input_text="hello\n")
+
+    assert done is not None
+    assert done.stdout.strip() == "ce013625030ba8dba906f756967f9e9ca394464a"
+
+
+def test_run_git_returns_none_past_its_timeout(repo, tmp_path, monkeypatch):
+    """Verify a git that outlives the given timeout is reported as not run."""
+    bin_dir = tmp_path / "slowbin"
+    bin_dir.mkdir()
+    slow = bin_dir / "git"
+    slow.write_text("#!/bin/sh\nexec /bin/sleep 3\n", encoding="utf-8")
+    slow.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bin_dir))
+
+    assert run_git(repo, "status", timeout=0.2) is None

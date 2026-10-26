@@ -1182,6 +1182,82 @@ list is not empty, the block ends with one more line that names the entries:
 A `diverged` entry is left out, since the block never reads file content. `local status`
 and `doctor` report it.
 
+## `sessionmemory reconcile`
+
+Bring this project's session logs in line with what landed on the trunk. The command
+reads the commits each log lists under `## Changes` and fixes the ones that no longer
+exist. It rewrites only that section. The `## Summary` text and the log's `updated` date
+stay as they are.
+
+For each logged commit, the command decides in this order:
+
+1. If the commit is on the trunk, it keeps the line.
+2. If the `origin` remote is on GitHub, the command asks GitHub about the commit's pull
+   requests. A merged pull request replaces the line with the commit that landed on the
+   trunk. After a rebase merge, each commit is replaced by its own rebased copy, found by
+   its patch among the trunk commits below the merge commit. If no single copy matches,
+   as after a squash merge, the line becomes the merge commit. An open pull request
+   leaves the line. If GitHub cannot answer, the command
+   leaves the line and reports it as unchecked.
+3. If a branch or a tag still holds the commit, the command leaves the line, because the
+   work is in progress.
+4. If `git fetch origin` failed, the command leaves the line and reports it as unchecked,
+   because the trunk on `origin` can hold the commit.
+5. If the repository is a shallow clone, the command leaves the line and reports it as
+   unchecked, because a clone with cut-off history cannot prove the commit is gone.
+6. If `origin` does not fetch every branch, as in a clone made with `--single-branch`,
+   the command leaves the line and reports it as unchecked, because a branch the clone
+   never fetches can hold the commit.
+7. Otherwise the commit is gone, and the command removes the line.
+
+A short sha that matches more than one commit is left as it is and reported as unchecked.
+When a logged commit is not on the local trunk, the command runs `git fetch origin` before
+it decides. It does not fetch when every logged commit is on the local trunk, or when
+the repository has no `origin`. The fetch is the only change the command makes to the
+repository. The `gh` command is needed only when `origin` is on GitHub. The command
+exits 1 if the project has no absolute registered root, if the root is not the top-level
+directory of a git repository, or if git cannot answer a question.
+
+| Option      | What it does                              |
+| ----------- | ----------------------------------------- |
+| `--cwd`     | Directory to resolve the project from.    |
+| `--dry-run` | Report what would change without writing. |
+| `--json`    | Emit JSON instead of prose.               |
+
+```bash
+sessionmemory reconcile --dry-run --cwd .
+```
+
+```
+✓ (dry run) reconciling
+  └─ log-commits: 1 log changed, 0 replaced, 1 dropped, 0 in progress, 0 unchecked
+```
+
+The same run without `--dry-run` prints the same counts and rewrites the log.
+
+```bash
+sessionmemory reconcile --json --dry-run --cwd .
+```
+
+```json
+[
+  {
+    "reconciler": "log-commits",
+    "changed": [
+      "~/repos/my-vault/projects/invoice-api/logs/2026-10-01-09-00.md"
+    ],
+    "replaced": 0,
+    "dropped": 1,
+    "in_progress": 0,
+    "unchecked": 0,
+    "notes": []
+  }
+]
+```
+
+`changed` lists the logs whose commit list changes, also on a dry run. `notes` holds the
+reason for each unchecked line.
+
 ## `sessionmemory reindex`
 
 Bring this project's learnings, logs, and specs indexes up to date with the files beside
@@ -1331,7 +1407,7 @@ sessionmemory doctor
 ]
 ```
 
-See [Vault health](vault-health.md) for the ten checks and what to do about each one.
+See [Vault health](vault-health.md) for the eleven checks and what to do about each one.
 
 ## `sessionmemory export`
 

@@ -55,6 +55,7 @@ def colored(tmp_path):
     initialize(vault)
     project = tmp_path / "a-project-with-a-deliberately-long-directory-name"
     project.mkdir()
+    subprocess.run(["git", "init", "-q", str(project)], check=True, capture_output=True)
 
     env = {
         **os.environ,
@@ -84,6 +85,7 @@ def colored(tmp_path):
         pytest.param(["search", "anything", "--specs", "--json"], id="search-specs"),
         pytest.param(["inject", "--json"], id="inject"),
         pytest.param(["reindex", "--json"], id="reindex"),
+        pytest.param(["reconcile", "--json"], id="reconcile"),
         pytest.param(["log", "--session-id", "s", "--title", "t", "--json"], id="log"),
     ],
 )

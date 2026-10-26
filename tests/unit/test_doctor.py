@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from sessionmemory.lib import doctor, field, fieldindex, registry
+from sessionmemory.lib import commits, doctor, field, fieldindex, registry
 from sessionmemory.lib.embed import StubEmbedder
 
 NOW = "2026-09-01T14:03:11Z"
@@ -923,3 +923,224 @@ def test_run_reports_a_failing_check_and_runs_the_rest(tmp_path, monkeypatch):
     assert "exploding" in findings[0].message
     assert "boom" in findings[0].message
     assert findings[1:] == [doctor.Finding("x", "p", "m")]
+
+
+def _commits_project(vault: Path, root: Path, lines: dict[str, list[str]]) -> tuple[Path, str]:
+    """Register `demo` at a repository with one commit and write one log per entry in `lines`.
+
+    Each value is the list of sha prefixes to list; "HEAD" stands for the real head.
+    """
+    root.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "x",
+        ],
+        cwd=root,
+        check=True,
+    )
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=root, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    logs = _logs(vault)
+    for name, shas in lines.items():
+        body = "## Summary\n\nWork.\n\n## Changes\n\n" + "".join(
+            f"{head[:7] if sha == 'HEAD' else sha} feat: change\n" for sha in shas
+        )
+        (logs / f"{name}.md").write_text(f'---\ncreated: "{NOW}"\n---\n{body}', encoding="utf-8")
+    registry.save(vault, {"demo": registry.Project(slug="demo", remotes=(), root=str(root))})
+    return logs, head
+
+
+def test_commits_reports_a_log_with_an_unknown_sha(tmp_path):
+    """Verify a log listing a commit no branch contains is reported once."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    logs, _ = _commits_project(vault, tmp_path / "repo", {"a": ["deadbee", "HEAD"]})
+
+    findings = doctor.orphaned_commits(vault, StubEmbedder())
+
+    assert [(f.check, f.path) for f in findings] == [("commits", str(logs / "a.md"))]
+    assert findings[0].message == "lists 1 commit no branch contains; run: sessionmemory reconcile"
+
+
+def test_commits_pluralizes_the_count(tmp_path):
+    """Verify the message counts several orphaned commits."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    _commits_project(vault, tmp_path / "repo", {"a": ["deadbee", "cafe123"]})
+
+    findings = doctor.orphaned_commits(vault, StubEmbedder())
+
+    assert findings[0].message.startswith("lists 2 commits no branch contains")
+
+
+def test_commits_silent_when_every_sha_is_reachable(tmp_path):
+    """Verify a log whose commits are all on a branch is not reported."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    _commits_project(vault, tmp_path / "repo", {"a": ["HEAD"], "b": []})
+
+    assert doctor.orphaned_commits(vault, StubEmbedder()) == []
+
+
+def test_commits_skips_a_root_that_is_not_a_repository(tmp_path):
+    """Verify a root that is a plain directory is skipped."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    root = tmp_path / "plain"
+    root.mkdir()
+    logs = _logs(vault)
+    (logs / "a.md").write_text(
+        f'---\ncreated: "{NOW}"\n---\n## Changes\n\ndeadbee feat: gone\n', encoding="utf-8"
+    )
+    registry.save(vault, {"demo": registry.Project(slug="demo", remotes=(), root=str(root))})
+
+    assert doctor.orphaned_commits(vault, StubEmbedder()) == []
+
+
+def test_commits_skips_a_root_inside_another_repository(tmp_path):
+    """Verify a root that is a plain subdirectory of a repository is skipped."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    _commits_project(vault, tmp_path / "repo", {"a": ["deadbee"]})
+    sub = tmp_path / "repo" / "sub"
+    sub.mkdir()
+    registry.save(vault, {"demo": registry.Project(slug="demo", remotes=(), root=str(sub))})
+
+    assert doctor.orphaned_commits(vault, StubEmbedder()) == []
+
+
+def test_commits_does_not_count_an_ambiguous_sha(tmp_path, monkeypatch):
+    """Verify an ambiguous sha may be on trunk, so it is not reported."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    _commits_project(vault, tmp_path / "repo", {"a": ["deadbee"]})
+    monkeypatch.setattr(
+        commits.Repository,
+        "expand",
+        lambda _self, _shas: commits.Expansion(full={}, ambiguous=frozenset({"deadbee"})),
+    )
+
+    assert doctor.orphaned_commits(vault, StubEmbedder()) == []
+
+
+def test_commits_skips_a_project_when_git_fails(tmp_path, monkeypatch):
+    """Verify a git failure in one project is skipped, not raised."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    _commits_project(vault, tmp_path / "repo", {"a": ["deadbee"]})
+
+    def fail(_self: object, *_args: object) -> None:
+        raise commits.CommitsError(command="git x", detail="boom")
+
+    monkeypatch.setattr(commits.Repository, "expand", fail)
+
+    assert doctor.orphaned_commits(vault, StubEmbedder()) == []
+
+
+def test_commits_runs_no_git_when_logs_list_no_commits(tmp_path, monkeypatch):
+    """Verify a project whose logs list no commits never reaches git."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    _commits_project(vault, tmp_path / "repo", {"a": []})
+
+    def boom(*_args: object) -> None:
+        pytest.fail("git was run")
+
+    monkeypatch.setattr(commits.Repository, "is_repository", boom)
+    monkeypatch.setattr(commits.Repository, "expand", boom)
+
+    assert doctor.orphaned_commits(vault, StubEmbedder()) == []
+
+
+def test_doctor_run_includes_commits():
+    """Verify the commits check is registered."""
+    assert doctor.orphaned_commits in doctor.CHECKS
+
+
+def test_commits_does_not_count_unknown_shas_in_a_shallow_clone(tmp_path):
+    """Verify a shallow clone's unknown shas may sit below the cut, so they are not counted."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    full = tmp_path / "repo"
+    _commits_project(vault, full, {"a": ["deadbee"]})
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "y",
+        ],
+        cwd=full,
+        check=True,
+    )
+    shallow = tmp_path / "shallow"
+    subprocess.run(
+        ["git", "clone", "-q", "--depth", "1", f"file://{full}", str(shallow)],
+        cwd=tmp_path,
+        check=True,
+    )
+    registry.save(vault, {"demo": registry.Project(slug="demo", remotes=(), root=str(shallow))})
+
+    assert doctor.orphaned_commits(vault, StubEmbedder()) == []
+
+
+def test_commits_does_not_count_unknown_shas_in_a_single_branch_clone(tmp_path):
+    """Verify a single-branch clone's unknown shas may sit on an unfetched branch."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    full = tmp_path / "repo"
+    _commits_project(vault, full, {"a": ["deadbee"]})
+    single = tmp_path / "single"
+    subprocess.run(
+        ["git", "clone", "-q", "--single-branch", f"file://{full}", str(single)],
+        cwd=tmp_path,
+        check=True,
+    )
+    registry.save(vault, {"demo": registry.Project(slug="demo", remotes=(), root=str(single))})
+
+    assert doctor.orphaned_commits(vault, StubEmbedder()) == []
+
+
+def test_commits_does_not_count_a_known_orphan_in_a_shallow_clone(tmp_path):
+    """Verify doctor never flags a commit that reconcile would leave unchecked."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    full = tmp_path / "repo"
+    logs, _ = _commits_project(vault, full, {"a": []})
+    shallow = tmp_path / "shallow"
+    subprocess.run(
+        ["git", "clone", "-q", "--depth", "1", f"file://{full}", str(shallow)],
+        cwd=tmp_path,
+        check=True,
+    )
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run([*git, "checkout", "-q", "-b", "scratch"], cwd=shallow, check=True)
+    subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "o"], cwd=shallow, check=True)
+    orphan = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=shallow, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    subprocess.run([*git, "checkout", "-q", "-"], cwd=shallow, check=True)
+    subprocess.run([*git, "branch", "-q", "-D", "scratch"], cwd=shallow, check=True)
+    (logs / "a.md").write_text(
+        f'---\ncreated: "{NOW}"\n---\n## Changes\n\n{orphan[:7]} feat: o\n', encoding="utf-8"
+    )
+    registry.save(vault, {"demo": registry.Project(slug="demo", remotes=(), root=str(shallow))})
+
+    assert doctor.orphaned_commits(vault, StubEmbedder()) == []

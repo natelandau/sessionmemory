@@ -65,7 +65,11 @@ class GitContext:
 
 
 def run_git(
-    cwd: Path, *args: str, env: Mapping[str, str] | None = None
+    cwd: Path,
+    *args: str,
+    env: Mapping[str, str] | None = None,
+    timeout: float = GIT_TIMEOUT_SECONDS,
+    input_text: str | None = None,
 ) -> subprocess.CompletedProcess[str] | None:
     """Run git in `cwd` under the C locale, for a caller that reads its exit code itself.
 
@@ -74,6 +78,9 @@ def run_git(
         *args: Arguments passed to git.
         env (Mapping[str, str] | None): The environment to start from, in place of the
             process's own.
+        timeout (float): Seconds to wait before giving up on git.
+        input_text (str | None): Text to write to git's standard input. None leaves
+            standard input inherited.
 
     Returns:
         subprocess.CompletedProcess[str] | None: The finished process whatever its exit
@@ -86,7 +93,8 @@ def run_git(
             capture_output=True,
             text=True,
             check=False,
-            timeout=GIT_TIMEOUT_SECONDS,
+            timeout=timeout,
+            input=input_text,
             # The C locale keeps git's own messages in the wording the classifier reads.
             env={**(os.environ if env is None else env), "LC_ALL": "C", "LANGUAGE": ""},
         )
