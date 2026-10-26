@@ -1,3 +1,15 @@
+## v0.15.0 (2026-10-26)
+
+### Feat
+
+- **cli**: regroup the command surface and fill its gaps
+- **local**: adopt any file or folder into the vault (#19)
+- **local**: ask one plain question per item in local sync
+
+### Refactor
+
+- **cli**: remove the -v/--verbose flag
+
 ## v0.14.0 (2026-10-26)
 
 ### Feat
