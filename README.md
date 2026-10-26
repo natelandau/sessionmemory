@@ -29,9 +29,13 @@ speaks the format.
 - Python 3.13 or 3.14. `uv` downloads one when none is installed.
 - git. The vault is a git repository, and a project is registered by its git remote.
 - Claude Code, to run the plugin. The CLI works on its own without it.
+- Optional: the [GitHub CLI](https://cli.github.com/) (`gh`), signed in. `sessionmemory
+  reconcile` uses it to find the commit a squash-merged pull request landed as, when a
+  project's `origin` is on GitHub.
 
 The first search downloads the `nomic-embed-text-v1.5` embedding model, about 520MB, and
-caches it under `~/.cache/sessionmemory/models`. Nothing else touches the network.
+caches it under `~/.cache/sessionmemory/models`. `sessionmemory reconcile` runs
+`git fetch origin` and asks GitHub through `gh`. Nothing else touches the network.
 
 ## Install
 

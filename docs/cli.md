@@ -1407,7 +1407,7 @@ sessionmemory doctor
 ]
 ```
 
-See [Vault health](vault-health.md) for the ten checks and what to do about each one.
+See [Vault health](vault-health.md) for the eleven checks and what to do about each one.
 
 ## `sessionmemory export`
 
