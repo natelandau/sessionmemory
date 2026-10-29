@@ -1,3 +1,13 @@
+## v0.17.0 (2026-10-29)
+
+### Feat
+
+- **local**: stop offering local entries the person declined (#20)
+
+### Refactor
+
+- **cli**: move command logic into lib and speed up startup (#21)
+
 ## v0.16.0 (2026-10-26)
 
 ### Feat
