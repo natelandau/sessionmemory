@@ -119,6 +119,10 @@ never let it write an index ours reads: its Ollama vectors need not match fastem
   the tree copy, compare, and link placement it uses, and `lib/settingsdiff.py` the
   settings summary. Everything an entry keeps in the vault lives under
   `projects/<slug>/local/`.
+- `lib/localdeclined.py` owns `local/declined.toml`, the entries a person declined to
+  adopt, which `candidates()` never offers. Only `local decline` and a no in `local sync`
+  add to it, and only adopt removes a name. Nothing prunes a name the current checkout
+  lacks, since another checkout may hold it.
 - `specs/` is indexed but is not a field. `plans/`, `runbooks/`, `reference/`, `local/`,
   and `backlog.md` are never indexed. There is no cross-project read.
 
@@ -145,11 +149,6 @@ There is no general application lock; do not reintroduce `lib/locking.py`. The C
 lock is `registry.locked`, held around every load-modify-save of `registry.toml`, and
 `registry.save` is called only inside it. The plugin's one lock is the per-project
 `sweep.lock` flock held by the sweep worker; that file is never deleted.
-
-### Doctor
-
-Every finding is a suggestion and `doctor` always exits 0. There is no `--fix`, and
-repair is not coming back: each finding forks on a judgment the command cannot make.
 
 ### Injection
 

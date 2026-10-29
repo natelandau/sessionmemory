@@ -133,8 +133,8 @@ worktree, a fresh clone, and a second machine therefore receive them without any
 from you. The hook runs in any git work tree, whatever starts the session, so a `/clear`
 in a worktree that you created during a session links that worktree too.
 
-If `local/entries.toml` holds a line that the command cannot use, the hook adds a block
-that names the line and tells the agent to tell you.
+If `local/entries.toml` or `local/declined.toml` holds a line that the command cannot
+use, the hook adds a block that names the line and tells the agent to tell you.
 
 The hook never replaces a file or folder that holds content, and it never copies
 `settings.local.json`. A real `CLAUDE.local.md`, skill, or rule in the checkout stays where
@@ -143,25 +143,26 @@ for the states and the commands.
 
 When an entry waits to be adopted, or the two copies of `settings.local.json` differ or
 exist on one side only, the hook adds a block that tells the agent to ask you before
-other work. The block gives the agent one plain question per item, the same question that
-`local sync` asks on a terminal, and the command that a yes maps to. For differing settings,
-it also gives the modification time of each copy and what each copy has that the other
-lacks:
+other work. The block gives the agent one plain question per item, the same question
+that `local sync` asks on a terminal, and the command that each answer maps to. For
+differing settings, it also gives the modification time of each copy and what each copy
+has that the other lacks:
 
 ```
-Local files in this checkout are waiting on a decision about the vault. Before other work, ask the person each question below, one at a time, in these words. Copy or overwrite nothing until they answer; a no leaves the file alone.
+Local files in this checkout are waiting on a decision about the vault. Before other work, ask the person each question below, one at a time, in these words. Copy or overwrite nothing until they answer. A no to an adopt question leaves the file alone and is recorded so it is never asked again.
 
-- "Adopt .claude/rules/tickets.md into the vault?" Yes moves it into the vault and links it back here. (local adopt rules/tickets.md)
+- "Adopt .claude/rules/tickets.md into the vault?" Yes moves it into the vault and links it back here; no keeps it here and stops asking. (yes: local adopt rules/tickets.md, no: local decline rules/tickets.md)
 - ".claude/settings.local.json differs between this checkout and the vault. Which copy wins?" Offer this checkout's (modified 2026-10-26T17:09:47Z), copied over the vault's (local sync --keep-settings checkout); the vault's (modified 2026-10-26T17:09:23Z), copied over this checkout's (local sync --keep-settings vault); or neither, leaving both alone.
   - What each copy has that the other lacks:
     - permissions.allow: 1 only in the checkout (Bash(just docs))
     - enabledPlugins: only in the checkout
 
-Then, for each yes, run `sessionmemory <the command shown> --cwd .`, naming every entry to adopt in one `local adopt`. After the vault's settings copy is written into the checkout, tell the person to start a new session before approving anything, since Claude Code read its settings before this ran.
+Then, for each answer, run `sessionmemory <the command shown> --cwd .`, naming every entry to adopt in one `local adopt` and every entry declined in one `local decline`. After the vault's settings copy is written into the checkout, tell the person to start a new session before approving anything, since Claude Code read its settings before this ran.
 ```
 
 The agent adopts and copies nothing until you answer. Every session start asks again
-while the item waits.
+while the item waits. An entry that you decline is recorded with
+[`local decline`](cli.md#sessionmemory-local-decline), and no session asks about it again.
 
 Claude Code reads its memory files and skills before `SessionStart` runs. A link that the
 hook creates therefore takes effect from the next session. To cover the session that made

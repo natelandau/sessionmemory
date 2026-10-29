@@ -35,6 +35,7 @@ commits the vault when a session starts and again when a session ends.
     local/                           private files that checkouts link to or copy
       CLAUDE.local.md
       entries.toml                   the paths you adopted by name
+      declined.toml                  the entries you declined to adopt
       claude/skills/<name>/
       claude/rules/<name>.md
 ```
@@ -192,7 +193,9 @@ links are what let a skill that the project commits sit beside your private ones
 or rule that git tracks is the project's, and the `local` commands leave it alone.
 
 `sessionmemory local adopt` moves existing files into the vault. The plugin then
-links every other checkout at session start. Git ignores each link through the repository's
+links every other checkout at session start. `sessionmemory local decline` keeps an
+entry out of the vault for good. The vault records the name, so no checkout of the
+project offers that entry again. Git ignores each link through the repository's
 `info/exclude` file, which all worktrees of a clone share, so a link never reaches a
 commit of the project.
 

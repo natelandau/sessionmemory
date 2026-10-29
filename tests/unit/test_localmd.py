@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from sessionmemory.lib import localmanifest, localmd, localtree, paths
+from sessionmemory.lib import localdeclined, localmanifest, localmd, localtree, paths
 from sessionmemory.lib.localmd import LocalMdError, State
 
 NAME = paths.LOCAL_MD_FILE
@@ -2203,3 +2203,66 @@ def test_resolve_adopt_refuses_the_settings_file(co, raw):
 
     with pytest.raises(localmd.LocalMdError, match="kept by copy, not adopted"):
         localmd.resolve_adopt(co, raw, cwd)
+
+
+def test_candidates_skip_declined_names(co):
+    """Verify an entry the person declined is no longer offered."""
+    _checkout_skill(co, "a")
+    _checkout_skill(co, "b")
+    localdeclined.add(co.local, ["skills/a"])
+
+    assert _names(localmd.candidates(co)) == ["skills/b"]
+
+
+def test_candidates_honor_a_decline_from_another_checkout(co, vault, tmp_path):
+    """Verify a decline recorded from one checkout silences every checkout of the project."""
+    other_root = tmp_path / "other"
+    other_root.mkdir()
+    _git("init", "-q", ".", cwd=other_root)
+    other = localmd.checkout(vault, "demo", other_root)
+    _checkout_skill(other, "a")
+    localdeclined.add(co.local, ["skills/a"])
+
+    assert localmd.candidates(other) == []
+
+
+def test_candidates_still_offer_when_the_declined_file_is_unparsable(co):
+    """Verify a declined file that does not parse hides nothing."""
+    _checkout_skill(co, "a")
+    co.local.mkdir(parents=True, exist_ok=True)
+    (co.local / localdeclined.DECLINED_NAME).write_text("names = [\n")
+
+    assert _names(localmd.candidates(co)) == ["skills/a"]
+
+
+def test_adopt_removes_the_name_from_the_declined_list(co):
+    """Verify adopting a declined entry, named by its checkout path, clears the decline."""
+    _checkout_skill(co, "a")
+    localdeclined.add(co.local, ["skills/a"])
+    item = localmd.resolve_adopt(co=co, raw=".claude/skills/a", cwd=co.worktree)
+
+    localmd.adopt(co, item, tracked=False)
+
+    assert localdeclined.read(co.local).names == ()
+
+
+def test_adopt_reports_a_decline_it_could_not_clear(co, mocker):
+    """Verify a failed write to the declined list leaves the adopt done and flags the name."""
+    _checkout_skill(co, "a")
+    localdeclined.add(co.local, ["skills/a"])
+    mocker.patch.object(localdeclined, "remove", autospec=True, side_effect=OSError("disk full"))
+
+    result = localmd.adopt(co, localmd.entry(co, "skills/a"), tracked=False)
+
+    assert result.still_declined is True
+    assert localmd.state(localmd.entry(co, "skills/a")) is State.LINKED
+
+
+def test_adopt_reads_the_declined_list_once_when_nothing_is_declined(co, mocker):
+    """Verify an adopt of an undeclined entry reads the declined list a single time."""
+    _checkout_skill(co, "a")
+    spy = mocker.spy(localdeclined, "read")
+
+    localmd.adopt(co, localmd.entry(co, "skills/a"), tracked=False)
+
+    assert spy.call_count == 1

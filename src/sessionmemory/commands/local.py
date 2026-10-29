@@ -20,7 +20,7 @@ from sessionmemory.commands._common import (
     require_project,
     require_vault,
 )
-from sessionmemory.lib import localmanifest, localmd, paths
+from sessionmemory.lib import bootstrap, localdeclined, localmanifest, localmd, paths
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -40,6 +40,11 @@ ADOPT_NAMES = typer.Argument(
     ),
     show_default=False,
 )
+DECLINE_NAMES = typer.Argument(
+    ...,
+    help="CLAUDE.local.md, skills/<name>, or rules/<name>, or the path to one in this checkout.",
+    show_default=False,
+)
 KEEP_SETTINGS = typer.Option(
     None,
     "--keep-settings",
@@ -49,6 +54,7 @@ KEEP_SETTINGS = typer.Option(
 
 # Wide enough for the longest link or copy state, so names line up.
 _STATE_WIDTH = max(len(state) for state in [*localmd.State, *localmd.CopyState])
+_DECLINE_ANSWER = "No, keep it here and stop asking"
 
 
 def _checkout(cwd: Path | None) -> localmd.Checkout:
@@ -99,9 +105,10 @@ class _Plan:
     """What one run was asked to settle, adopt, and keep beyond the safe link work."""
 
     adopt: list[str] = field(default_factory=list)
+    decline: list[str] = field(default_factory=list)
     keep: Side | None = None
     settle: list[tuple[localmd.Entry, Settle]] = field(default_factory=list)
-    declined: set[str] = field(default_factory=set)
+    left_alone: set[str] = field(default_factory=set)
 
 
 def _pending_settings(
@@ -243,16 +250,22 @@ def _ask_conflict(co: localmd.Checkout, item: localmd.Entry, kind: Settle) -> Se
     )
 
 
-def _ask_adopt(item: localmd.Entry) -> bool:
-    """Ask whether to adopt one entry, or to link over a copy identical to the vault's."""
+def _ask_adopt(item: localmd.Entry) -> bool | None:
+    """Ask whether to adopt one entry, or to link over a copy identical to the vault's.
+
+    Returns:
+        bool | None: True to adopt, False to decline for good, None when cancelled.
+    """
     if localmd.state(item) is localmd.State.DIVERGED:
-        return _common.confirm(
+        return _common.answer(
             question=f"{item.relpath} is identical to the vault copy. Replace it with a link?",
             yes="Yes, replace it with a link to the vault copy",
+            no=_DECLINE_ANSWER,
         )
-    return _common.confirm(
+    return _common.answer(
         question=f"Adopt {item.relpath} into the vault?",
         yes="Yes, move it into the vault and link it back here",
+        no=_DECLINE_ANSWER,
     )
 
 
@@ -270,14 +283,17 @@ def _ask(
             continue
         action = _ask_conflict(co, result.entry, kind)
         if action is None:
-            plan.declined.add(result.entry.name)
+            plan.left_alone.add(result.entry.name)
         else:
             plan.settle.append((result.entry, action))
     for item in waiting:
-        if _ask_adopt(item):
+        choice = _ask_adopt(item)
+        if choice is True:
             plan.adopt.append(item.name)
-        else:
-            plan.declined.add(item.name)
+            continue
+        if choice is False:
+            plan.decline.append(item.name)
+        plan.left_alone.add(item.name)
     plan.keep = _ask_settings(pending) if pending is not None else None
     return plan
 
@@ -317,6 +333,11 @@ def _adopt_one(
     except OSError as err:
         pp.error(f"could not adopt {item.name}: {err}")
         return None
+    if result.still_declined:
+        pp.warning(
+            f"{item.name} is still declined in {co.local / localdeclined.DECLINED_NAME}, "
+            "which could not be updated; delete its line by hand"
+        )
     for target in result.relative_imports:
         pp.warning(
             f"@{target} in {item.name} resolves from the vault copy's folder and will not load"
@@ -351,6 +372,23 @@ def _adopt_all(
         else:
             adopted.append(result)
     return adopted, failed
+
+
+def _decline(co: localmd.Checkout, names: list[str]) -> list[str] | None:
+    """Record entries the person declined, reporting a list that cannot be updated.
+
+    Returns:
+        list[str] | None: The names newly recorded, or None when nothing could be written.
+    """
+    try:
+        # Like every write under local/, so a global ignore cannot keep the list off git.
+        bootstrap.ensure_local_ignore(co.vault)
+        return localdeclined.add(co.local, names)
+    except localdeclined.DeclinedError as err:
+        pp.error(err.message, details=err.details)
+    except OSError as err:
+        pp.error(f"could not update {co.local / localdeclined.DECLINED_NAME}: {err}")
+    return None
 
 
 def _keep(co: localmd.Checkout, side: Side, tracked: set[str]) -> tuple[Path | None, bool]:
@@ -404,7 +442,9 @@ class _Done:
     settled: dict[str, tuple[localmd.LinkResult, Settle]] = field(default_factory=dict)
 
     def carry_out(self, co: localmd.Checkout, plan: _Plan, tracked: set[str]) -> None:
-        """Settle, adopt, and keep settings as `plan` asks, adding the outcome to this record."""
+        """Settle, decline, adopt, and keep settings as `plan` asks, adding the outcome here."""
+        if plan.decline and _decline(co, plan.decline) is None:
+            self.failed = True
         for item, action in plan.settle:
             self._settle(co=co, item=item, action=action, tracked=item.name in tracked)
         if plan.adopt:
@@ -542,6 +582,8 @@ class _Report:
     done: _Done
     waiting: list[localmd.Entry]
     pending: localmd.SettingsPending | None
+    declined: localdeclined.Declined
+    declined_path: Path
     manifest_problems: tuple[str, ...] = ()
 
     def payload(self, plan: _Plan) -> dict[str, object]:
@@ -553,6 +595,7 @@ class _Report:
                 "settings": _settings_payload(self.pending),
             },
             "manifest_problems": list(self.manifest_problems),
+            "declined_problems": list(self.declined.problems),
         }
         if plan.keep is not None and self.done.kept is not None:
             payload["settings"] = {"kept": plan.keep, "path": str(self.done.kept)}
@@ -598,6 +641,13 @@ class _Report:
             pp.success(f"copied {source} settings.local.json over {dest}")
         for notice in self.done.notices:
             pp.info(notice)
+        if self.declined.names:
+            count = len(self.declined.names)
+            noun = "entry is" if count == 1 else "entries are"
+            pp.info(
+                f"{count} declined {noun} not offered; remove a name from "
+                f"{self.declined_path} to be asked again"
+            )
         if self._empty:
             pp.info("nothing to sync for this project")
 
@@ -635,6 +685,13 @@ def sync_command(
             f"{co.local / localmanifest.MANIFEST_NAME} lists paths that cannot be linked",
             details=[*problems, "Fix the file, then run local sync."],
         )
+    unusable = localmd.declined(co).problems
+    if unusable:
+        pp.error(
+            f"{co.local / localdeclined.DECLINED_NAME} cannot be fully read, so sync may offer "
+            "entries it lists",
+            details=[*unusable, "Fix the file, then run local sync."],
+        )
 
     # A person is asked about whatever the flags left pending, rather than handed commands.
     ask_inline = not as_json and _common.interactive()
@@ -643,22 +700,33 @@ def sync_command(
     done.carry_out(co=co, plan=plan, tracked=tracked)
     waiting, listed = _waiting(co, tracked)
     pending, compared = _pending_settings(co, tracked)
-    declined: set[str] = set()
+    left_alone: set[str] = set()
     if ask_inline:
         conflicts = [r for r in results if r.status == "conflict"]
         answers = _ask(co=co, conflicts=conflicts, waiting=waiting, pending=pending)
-        declined = answers.declined
-        if answers.settle or answers.adopt or answers.keep is not None:
+        left_alone = answers.left_alone
+        if answers.settle or answers.adopt or answers.decline or answers.keep is not None:
             done.carry_out(co=co, plan=answers, tracked=tracked)
             waiting, listed = _waiting(co, tracked)
             pending, compared = _pending_settings(co, tracked)
     # Linking runs first, so an entry adopted by this run was in its way. A conflict the
     # person settled shows its new outcome, and one they chose to leave is not repeated.
-    adopted = {result.entry.name for result in done.adopted}
+    # A declined copy identical to the vault's is the person's to keep, so it is quiet.
+    declined = localmd.declined(co)
+    adopted_names = {result.entry.name for result in done.adopted}
+    quiet = (
+        adopted_names
+        | left_alone
+        | {
+            r.entry.name
+            for r in results
+            if r.status == "conflict" and r.entry.name in declined.names and _identical(r.entry)
+        }
+    )
     results = [
         done.settled[r.entry.name][0] if r.entry.name in done.settled else r
         for r in results
-        if not (r.status == "conflict" and (r.entry.name in adopted or r.entry.name in declined))
+        if not (r.status == "conflict" and r.entry.name in quiet)
     ]
     failed = done.failed or not (listed and compared) or bool(problems)
 
@@ -668,6 +736,8 @@ def sync_command(
         waiting=waiting,
         pending=pending,
         manifest_problems=problems,
+        declined=declined,
+        declined_path=co.local / localdeclined.DECLINED_NAME,
     )
     if as_json:
         emit_json(report.payload(plan))
@@ -726,6 +796,92 @@ def adopt_command(
         for notice in done.notices:
             pp.warning(notice)
     if done.failed:
+        raise typer.Exit(1)
+
+
+def _identical(item: localmd.Entry) -> bool:
+    """Report whether the checkout copy matches the vault copy, reading an unreadable one as no."""
+    try:
+        return localmd.contents_match(item) is True
+    except OSError:
+        return False
+
+
+def _declinable(co: localmd.Checkout, raw: str, cwd: Path, names: list[str]) -> str | None:
+    """Return the entry name `raw` means, reporting why it cannot be declined.
+
+    A name this checkout lacks is still accepted, since another checkout may hold it.
+
+    Args:
+        co (localmd.Checkout): The checkout the name is read against.
+        raw (str): The name or path as typed.
+        cwd (Path): The directory a relative path is read from.
+        names (list[str]): The names of this checkout's entries.
+
+    Returns:
+        str | None: The entry's name, or None when it was refused.
+    """
+    try:
+        item = localmd.resolve_adopt(co=co, raw=raw, cwd=cwd)
+        # A checkout copy identical to the vault's is offered by sync, so it can be declined.
+        offered = localmd.state(item) is localmd.State.DIVERGED and _identical(item)
+        in_vault = item.target.is_symlink() or item.target.exists()
+    except localmd.LocalMdError as err:
+        pp.error(err.message, details=err.details)
+        return None
+    except OSError as err:
+        pp.error(f"could not read {raw} in {co.worktree}: {err}")
+        return None
+    # candidates() compares names exactly, so a case-only spelling would silence nothing.
+    other = localmanifest.same_but_case(item.name, names)
+    if other is not None:
+        pp.error(
+            f"{item.name} differs only in case from {other}", details=[f"Decline it as {other}."]
+        )
+        return None
+    if item.kind == "path":
+        pp.error(
+            f"{item.name} is adopted only by name and is never offered, so there is nothing to decline"
+        )
+        return None
+    if in_vault and not offered:
+        pp.error(f"{item.name} is already in the vault, so there is nothing to decline")
+        return None
+    return item.name
+
+
+@app.command(
+    "decline",
+    help="Keep entries out of the vault, so local sync and session start never offer them again.",
+)
+def decline_command(
+    names: list[str] = DECLINE_NAMES,
+    as_json: bool = JSON,  # noqa: FBT001
+    cwd: Path | None = CWD_OPTION,
+) -> None:
+    """Record entries the person keeps out of the vault, so no checkout offers them again.
+
+    Raises:
+        Exit: When any name was refused or the declined list could not be written.
+    """
+    co = _checkout(cwd)
+    _migrate(co)
+    try:
+        present = [item.name for item in localmd.entries(co)]
+    except localmd.LocalMdError as err:
+        fail(err.message, details=err.details)
+    except OSError as err:
+        fail(f"could not read the entries of {co.worktree}: {err}")
+    # A relative path reads from the shell's directory, not --cwd, as a shell would.
+    resolved = [_declinable(co=co, raw=raw, cwd=Path.cwd(), names=present) for raw in names]
+    wanted = [name for name in resolved if name is not None]
+    added = _decline(co, wanted) if wanted else []
+    if as_json:
+        emit_json({"declined": added or []})
+    else:
+        for name in added or []:
+            emit_value(name)
+    if added is None or len(wanted) < len(names):
         raise typer.Exit(1)
 
 

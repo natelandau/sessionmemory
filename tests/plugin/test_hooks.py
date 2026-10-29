@@ -1547,7 +1547,8 @@ def test_local_block_asks_about_pending_work(tmp_path: Path) -> None:
     assert "Which copy wins?" in block
     assert "`/opt/plugin/bin/sessionmemory <the command shown> --cwd .`" in block
     assert "(local sync --keep-settings checkout)" in block
-    assert "(local adopt rules/r.md)" in block
+    assert "(yes: local adopt rules/r.md, no: local decline rules/r.md)" in block
+    assert "one `local decline`" in block
     assert "--keep-settings" in block
     assert "new session" in block
     assert clauses == ["local none, pending 2"]
@@ -1636,6 +1637,17 @@ def test_local_block_leaves_path_entries_out_of_the_load_note(tmp_path: Path) ->
 def test_relpath_prefixes_only_skill_and_rule_names(name: str, expected: str) -> None:
     """Verify only skill and rule names gain the .claude/ prefix."""
     assert sessionstart._relpath(name) == expected
+
+
+def test_local_block_relays_declined_problems(tmp_path: Path) -> None:
+    """Verify a declined file sync could not read reaches the session as a block naming it."""
+    payload = {"entries": [], "pending": {}, "declined_problems": ["the file cannot be read"]}
+
+    blocks, _ = _local_block(payload, tmp_path)
+
+    assert len(blocks) == 1
+    assert "declined.toml" in blocks[0]
+    assert "the file cannot be read" in blocks[0]
 
 
 def test_local_block_relays_manifest_problems(tmp_path: Path) -> None:

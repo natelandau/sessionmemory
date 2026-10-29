@@ -1389,3 +1389,82 @@ def test_local_broken_manifest_reports_once_without_unclaimed_noise(tmp_path):
     ours = [f for f in findings if f.path == str(manifest)]
     assert len(ours) == 1
     assert str(manifest) not in ours[0].message
+
+
+def test_local_does_not_flag_the_declined_file_as_unclaimed(tmp_path):
+    """Verify the declined list at the top of local/ is never called a stray vault copy."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    root = tmp_path / "repo"
+    _local_project(vault, root)
+    _write(root / ".claude" / "skills" / "a" / "SKILL.md")
+    _write(_local_dir(vault) / "declined.toml", 'names = ["skills/a"]\n')
+
+    findings = doctor.local_instructions(vault, StubEmbedder())
+
+    assert [f for f in findings if "declined.toml" in f.path or "declined" in f.message] == []
+
+
+def test_local_flags_an_unreadable_declined_file(tmp_path):
+    """Verify a declined list that cannot be used is reported at its path."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    _local_project(vault, tmp_path / "repo")
+    declined = _write(_local_dir(vault) / "declined.toml", "names = [\n")
+
+    findings = doctor.local_instructions(vault, StubEmbedder())
+
+    ours = [f for f in findings if f.path == str(declined)]
+    assert len(ours) == 1
+    assert "cannot be read" in ours[0].message
+
+
+def test_local_flags_a_declined_name_missing_from_the_checkout(tmp_path):
+    """Verify a declined name this checkout lacks is suggested for removal and left in place."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    root = tmp_path / "repo"
+    _local_project(vault, root)
+    declined = _write(_local_dir(vault) / "declined.toml", 'names = ["skills/gone"]\n')
+
+    findings = doctor.local_instructions(vault, StubEmbedder())
+
+    assert [(f.path, f.message) for f in findings if f.path == str(declined)] == [
+        (
+            str(declined),
+            (
+                "skills/gone is declined in declined.toml but this checkout has no copy; "
+                "remove the line if no other checkout has it"
+            ),
+        )
+    ]
+    assert declined.read_text() == 'names = ["skills/gone"]\n'
+
+
+def test_local_does_not_send_a_declined_identical_copy_to_adopt(tmp_path):
+    """Verify an identical checkout copy the person declined gets no adopt advice."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    root = tmp_path / "repo"
+    _local_project(vault, root)
+    _local_entry(vault, "rules/same.md", "a\n")
+    rules = root / ".claude" / "rules"
+    rules.mkdir(parents=True)
+    (rules / "same.md").write_text("a\n", encoding="utf-8")
+    _write(_local_dir(vault) / "declined.toml", 'names = ["rules/same.md"]\n')
+
+    findings = doctor.local_instructions(vault, StubEmbedder())
+
+    assert [f for f in findings if "local adopt" in f.message] == []
+
+
+def test_local_skips_declined_names_without_a_registered_root(tmp_path):
+    """Verify a project with no registered checkout reports no missing declined names."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    _write(_local_dir(vault) / "declined.toml", 'names = ["skills/gone"]\n')
+    registry.save(vault, {"demo": registry.Project(slug="demo", remotes=(), root="")})
+
+    findings = doctor.local_instructions(vault, StubEmbedder())
+
+    assert [f for f in findings if "declined" in f.message] == []
