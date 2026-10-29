@@ -20,6 +20,7 @@ from sessionmemory.lib import (
     commits,
     field,
     fieldindex,
+    localdeclined,
     localmanifest,
     localmd,
     localtree,
@@ -248,15 +249,18 @@ def spec_statuses(vault: Path, _embedder: Embedder) -> list[Finding]:
     return findings
 
 
-def _diverged_message(item: localmd.Entry, *, ignored: bool) -> str | None:
-    """Name what is wrong with a real file or folder where the link belongs."""
+def _diverged_message(item: localmd.Entry, *, ignored: bool, declined: bool) -> str | None:
+    """Name what is wrong with a real file or folder where the link belongs.
+
+    An identical copy the person declined is theirs to keep, so it is not sent to adopt.
+    """
     try:
         match = localmd.contents_match(item)
     except OSError:
         return None
     if match is False:
         return f"{item.name} differs from the vault copy; {localmd.REPLACE_VAULT_COPY}"
-    if match is None or ignored:
+    if match is None or ignored or declined:
         return None
     return (
         f"{item.name} is not ignored by git; run local adopt {shlex.quote(item.name)} "
@@ -264,14 +268,14 @@ def _diverged_message(item: localmd.Entry, *, ignored: bool) -> str | None:
     )
 
 
-def _state_message(item: localmd.Entry, *, ignored: bool) -> str | None:
+def _state_message(item: localmd.Entry, *, ignored: bool, declined: bool) -> str | None:
     """Name what is wrong with an untracked entry at the link path, given its state."""
     name = item.name
     current = localmd.state(item)
     if current is localmd.State.DANGLING:
         return f"{name} is a dangling symlink; run local sync to replace it"
     if current is localmd.State.DIVERGED:
-        return _diverged_message(item, ignored=ignored)
+        return _diverged_message(item, ignored=ignored, declined=declined)
     if ignored:
         return None
     if current is localmd.State.FOREIGN_LINK:
@@ -283,7 +287,7 @@ def _state_message(item: localmd.Entry, *, ignored: bool) -> str | None:
 
 
 def _checkout_message(
-    co: localmd.Checkout, item: localmd.Entry, *, tracked: bool | None
+    co: localmd.Checkout, item: localmd.Entry, *, tracked: bool | None, declined: bool
 ) -> str | None:
     """Name what is wrong at one entry's link path, with advice that fits its state.
 
@@ -309,7 +313,7 @@ def _checkout_message(
             f"{item.name} is tracked by git; run git rm --cached {item.relpath} before adopting it"
         )
     try:
-        return _state_message(item, ignored=localmd.ignored(co, item))
+        return _state_message(item, ignored=localmd.ignored(co, item), declined=declined)
     except (localmd.LocalMdError, OSError):
         return None
 
@@ -418,6 +422,7 @@ _LOCATED = frozenset(
     {
         paths.LOCAL_MD_FILE,
         localmanifest.MANIFEST_NAME,
+        localdeclined.DECLINED_NAME,
         "claude/skills",
         "claude/rules",
         f"claude/{localmd.SETTINGS_NAME}",
@@ -487,6 +492,30 @@ def _manifest_findings(co: localmd.Checkout) -> list[Finding]:
     return findings
 
 
+def _declined_findings(co: localmd.Checkout, *, checked: bool) -> list[Finding]:
+    """Report a declined list that cannot be used and, when `checked`, names the checkout lacks.
+
+    A missing name is only a suggestion, since another checkout of the project may hold it.
+    """
+    declined = localmd.declined(co)
+    path = str(co.local / localdeclined.DECLINED_NAME)
+    findings = [Finding("local", path, problem) for problem in declined.problems]
+    if not checked:
+        return findings
+    for name in declined.names:
+        link = localmd.entry(co, name).link
+        if not (link.is_symlink() or link.exists()):
+            findings.append(
+                Finding(
+                    "local",
+                    path,
+                    f"{name} is declined in {localdeclined.DECLINED_NAME} but this checkout has "
+                    "no copy; remove the line if no other checkout has it",
+                )
+            )
+    return findings
+
+
 def _project_local_findings(vault: Path, slug: str, root: Path | None) -> list[Finding]:
     """Report one project's local entries, checking the checkout only when `root` exists."""
     findings = []
@@ -515,18 +544,24 @@ def _project_local_findings(vault: Path, slug: str, root: Path | None) -> list[F
     for item in items:
         findings.extend(_import_findings(item))
         findings.extend(_repository_findings(item))
-    if root is None or not root.is_dir():
+    checked = root is not None and root.is_dir()
+    findings.extend(_declined_findings(co, checked=checked))
+    if not checked:
         return findings
     try:
         tracked: set[str] | None = localmd.tracked_names(co, [*items, localmd.settings_entry(co)])
     except localmd.LocalMdError:
         tracked = None
+    refused = set(localmd.declined(co).names)
     settings = _settings_finding(co, tracked=tracked)
     if settings is not None:
         findings.append(settings)
     for item in items:
         message = _checkout_message(
-            co, item, tracked=None if tracked is None else item.name in tracked
+            co,
+            item,
+            tracked=None if tracked is None else item.name in tracked,
+            declined=item.name in refused,
         )
         if message is not None:
             findings.append(Finding("local", str(item.link), message))
@@ -541,7 +576,8 @@ def local_instructions(vault: Path, _embedder: Embedder) -> list[Finding]:
     tracked path, a dangling link, a copy that has drifted from the vault, and a link or
     copy that git does not ignore, plus a settings copy waiting on the person or one that
     cannot be copied. Also covers `entries.toml`: a file it cannot use, a listed path with
-    no vault copy, and a vault copy no entry names.
+    no vault copy, and a vault copy no entry names. And `declined.toml`: a file it cannot
+    use, and at the registered root, a declined name the checkout has no copy of.
     """
     try:
         projects = registry.load(vault)

@@ -276,6 +276,19 @@ in two sessions can drop one path from `entries.toml` and leave its copy behind 
 this. The check also reports an `entries.toml` that is not valid TOML, a `paths` value
 that is not a list of strings, and each line that names a path that `local adopt` refuses.
 
+`local/declined.toml` lists the entries that you declined. The check reports a file that
+is not valid TOML, and each line that is not an entry name. At the registered root, it
+also reports a declined entry that the checkout does not hold:
+
+```
+1 suggestion
+  └─ local: ~/repos/my-vault/projects/invoice-api/local/declined.toml: skills/deploy-check is declined in declined.toml but this checkout has no copy; remove the line if no other checkout has it
+```
+
+If no other checkout or machine holds the entry, delete the line. The line does no harm
+if you keep it. The check never deletes it, because the entry can still exist in a
+checkout that the check cannot see.
+
 A relative `@` import in `CLAUDE.local.md` or in a `.md` file of a rule cannot load,
 because Claude Code resolves it from the vault folder:
 
