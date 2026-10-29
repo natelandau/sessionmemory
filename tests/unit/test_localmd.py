@@ -1704,8 +1704,8 @@ def test_settings_invalid_json_summary_and_keep(co):
     assert pending is not None
     assert pending.state is localmd.CopyState.DIFFERS
     assert pending.summary == ("the checkout's copy is not valid JSON",)
-    written = localmd.keep_settings(co, "checkout", tracked=False)
-    assert written.read_text(encoding="utf-8") == "{broken"
+    kept = localmd.keep_settings(co, "checkout", tracked=False)
+    assert kept.path.read_text(encoding="utf-8") == "{broken"
 
 
 def test_settings_pending_carries_paths_times_and_summary(co):
@@ -1737,16 +1737,29 @@ def test_keep_checkout_writes_vault_copy(co):
     """Verify keeping the checkout's copy writes it over the vault copy."""
     item = _settings(co, checkout='{"a": 1}', vault='{"a": 2}')
 
-    assert localmd.keep_settings(co, "checkout", tracked=False) == item.target
+    assert localmd.keep_settings(co, "checkout", tracked=False) == localmd.KeptSettings(
+        path=item.target, written=True
+    )
     assert item.target.read_text(encoding="utf-8") == '{"a": 1}'
     assert item.link.read_text(encoding="utf-8") == '{"a": 1}'
+
+
+def test_keep_settings_reports_no_write_when_copies_match(co):
+    """Verify keeping either copy of identical settings reports that nothing was written."""
+    item = _settings(co, checkout='{"a": 1}', vault='{"a": 1}')
+
+    assert localmd.keep_settings(co, "vault", tracked=False) == localmd.KeptSettings(
+        path=item.link, written=False
+    )
 
 
 def test_keep_vault_creates_claude_dir_and_ignores(co):
     """Verify keeping the vault's copy creates .claude/ and ignores the file."""
     item = _settings(co, vault='{"a": 2}')
 
-    assert localmd.keep_settings(co, "vault", tracked=False) == item.link
+    assert localmd.keep_settings(co, "vault", tracked=False) == localmd.KeptSettings(
+        path=item.link, written=True
+    )
     assert item.link.read_text(encoding="utf-8") == '{"a": 2}'
     assert "/.claude/settings.local.json" in _exclude(co).read_text(encoding="utf-8")
 

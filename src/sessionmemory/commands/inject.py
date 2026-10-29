@@ -8,6 +8,7 @@ import typer
 
 from sessionmemory.commands._common import (
     CWD_OPTION,
+    JSON_OPTION,
     emit_json,
     emit_value,
     require_project,
@@ -16,11 +17,10 @@ from sessionmemory.commands._common import (
 from sessionmemory.lib import inject
 
 COMMAND = typer.Option("sessionmemory", "--command", help="How the guidance names this CLI.")
-JSON = typer.Option(False, "--json", help="Emit JSON instead of prose.")  # noqa: FBT003
 
 
 def inject_command(
-    cwd: Path | None = CWD_OPTION, command: str = COMMAND, *, as_json: bool = JSON
+    cwd: Path | None = CWD_OPTION, command: str = COMMAND, *, as_json: bool = JSON_OPTION
 ) -> None:
     """Print what this project's session should start with."""
     vault = require_vault()

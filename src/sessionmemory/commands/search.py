@@ -9,6 +9,7 @@ from nclutils import pp
 
 from sessionmemory.commands._common import (
     CWD_OPTION,
+    JSON_OPTION,
     build_embedder,
     emit_json,
     emit_value,
@@ -54,7 +55,6 @@ MIN_MARGIN = typer.Option(
     hidden=True,
 )
 READ = typer.Option(False, "--read", help="Print each hit's whole file under its path.")  # noqa: FBT003
-JSON = typer.Option(False, "--json", help="Emit JSON instead of prose.")  # noqa: FBT003
 
 _NO_RESULTS = {
     "learnings": (
@@ -77,7 +77,7 @@ def search_command(  # noqa: PLR0913
     min_margin: float | None = MIN_MARGIN,
     read: bool = READ,
     cwd: Path | None = CWD_OPTION,
-    as_json: bool = JSON,
+    as_json: bool = JSON_OPTION,
 ) -> None:
     """Find the pages nearest in meaning to the query, nearest first."""
     text = " ".join(query)
@@ -90,23 +90,13 @@ def search_command(  # noqa: PLR0913
     vault = require_vault()
     slug = require_project(vault, cwd)
     field_name = _field_name(specs_flag=specs_flag, logs=logs)
-    directory = {
-        "specs": paths.specs_dir,
-        "logs": paths.logs_dir,
-        "learnings": paths.learnings_dir,
-    }[field_name](vault, slug)
-    default_distance, default_margin = (
-        (fieldindex.SPECS_MAX_DISTANCE, fieldindex.SPECS_MIN_MARGIN)
-        if specs_flag
-        else (fieldindex.DEFAULT_MAX_DISTANCE, fieldindex.DEFAULT_MIN_MARGIN)
-    )
     hits = fieldindex.search(
-        directory,
+        paths.project_dir(vault, slug) / field_name,
         build_embedder(),
         text,
         limit=limit,
-        max_distance=default_distance if max_distance is None else max_distance,
-        min_margin=default_margin if min_margin is None else min_margin,
+        max_distance=max_distance,
+        min_margin=min_margin,
         exclude=specs.is_retired if specs_flag and not include_retired else None,
     )
 
@@ -146,8 +136,8 @@ def _entry(hit: fieldindex.Hit, *, specs_flag: bool, read: bool) -> dict[str, ob
 
 def _field_name(*, specs_flag: bool, logs: bool) -> str:
     if specs_flag:
-        return "specs"
-    return "logs" if logs else "learnings"
+        return paths.SPECS_DIR
+    return paths.LOGS_DIR if logs else paths.LEARNINGS_DIR
 
 
 def _title_line(hit: fieldindex.Hit, *, specs_flag: bool) -> str:

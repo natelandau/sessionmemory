@@ -10,9 +10,8 @@ import typer
 from nclutils import pp
 
 from sessionmemory.commands import _common
-from sessionmemory.commands._common import VAULT_FIX, emit_json
+from sessionmemory.commands._common import JSON_OPTION, configured_vault, emit_json, fail
 from sessionmemory.lib.bootstrap import InitResult, NotAVaultError, initialize
-from sessionmemory.lib.config import VaultNotConfiguredError, vault_root
 
 DIRECTORY_ARGUMENT = typer.Argument(
     None, help="Where to create the vault. Defaults to the configured vault root."
@@ -22,7 +21,6 @@ FORCE_OPTION = typer.Option(
     "--force",
     help="Initialize a directory that already has contents. Nothing existing is overwritten.",
 )
-JSON_OPTION = typer.Option(False, "--json", help="Emit JSON instead of prose.")  # noqa: FBT003
 
 
 def _report(result: InitResult, *, as_json: bool) -> None:
@@ -75,22 +73,17 @@ def init(
         vault = directory.expanduser().resolve()
         vault.mkdir(parents=True, exist_ok=True)
     else:
-        try:
-            vault = vault_root()
-        except VaultNotConfiguredError as error:
-            pp.error(str(error), details=VAULT_FIX)
-            raise typer.Exit(1) from error
+        vault = configured_vault()
 
     try:
         result = initialize(vault, force=force)
     except NotAVaultError as error:
         if not _common.interactive():
-            pp.error(str(error))
-            raise typer.Exit(1) from error
-        question, yes = _common.init_question(vault, force=True)
-        if not _common.confirm(question=question, yes=yes):
-            pp.error(f"{vault} was not initialized")
-            raise typer.Exit(1) from error
-        result = initialize(vault, force=True)
+            fail(str(error))
+        # Only a directory holding files raises this, so the offer is the forced one.
+        offered = _common.offer_init(vault)
+        if offered is None:
+            fail(f"{vault} was not initialized")
+        result = offered
 
     _report(result, as_json=as_json)

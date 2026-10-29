@@ -272,6 +272,65 @@ def declined(co: Checkout) -> localdeclined.Declined:
     return localdeclined.read(co.local)
 
 
+def declinable(co: Checkout, raw: str, cwd: Path, present: list[str]) -> str:
+    """Return the entry name `raw` means, refusing one there is nothing to decline for.
+
+    A name this checkout lacks is still accepted, since another checkout may hold it.
+
+    Args:
+        co (Checkout): The checkout the name is read against.
+        raw (str): The name or path as typed.
+        cwd (Path): The directory a relative path is read from.
+        present (list[str]): The names of this checkout's entries.
+
+    Returns:
+        str: The entry's name.
+
+    Raises:
+        LocalMdError: When `raw` names no entry, differs only in case from one present,
+            is adopted only by name, or is already in the vault and not offered.
+    """
+    try:
+        item = resolve_adopt(co=co, raw=raw, cwd=cwd)
+        # A checkout copy identical to the vault's is offered by sync, so it can be declined.
+        offered = state(item) is State.DIVERGED and identical(item)
+        in_vault = item.target.is_symlink() or item.target.exists()
+    except OSError as err:
+        msg = f"could not read {raw} in {co.worktree}: {err}"
+        raise LocalMdError(msg) from err
+    # candidates() compares names exactly, so a case-only spelling would silence nothing.
+    other = localmanifest.same_but_case(item.name, present)
+    if other is not None:
+        msg = f"{item.name} differs only in case from {other}"
+        raise LocalMdError(msg, [f"Decline it as {other}."])
+    if item.kind == "path":
+        msg = f"{item.name} is adopted only by name and is never offered, so there is nothing to decline"
+        raise LocalMdError(msg)
+    if in_vault and not offered:
+        msg = f"{item.name} is already in the vault, so there is nothing to decline"
+        raise LocalMdError(msg)
+    return item.name
+
+
+def decline(co: Checkout, names: list[str]) -> list[str]:
+    """Record entries the person declined, so `candidates` never offers them again.
+
+    Args:
+        co (Checkout): The checkout whose project's `local/` folder holds the list.
+        names (list[str]): Entry names such as `skills/<name>`.
+
+    Returns:
+        list[str]: The names that were not listed before.
+
+    Raises:
+        localdeclined.DeclinedError: When the list has problems or a name is not one an
+            adopt question can offer.
+    """
+    # Like every write under local/, so a global ignore cannot keep the list off git.
+    bootstrap.ensure_local_ignore(co.vault)
+    return localdeclined.add(co.local, names)
+
+
 def entry(co: Checkout, name: str) -> Entry:
     """Build the entry a name means: `CLAUDE.local.md`, `skills/<n>`, `rules/<n>`, or a path.
 
@@ -582,6 +641,21 @@ def contents_match(item: Entry) -> bool | None:
     if item.link.is_dir() and item.target.is_dir():
         return localtree.same_tree(item.link, item.target)
     return None
+
+
+def identical(item: Entry) -> bool:
+    """Report whether the checkout copy matches the vault copy, reading an unreadable one as no.
+
+    Args:
+        item (Entry): The entry to inspect.
+
+    Returns:
+        bool: True only when both copies exist and match.
+    """
+    try:
+        return contents_match(item) is True
+    except OSError:
+        return False
 
 
 def _kind_folder(co: Checkout, kind: Kind) -> Path:
@@ -1702,7 +1776,17 @@ def settings_pending(co: Checkout, *, tracked: bool) -> SettingsPending | None:
     )
 
 
-def keep_settings(co: Checkout, side: Literal["checkout", "vault"], *, tracked: bool) -> Path:
+@dataclass(frozen=True)
+class KeptSettings:
+    """Where the kept settings copy now lives, and whether keeping it wrote anything."""
+
+    path: Path
+    written: bool
+
+
+def keep_settings(
+    co: Checkout, side: Literal["checkout", "vault"], *, tracked: bool
+) -> KeptSettings:
     """Write the chosen settings copy over the other one, as the person decided.
 
     Args:
@@ -1711,7 +1795,8 @@ def keep_settings(co: Checkout, side: Literal["checkout", "vault"], *, tracked: 
         tracked (bool): Whether git tracks the settings path.
 
     Returns:
-        Path: The path that now holds the kept copy's content.
+        KeptSettings: The path that now holds the kept copy's content, and False for
+            `written` when the two copies already matched.
 
     Raises:
         LocalMdError: When the entry is tracked, behind a blocked `.claude/`, a symlink,
@@ -1738,7 +1823,7 @@ def keep_settings(co: Checkout, side: Literal["checkout", "vault"], *, tracked: 
         msg = f"the {side} has no {SETTINGS_NAME} to keep"
         raise LocalMdError(msg, [f"Nothing is at {source}."])
     if current is CopyState.SAME:
-        return dest
+        return KeptSettings(path=dest, written=False)
     data = source.read_bytes()
     # The replacement takes the umask default, and the file can hold `env` secrets, so a
     # new copy takes the source's mode rather than a world-readable one.
@@ -1751,4 +1836,4 @@ def keep_settings(co: Checkout, side: Literal["checkout", "vault"], *, tracked: 
     ensure_ignored(co, item)
     atomic.write_bytes(dest, data)
     dest.chmod(mode)
-    return dest
+    return KeptSettings(path=dest, written=True)

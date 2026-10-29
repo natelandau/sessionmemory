@@ -213,14 +213,29 @@ def refresh(field_dir: Path, embedder: Embedder) -> Refresh:
         conn.close()
 
 
+def default_cutoffs(field_dir: Path) -> tuple[float, float]:
+    """Return the measured `max_distance` and `min_margin` for searching `field_dir`.
+
+    Args:
+        field_dir (Path): The directory searched.
+
+    Returns:
+        tuple[float, float]: The distance cutoff and the margin, the specs pair for
+            `specs/` and the fields' pair for the rest.
+    """
+    if _is_specs(field_dir):
+        return SPECS_MAX_DISTANCE, SPECS_MIN_MARGIN
+    return DEFAULT_MAX_DISTANCE, DEFAULT_MIN_MARGIN
+
+
 def search(
     field_dir: Path,
     embedder: Embedder,
     query: str,
     *,
     limit: int,
-    max_distance: float = DEFAULT_MAX_DISTANCE,
-    min_margin: float = DEFAULT_MIN_MARGIN,
+    max_distance: float | None = None,
+    min_margin: float | None = None,
     exclude: Callable[[dict[str, Any]], bool] | None = None,
 ) -> list[Hit]:
     """Return the pages that stand out as nearest to `query`, nearest first, refreshing the index first.
@@ -228,11 +243,16 @@ def search(
     A hit sits within `max_distance` and at least `min_margin` nearer than the field's
     median page. A cutoff rather than a bare top-k, so a query nothing answers returns
     nothing instead of the nearest pages dressed up as hits. A `min_margin` of 0 leaves
-    only the absolute cutoff. `exclude` drops a page by its frontmatter after the median
-    is measured, so a dropped page never uses up `limit`.
+    only the absolute cutoff. Either left as None takes the measured default for the
+    directory searched, since specs were measured apart from the fields. `exclude` drops a
+    page by its frontmatter after the median is measured, so a dropped page never uses up
+    `limit`.
     """
     if not field_dir.is_dir():
         return []
+    default_distance, default_margin = default_cutoffs(field_dir)
+    max_distance = default_distance if max_distance is None else max_distance
+    min_margin = default_margin if min_margin is None else min_margin
     conn = _open(index_path(field_dir, embedder))
     try:
         _refresh(conn, field_dir, embedder)

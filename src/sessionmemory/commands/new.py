@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import enum
 from pathlib import Path  # noqa: TC003
+from typing import TYPE_CHECKING
 
 import typer
 from nclutils import pp
 
 from sessionmemory.commands._common import (
     CWD_OPTION,
+    JSON_OPTION,
     VersionedGroup,
     emit_json,
     emit_value,
@@ -20,6 +22,9 @@ from sessionmemory.commands._common import (
 )
 from sessionmemory.lib import backlog, field, paths, specs
 from sessionmemory.lib.config import now, today
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 app = typer.Typer(
     cls=VersionedGroup,
@@ -39,7 +44,6 @@ SPEC_SUMMARY = typer.Option(
 )
 BODY = typer.Option("", "--body", help="Markdown body.")
 BODY_FILE = typer.Option(None, "--body-file", help="Read the body from a file, or stdin for '-'.")
-JSON = typer.Option(False, "--json", help="Emit JSON instead of prose.")  # noqa: FBT003
 KIND = typer.Option(
     ...,
     "--kind",
@@ -53,14 +57,22 @@ SUPERSEDES = typer.Option(
 TOPIC = typer.Option(None, "--topic", help="A topic tag, without the leading hash.")
 
 
-def _report(path: Path, *, as_json: bool, uuid: str | None = None) -> None:
+def _report(path: Path, title: str, *, as_json: bool, uuid: str | None = None) -> None:
     if as_json:
-        payload: dict[str, str] = {"path": str(path), "title": field.read_page(path).title}
+        payload: dict[str, str] = {"path": str(path), "title": title}
         if uuid is not None:
             payload["uuid"] = uuid
         emit_json(payload)
         return
     emit_value(str(path))
+
+
+def _write(make: Callable[[], Path], title: str, *, as_json: bool) -> None:
+    try:
+        path = make()
+    except (field.PageError, specs.SpecError) as error:
+        fail(str(error))
+    _report(path, title, as_json=as_json)
 
 
 @app.command("learning")
@@ -71,7 +83,7 @@ def new_learning(
     body_file: Path | None = BODY_FILE,
     cwd: Path | None = CWD_OPTION,
     *,
-    as_json: bool = JSON,
+    as_json: bool = JSON_OPTION,
 ) -> None:
     """Create a learning: one fact this project should remember."""
     body = resolve_body(body, body_file)
@@ -83,23 +95,8 @@ def new_learning(
         )
     except field.PageError as error:
         fail(str(error))
-    _report(path, as_json=as_json, uuid=field.read_page(path).uuid)
-
-
-def _new_document(folder: Path, title: str, body: str, *, as_json: bool) -> None:
-    try:
-        path = field.new_document(folder, title=title, body=body, now=now(), day=today())
-    except field.PageError as error:
-        fail(str(error))
-    _report(path, as_json=as_json)
-
-
-def _new_living_document(folder: Path, title: str, body: str, *, as_json: bool) -> None:
-    try:
-        path = field.new_living_document(folder, title=title, body=body, now=now())
-    except field.PageError as error:
-        fail(str(error))
-    _report(path, as_json=as_json)
+    uuid = field.read_page(path).uuid if as_json else None
+    _report(path, title, as_json=as_json, uuid=uuid)
 
 
 @app.command("spec", help="Create a spec for this project, optionally replacing an older one.")
@@ -111,46 +108,48 @@ def new_spec(
     supersedes: str | None = SUPERSEDES,
     cwd: Path | None = CWD_OPTION,
     *,
-    as_json: bool = JSON,
+    as_json: bool = JSON_OPTION,
 ) -> None:
     """Create a spec, and mark the one it replaces superseded.
 
     The new spec is reported only once the old one is marked, so a printed path always
     means both writes landed.
-
-    Raises:
-        typer.Exit: The named spec is missing or unreadable, or either spec cannot be written.
     """
     body = resolve_body(body, body_file)
     vault = require_vault()
     slug = require_project(vault, cwd)
-    folder = paths.specs_dir(vault, slug)
-    old: Path | None = None
-    if supersedes is not None:
-        try:
-            old = specs.resolve_name(folder, supersedes)
-            specs.load_for_edit(old)
-        except specs.SpecError as error:
-            fail(str(error))
-    try:
-        path = field.new_document(
-            folder,
+    _write(
+        lambda: specs.create(
+            paths.specs_dir(vault, slug),
             title=title,
             body=body,
             now=now(),
             day=today(),
-            status="draft",
             summary=summary,
-        )
-    except field.PageError as error:
-        fail(str(error))
-    if old is not None:
-        try:
-            specs.mark_superseded(old, by=path.name)
-        except (specs.SpecError, field.PageError, OSError) as error:
-            path.unlink(missing_ok=True)
-            fail(f"could not mark {old.name} superseded: {error}", [f"removed {path.name}"])
-    _report(path, as_json=as_json)
+            supersedes=supersedes,
+        ),
+        title,
+        as_json=as_json,
+    )
+
+
+def _new_living_document(
+    folder: Callable[[Path, str], Path],
+    title: str,
+    body: str,
+    body_file: Path | None,
+    cwd: Path | None,
+    *,
+    as_json: bool,
+) -> None:
+    vault = require_vault()
+    slug = require_project(vault, cwd)
+    body = resolve_body(body, body_file)
+    _write(
+        lambda: field.new_living_document(folder(vault, slug), title=title, body=body, now=now()),
+        title,
+        as_json=as_json,
+    )
 
 
 @app.command("plan")
@@ -160,13 +159,18 @@ def new_plan(
     body_file: Path | None = BODY_FILE,
     cwd: Path | None = CWD_OPTION,
     *,
-    as_json: bool = JSON,
+    as_json: bool = JSON_OPTION,
 ) -> None:
     """Create a plan for this project."""
     vault = require_vault()
     slug = require_project(vault, cwd)
-    _new_document(
-        paths.plans_dir(vault, slug), title, resolve_body(body, body_file), as_json=as_json
+    body = resolve_body(body, body_file)
+    _write(
+        lambda: field.new_document(
+            paths.plans_dir(vault, slug), title=title, body=body, now=now(), day=today()
+        ),
+        title,
+        as_json=as_json,
     )
 
 
@@ -177,14 +181,10 @@ def new_runbook(
     body_file: Path | None = BODY_FILE,
     cwd: Path | None = CWD_OPTION,
     *,
-    as_json: bool = JSON,
+    as_json: bool = JSON_OPTION,
 ) -> None:
     """Create a runbook for this project."""
-    vault = require_vault()
-    slug = require_project(vault, cwd)
-    _new_living_document(
-        paths.runbooks_dir(vault, slug), title, resolve_body(body, body_file), as_json=as_json
-    )
+    _new_living_document(paths.runbooks_dir, title, body, body_file, cwd, as_json=as_json)
 
 
 @app.command("reference")
@@ -194,14 +194,10 @@ def new_reference(
     body_file: Path | None = BODY_FILE,
     cwd: Path | None = CWD_OPTION,
     *,
-    as_json: bool = JSON,
+    as_json: bool = JSON_OPTION,
 ) -> None:
     """Create a reference doc for this project."""
-    vault = require_vault()
-    slug = require_project(vault, cwd)
-    _new_living_document(
-        paths.reference_dir(vault, slug), title, resolve_body(body, body_file), as_json=as_json
-    )
+    _new_living_document(paths.reference_dir, title, body, body_file, cwd, as_json=as_json)
 
 
 def _warn_about_shape(*, in_use: list[str], title: str, topic: str | None) -> None:
@@ -233,7 +229,7 @@ def new_backlog(
     topic: str | None = TOPIC,
     cwd: Path | None = CWD_OPTION,
     *,
-    as_json: bool = JSON,
+    as_json: bool = JSON_OPTION,
 ) -> None:
     """Append an open item under its kind heading, creating the file or heading as needed.
 

@@ -9,13 +9,14 @@ from nclutils import pp
 
 from sessionmemory.commands._common import (
     CWD_OPTION,
+    JSON_OPTION,
     build_embedder,
     emit_json,
     fail,
     require_project,
     require_vault,
 )
-from sessionmemory.lib import export, field, paths
+from sessionmemory.lib import export, paths
 
 LOGS = typer.Option(False, "--logs", help="Export the logs field instead of learnings.")  # noqa: FBT003
 OUTPUT = typer.Option(
@@ -27,7 +28,6 @@ OUTPUT = typer.Option(
         "directory, which is usually the checkout."
     ),
 )
-JSON = typer.Option(False, "--json", help="Emit JSON instead of prose.")  # noqa: FBT003
 
 
 def export_command(
@@ -35,7 +35,7 @@ def export_command(
     *,
     logs: bool = LOGS,
     output: Path | None = OUTPUT,
-    as_json: bool = JSON,
+    as_json: bool = JSON_OPTION,
 ) -> None:
     """Write this project's learnings, or its logs, as a .memoryfield.zip."""
     vault = require_vault()
@@ -52,14 +52,13 @@ def export_command(
         pp.warning(f"{field_directory} does not exist; the archive holds no pages")
 
     try:
-        result = export.export_field(field_directory, embedder, output)
+        pages = export.export_field(field_directory, embedder, output)
     except OSError as error:
         fail(f"cannot write {output}: {error}")
-    pages = len(field.iter_pages(field_directory))
 
     if as_json:
-        emit_json({"path": str(result), "pages": pages})
+        emit_json({"path": str(output), "pages": pages})
         return
 
     label = "page" if pages == 1 else "pages"
-    pp.success(f"exported {pages} {label}", details=[str(result)])
+    pp.success(f"exported {pages} {label}", details=[str(output)])

@@ -286,22 +286,18 @@ def test_search_learnings_json_has_no_status_key(workspace):
 
 
 @pytest.mark.parametrize(
-    ("flags", "expected"),
-    [
-        (["--specs"], ("SPECS_MAX_DISTANCE", "SPECS_MIN_MARGIN")),
-        ([], ("DEFAULT_MAX_DISTANCE", "DEFAULT_MIN_MARGIN")),
-        (["--logs"], ("DEFAULT_MAX_DISTANCE", "DEFAULT_MIN_MARGIN")),
-    ],
+    ("flags", "directory"),
+    [(["--specs"], "specs"), ([], "learnings"), (["--logs"], "logs")],
 )
-def test_search_default_cutoff_follows_the_field(workspace, mocker, flags, expected):
-    """Verify each field's search passes its own measured cutoff when none is named."""
+def test_search_default_cutoff_follows_the_field(workspace, mocker, flags, directory):
+    """Verify each flag searches its own directory and leaves the cutoffs to its defaults."""
     search = mocker.patch.object(fieldindex, "search", autospec=True, return_value=[])
 
     runner.invoke(app, ["search", "q", *flags])
 
-    kwargs = search.call_args.kwargs
-    assert kwargs["max_distance"] == getattr(fieldindex, expected[0])
-    assert kwargs["min_margin"] == getattr(fieldindex, expected[1])
+    assert search.call_args.args[0].name == directory
+    assert search.call_args.kwargs["max_distance"] is None
+    assert search.call_args.kwargs["min_margin"] is None
 
 
 def test_search_specs_honors_an_explicit_cutoff(workspace, mocker):

@@ -2,16 +2,13 @@
 
 from __future__ import annotations
 
-import typer
 from nclutils import pp
 
-from sessionmemory.commands._common import build_embedder, emit_json, require_vault
+from sessionmemory.commands._common import JSON_OPTION, build_embedder, emit_json, require_vault
 from sessionmemory.lib import doctor
 
-JSON = typer.Option(False, "--json", help="Emit JSON instead of prose.")  # noqa: FBT003
 
-
-def doctor_command(*, as_json: bool = JSON) -> None:
+def doctor_command(*, as_json: bool = JSON_OPTION) -> None:
     """Report pages, projects, and indexes worth a look. Always exits 0."""
     vault = require_vault()
     findings = doctor.run(vault, build_embedder())
