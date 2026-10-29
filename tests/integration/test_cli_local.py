@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import json
 import subprocess
-import types
 from typing import TYPE_CHECKING, NoReturn
 
 import pytest
+from nclutils import ask
 from typer.testing import CliRunner
 
 from sessionmemory.cli import app
@@ -124,7 +124,7 @@ def test_adopt_without_a_file_is_refused(workspace):
 def test_adopt_with_no_candidates_exits_0(workspace, monkeypatch):
     """Verify a bare adopt with nothing waiting exits 0 without prompting."""
     monkeypatch.setattr(_common, "interactive", lambda: True)
-    monkeypatch.setattr(local_commands.ask, "choose_one_from_list", _fail_prompt)
+    monkeypatch.setattr(ask, "choose_one_from_list", _fail_prompt)
 
     result = runner.invoke(app, ["local", "sync"])
 
@@ -155,7 +155,7 @@ def test_sync_asks_one_question_per_entry(workspace, monkeypatch):
     asked: list[str] = []
     answers = {"CLAUDE.local.md": "Yes", "skills/a": "No", "skills/b": "Yes"}
     monkeypatch.setattr(_common, "interactive", lambda: True)
-    monkeypatch.setattr(local_commands.ask, "choose_one_from_list", _answer(answers, asked))
+    monkeypatch.setattr(ask, "choose_one_from_list", _answer(answers, asked))
 
     result = runner.invoke(app, ["local", "sync"])
 
@@ -179,7 +179,7 @@ def test_sync_cancelled_question_adopts_nothing(workspace, monkeypatch):
     _, repo = workspace
     (repo / "CLAUDE.local.md").write_text("notes\n")
     monkeypatch.setattr(_common, "interactive", lambda: True)
-    monkeypatch.setattr(local_commands.ask, "choose_one_from_list", lambda *_a, **_k: None)
+    monkeypatch.setattr(ask, "choose_one_from_list", lambda *_a, **_k: None)
 
     result = runner.invoke(app, ["local", "sync"])
 
@@ -193,12 +193,12 @@ def test_sync_no_is_recorded_and_never_asked_again(workspace, monkeypatch):
     vault, repo = workspace
     _checkout_skill(repo, "a")
     monkeypatch.setattr(_common, "interactive", lambda: True)
-    monkeypatch.setattr(local_commands.ask, "choose_one_from_list", _answer({"skills/a": "No"}, []))
+    monkeypatch.setattr(ask, "choose_one_from_list", _answer({"skills/a": "No"}, []))
 
     assert runner.invoke(app, ["local", "sync"]).exit_code == 0
     assert localdeclined.read(_local(vault)).names == ("skills/a",)
 
-    monkeypatch.setattr(local_commands.ask, "choose_one_from_list", _fail_prompt)
+    monkeypatch.setattr(ask, "choose_one_from_list", _fail_prompt)
     result = runner.invoke(app, ["local", "sync"])
 
     assert result.exit_code == 0
@@ -215,7 +215,7 @@ def test_sync_cancelled_question_records_nothing(workspace, monkeypatch):
         asked.append(message)
 
     monkeypatch.setattr(_common, "interactive", lambda: True)
-    monkeypatch.setattr(local_commands.ask, "choose_one_from_list", cancel)
+    monkeypatch.setattr(ask, "choose_one_from_list", cancel)
 
     runner.invoke(app, ["local", "sync"])
     runner.invoke(app, ["local", "sync"])
@@ -229,7 +229,7 @@ def test_sync_names_declined_entries_in_one_line(workspace, monkeypatch):
     vault, _ = workspace
     localdeclined.add(_local(vault), ["skills/a", "rules/r.md"])
     monkeypatch.setattr(_common, "interactive", lambda: True)
-    monkeypatch.setattr(local_commands.ask, "choose_one_from_list", _fail_prompt)
+    monkeypatch.setattr(ask, "choose_one_from_list", _fail_prompt)
 
     result = runner.invoke(app, ["local", "sync"])
 
@@ -445,7 +445,7 @@ def test_sync_off_terminal_lists_candidates_and_exits_0(workspace, monkeypatch):
     _, repo = workspace
     _checkout_skill(repo, "a")
     _checkout_rule(repo, "style.md")
-    monkeypatch.setattr(local_commands.ask, "choose_one_from_list", _fail_prompt)
+    monkeypatch.setattr(ask, "choose_one_from_list", _fail_prompt)
 
     result = runner.invoke(app, ["local", "sync"])
 
@@ -846,17 +846,13 @@ def test_unregistered_directory_is_refused(vault, tmp_path):
     assert result.exit_code == 1
 
 
-def test_outside_git_is_refused(workspace, monkeypatch):
+def test_outside_git_is_refused(workspace, tmp_path):
     """Verify a registered directory outside a git work tree is refused by the checkout."""
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    assert runner.invoke(app, ["project", "register", "--cwd", str(plain)]).exit_code == 0
 
-    def not_a_work_tree(
-        _cwd: object, *_args: str, **_kwargs: object
-    ) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(args=[], returncode=128, stdout="", stderr="fatal")
-
-    monkeypatch.setattr(localmd, "gitinfo", types.SimpleNamespace(run_git=not_a_work_tree))
-
-    result = runner.invoke(app, ["local", "status"])
+    result = runner.invoke(app, ["local", "status", "--cwd", str(plain)])
 
     assert result.exit_code == 1
     assert "is not inside a git work tree" in result.stderr
@@ -911,7 +907,7 @@ def test_adopt_off_terminal_quotes_names_in_the_command(workspace, monkeypatch):
     """Verify the suggested command shell-quotes an entry name holding a space."""
     _, repo = workspace
     _checkout_rule(repo, "my style.md")
-    monkeypatch.setattr(local_commands.ask, "choose_one_from_list", _fail_prompt)
+    monkeypatch.setattr(ask, "choose_one_from_list", _fail_prompt)
 
     result = runner.invoke(app, ["local", "sync"])
 
@@ -921,7 +917,7 @@ def test_adopt_off_terminal_quotes_names_in_the_command(workspace, monkeypatch):
 
 def test_adopt_off_terminal_with_no_candidates_exits_0(workspace, monkeypatch):
     """Verify a bare adopt off a terminal with nothing waiting exits 0 without prompting."""
-    monkeypatch.setattr(local_commands.ask, "choose_one_from_list", _fail_prompt)
+    monkeypatch.setattr(ask, "choose_one_from_list", _fail_prompt)
 
     result = runner.invoke(app, ["local", "sync"])
 
@@ -1109,7 +1105,7 @@ def test_sync_keep_settings_refused_exits_1(workspace, tmp_path):
 def test_sync_off_terminal_reports_pending_and_exits_0(workspace, monkeypatch):
     """Verify sync off a terminal never prompts and names the command for each pending item."""
     vault, repo = workspace
-    monkeypatch.setattr(local_commands.ask, "choose_one_from_list", _fail_prompt)
+    monkeypatch.setattr(ask, "choose_one_from_list", _fail_prompt)
     _checkout_rule(repo, "r.md")
     _settings(repo, vault, checkout='{"a": 1}', theirs='{"a": 2}')
 
@@ -1129,7 +1125,7 @@ def test_sync_asks_to_track_checkout_only_settings(workspace, monkeypatch):
     asked: list[str] = []
     answers = {"Copy .claude/settings.local.json into the vault?": "Yes"}
     monkeypatch.setattr(_common, "interactive", lambda: True)
-    monkeypatch.setattr(local_commands.ask, "choose_one_from_list", _answer(answers, asked))
+    monkeypatch.setattr(ask, "choose_one_from_list", _answer(answers, asked))
 
     result = runner.invoke(app, ["local", "sync"])
 
@@ -1145,9 +1141,7 @@ def test_sync_declining_settings_leaves_both_alone(workspace, monkeypatch):
     _settings(repo, vault, checkout='{"a": 1}', theirs=None)
     asked: list[str] = []
     monkeypatch.setattr(_common, "interactive", lambda: True)
-    monkeypatch.setattr(
-        local_commands.ask, "choose_one_from_list", _answer({"settings": "No"}, asked)
-    )
+    monkeypatch.setattr(ask, "choose_one_from_list", _answer({"settings": "No"}, asked))
 
     result = runner.invoke(app, ["local", "sync"])
 
@@ -1161,9 +1155,7 @@ def test_sync_asks_to_copy_vault_only_settings(workspace, monkeypatch):
     _settings(repo, vault, checkout=None, theirs='{"a": 2}')
     asked: list[str] = []
     monkeypatch.setattr(_common, "interactive", lambda: True)
-    monkeypatch.setattr(
-        local_commands.ask, "choose_one_from_list", _answer({"Copy it into": "Yes"}, asked)
-    )
+    monkeypatch.setattr(ask, "choose_one_from_list", _answer({"Copy it into": "Yes"}, asked))
 
     result = runner.invoke(app, ["local", "sync"])
 
@@ -1193,7 +1185,7 @@ def test_sync_differing_settings_asks_which_wins(workspace, monkeypatch, answer,
     asked: list[str] = []
     answers = {"r.md": "Yes", "differs": answer}
     monkeypatch.setattr(_common, "interactive", lambda: True)
-    monkeypatch.setattr(local_commands.ask, "choose_one_from_list", _answer(answers, asked))
+    monkeypatch.setattr(ask, "choose_one_from_list", _answer(answers, asked))
 
     result = runner.invoke(app, ["local", "sync"])
 
@@ -1214,7 +1206,7 @@ def test_adopt_leaves_other_pending_items_alone(workspace, monkeypatch, interact
     _checkout_rule(repo, "r.md")
     _settings(repo, vault, checkout='{"a": 1}', theirs='{"a": 2}')
     monkeypatch.setattr(_common, "interactive", lambda: interactive)
-    monkeypatch.setattr(local_commands.ask, "choose_one_from_list", _fail_prompt)
+    monkeypatch.setattr(ask, "choose_one_from_list", _fail_prompt)
     monkeypatch.setattr(_common, "confirm", _fail_prompt)
 
     result = runner.invoke(app, ["local", "adopt", "CLAUDE.local.md"])
@@ -1232,9 +1224,7 @@ def test_terminal_exit_answer_names_no_commands(workspace, monkeypatch):
     vault, repo = workspace
     _settings(repo, vault, checkout='{"a": 1}', theirs='{"a": 2}')
     monkeypatch.setattr(_common, "interactive", lambda: True)
-    monkeypatch.setattr(
-        local_commands.ask, "choose_one_from_list", _answer({"differs": "exit"}, [])
-    )
+    monkeypatch.setattr(ask, "choose_one_from_list", _answer({"differs": "exit"}, []))
 
     result = runner.invoke(app, ["local", "sync"])
 
@@ -1440,7 +1430,7 @@ def test_sync_json_carries_manifest_problems(workspace):
 def _on_terminal(monkeypatch, answers: dict[str, str]) -> list[str]:
     asked: list[str] = []
     monkeypatch.setattr(_common, "interactive", lambda: True)
-    monkeypatch.setattr(local_commands.ask, "choose_one_from_list", _answer(answers, asked))
+    monkeypatch.setattr(ask, "choose_one_from_list", _answer(answers, asked))
     return asked
 
 

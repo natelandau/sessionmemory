@@ -745,6 +745,27 @@ def test_tracked_names_one_git_call(co, monkeypatch):
     assert len(calls) == 1
 
 
+def test_ignored_names_names_only_the_ignored_entries(co, md):
+    """Verify one call names a linked, ignored entry and leaves an unlinked one out."""
+    _vault_copy(md)
+    _link(co, md)
+    entries = [md, localmd.entry(co, "skills/a")]
+
+    assert localmd.ignored_names(co, entries) == {md.name}
+
+
+def test_ignored_names_of_nothing_asks_git_nothing(co, monkeypatch):
+    """Verify an empty list returns no names without running git."""
+    monkeypatch.setattr(localmd, "_git", _fail_if_called)
+
+    assert localmd.ignored_names(co, []) == set()
+
+
+def _fail_if_called(*_args: object, **_kwargs: object) -> None:
+    msg = "git was run"
+    raise AssertionError(msg)
+
+
 def test_tracked_names_does_not_match_a_name_prefix(co):
     """Verify a tracked `skills/ab` does not mark `skills/a` tracked."""
     tracked_file = _checkout_skill(co, "ab") / "SKILL.md"

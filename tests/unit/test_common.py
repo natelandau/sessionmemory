@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 import typer
+from nclutils import ask
 
 from sessionmemory.commands import _common
 
@@ -61,6 +62,6 @@ def test_resolve_body_reports_invalid_utf8(tmp_path, capsys):
 @pytest.mark.parametrize(("picked", "expected"), [("yes", True), ("no", False), (None, None)])
 def test_answer_tells_no_from_cancel(monkeypatch, picked, expected):
     """Verify answer returns True for yes, False for no, and None when cancelled."""
-    monkeypatch.setattr(_common.ask, "choose_one_from_list", lambda **_kwargs: picked)
+    monkeypatch.setattr(ask, "choose_one_from_list", lambda **_kwargs: picked)
 
     assert _common.answer(question="Go?", yes="Yes, go") is expected

@@ -19,10 +19,9 @@ import hashlib
 import json
 import sqlite3
 import statistics
+import struct
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
-
-import sqlite_vec
 
 from sessionmemory.lib import field, paths, specs
 
@@ -96,6 +95,9 @@ def connect(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     try:
         conn.row_factory = sqlite3.Row
+        # Imported here, since sqlite_vec pulls in numpy and most commands never open an index.
+        import sqlite_vec
+
         conn.enable_load_extension(True)  # noqa: FBT003
         sqlite_vec.load(conn)
         conn.enable_load_extension(False)  # noqa: FBT003
@@ -105,6 +107,11 @@ def connect(path: Path) -> sqlite3.Connection:
         conn.close()
         raise
     return conn
+
+
+def _vector_bytes(vector: list[float]) -> bytes:
+    """Pack a vector as the float32 bytes sqlite-vec reads, matching its `serialize_float32`."""
+    return struct.pack(f"{len(vector)}f", *vector)
 
 
 def _open(path: Path) -> sqlite3.Connection:
@@ -191,7 +198,7 @@ def _refresh(conn: sqlite3.Connection, field_dir: Path, embedder: Embedder) -> R
         "INSERT OR REPLACE INTO pages (filename, frontmatter, last_modified, sha256_hash, embedding)"
         " VALUES (?, ?, ?, ?, ?)",
         [
-            (name, meta, modified, digest, sqlite_vec.serialize_float32(vector))
+            (name, meta, modified, digest, _vector_bytes(vector))
             for (name, meta, modified, digest, _text), vector in zip(pending, vectors, strict=True)
         ],
     )
@@ -259,7 +266,7 @@ def search(
         rows = conn.execute(
             "SELECT filename, frontmatter, vec_distance_cosine(embedding, ?) AS distance"
             " FROM pages ORDER BY distance",
-            (sqlite_vec.serialize_float32(embedder.encode_query(query)),),
+            (_vector_bytes(embedder.encode_query(query)),),
         ).fetchall()
     finally:
         conn.close()

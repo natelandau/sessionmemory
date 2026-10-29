@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 import typer
-from nclutils import ask, pp
+from nclutils import pp
 
 from sessionmemory.commands import _common
 from sessionmemory.commands._common import (
@@ -19,7 +19,7 @@ from sessionmemory.commands._common import (
     emit_json,
     emit_value,
     fail,
-    require_project,
+    require_registered,
     require_vault,
 )
 from sessionmemory.lib import localdeclined, localmanifest, localmd, paths
@@ -68,9 +68,14 @@ def _checkout(cwd: Path | None) -> localmd.Checkout:
         localmd.Checkout: The checkout holding `cwd`.
     """
     vault = require_vault()
-    slug = require_project(vault=vault, cwd=cwd)
+    slug, resolved = require_registered(vault=vault, cwd=cwd)
     try:
-        return localmd.checkout(vault=vault, slug=slug, cwd=cwd if cwd is not None else Path.cwd())
+        return localmd.checkout(
+            vault=vault,
+            slug=slug,
+            cwd=cwd if cwd is not None else Path.cwd(),
+            worktree=resolved.worktree_root,
+        )
     except localmd.LocalMdError as err:
         fail(err.message, details=err.details)
 
@@ -199,6 +204,9 @@ def _which[A: str](question: str, choices: list[tuple[str, A]]) -> A | None:
     Returns:
         A | None: The chosen action, or None for exit or a cancel.
     """
+    # Imported here, like `_common.answer`, so only a run that asks pays for it.
+    from nclutils import ask
+
     answer = ask.choose_one_from_list(choices=[*choices, (_EXIT, "exit")], message=question)
     return next((action for _, action in choices if action == answer), None)
 
@@ -852,7 +860,12 @@ def _flags(row: dict[str, object]) -> list[str]:
 
 
 def _status_row(
-    co: localmd.Checkout, item: localmd.Entry, *, tracked: bool, state: str, match: bool | None
+    item: localmd.Entry,
+    *,
+    tracked: bool,
+    ignored: bool | None,
+    state: str,
+    match: bool | None,
 ) -> dict[str, object]:
     """Describe one entry for `status`, in the shape `--json` prints.
 
@@ -865,8 +878,7 @@ def _status_row(
         "state": state,
         "link": str(item.link),
         "target": str(item.target),
-        # Git cannot be asked about a path behind a symlinked or non-folder `.claude/`.
-        "ignored": None if localmd.blocked(co=co, item=item) else localmd.ignored(co=co, item=item),
+        "ignored": ignored,
         "tracked": tracked,
         "match": match,
     }
@@ -884,12 +896,21 @@ def status_command(cwd: Path | None = CWD_OPTION, as_json: bool = JSON_OPTION) -
     with _or_fail(co, "read"):
         items = localmd.entries(co)
         settings = localmd.settings_entry(co)
-        tracked = localmd.tracked_names(co=co, items=[*items, settings])
+        everything = [*items, settings]
+        tracked = localmd.tracked_names(co=co, items=everything)
+        # Git cannot be asked about a path behind a symlinked or non-folder `.claude/`.
+        askable = [item for item in everything if not localmd.blocked(co=co, item=item)]
+        ignored = localmd.ignored_names(co=co, items=askable)
+        asked = {item.name for item in askable}
+
+        def is_ignored(item: localmd.Entry) -> bool | None:
+            return item.name in ignored if item.name in asked else None
+
         rows = [
             _status_row(
-                co=co,
                 item=item,
                 tracked=item.name in tracked,
+                ignored=is_ignored(item),
                 state=str(localmd.state(item)),
                 match=localmd.contents_match(item),
             )
@@ -900,9 +921,9 @@ def status_command(cwd: Path | None = CWD_OPTION, as_json: bool = JSON_OPTION) -
         if copy_state is not None:
             rows.append(
                 _status_row(
-                    co=co,
                     item=settings,
                     tracked=settings.name in tracked,
+                    ignored=is_ignored(settings),
                     state=str(copy_state),
                     match=None,
                 )

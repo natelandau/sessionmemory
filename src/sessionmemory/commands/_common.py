@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.metadata
 import json
 import os
 import sys
@@ -11,7 +10,7 @@ from typing import TYPE_CHECKING, NoReturn
 
 import typer
 import typer.core
-from nclutils import ask, pp
+from nclutils import pp
 
 # Typer vendors Click, so the `click` package's classes never match its errors.
 from typer._click import core as click_core
@@ -67,6 +66,8 @@ def _unknown_command_hint(message: str) -> str:
     A miss Typer can correct is a typo, so a newer release is only offered as the cause
     when no close match was suggested.
     """
+    import importlib.metadata
+
     try:
         version = importlib.metadata.version("sessionmemory")
     except importlib.metadata.PackageNotFoundError:
@@ -188,6 +189,9 @@ def answer(question: str, yes: str, no: str = "No, leave it alone") -> bool | No
     Returns:
         bool | None: True for yes, False for no, None when the person cancelled.
     """
+    # Imported here, since the prompt library costs every command tens of milliseconds to load.
+    from nclutils import ask
+
     picked = ask.choose_one_from_list(choices=[(yes, "yes"), (no, "no")], message=question)
     return None if picked is None else picked == "yes"
 
@@ -373,6 +377,33 @@ def resolve_or_exit(vault: Path, target: Path) -> Resolution:
         report_malformed_registry(vault, error)
 
 
+def require_registered(vault: Path, cwd: Path | None = None) -> tuple[str, Resolution]:
+    """Return the current project's slug and what git said resolving it, or exit.
+
+    Args:
+        vault (Path): The vault root.
+        cwd (Path | None): The directory to resolve, or None for the shell's.
+
+    Returns:
+        tuple[str, Resolution]: The resolved project slug, and the resolution it came from.
+
+    Raises:
+        Exit: When the working directory is not a registered project.
+    """
+    target = target_dir(cwd)
+    resolved = resolve_or_exit(vault, target)
+    if resolved.slug is not None:
+        return resolved.slug, resolved
+    if not interactive():
+        fail("this directory is not a registered project", ["run: sessionmemory project register"])
+    # Imported here, since the project command imports this module.
+    from sessionmemory.commands.project import offer_registration
+
+    if offer_registration(vault, target):
+        return require_registered(vault, target)
+    fail("this directory is not a registered project")
+
+
 def require_project(vault: Path, cwd: Path | None = None) -> str:
     """Return the current project's slug, or exit with instructions.
 
@@ -382,19 +413,5 @@ def require_project(vault: Path, cwd: Path | None = None) -> str:
 
     Returns:
         str: The resolved project slug.
-
-    Raises:
-        Exit: When the working directory is not a registered project.
     """
-    target = target_dir(cwd)
-    slug = resolve_or_exit(vault, target).slug
-    if slug is not None:
-        return slug
-    if not interactive():
-        fail("this directory is not a registered project", ["run: sessionmemory project register"])
-    # Imported here, since the project command imports this module.
-    from sessionmemory.commands.project import offer_registration
-
-    if offer_registration(vault, target):
-        return require_project(vault, target)
-    fail("this directory is not a registered project")
+    return require_registered(vault, cwd)[0]

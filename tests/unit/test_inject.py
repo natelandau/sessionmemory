@@ -215,6 +215,16 @@ def test_review_is_due_with_ten_learnings_never_reviewed(tmp_path):
     assert "/sessionmemory:review" in text
 
 
+def test_build_takes_a_review_day_the_caller_already_read(tmp_path):
+    """Verify a review day passed in is used without reading the registry."""
+    _learnings(tmp_path, 10)
+
+    result = inject.build(tmp_path, "demo", today="2026-10-13", reviewed="2026-10-01")
+
+    assert result.reviewed == "2026-10-01"
+    assert result.review_due is False
+
+
 def test_review_is_not_due_below_ten_learnings(tmp_path):
     """Verify nine learnings never prompt a review."""
     _learnings(tmp_path, 9)

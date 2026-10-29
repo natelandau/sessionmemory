@@ -32,11 +32,12 @@ class Upserted:
     created: bool
 
 
-def find_session_log(vault: Path, slug: str, session_id: str) -> Path | None:
+def find_session_log(vault: Path, slug: str, session_id: str) -> field.Page | None:
     """Return the page already recording this session, if any."""
     for path in field.iter_pages(paths.logs_dir(vault, slug)):
-        if field.read_page(path).meta.get(SESSION_FIELD) == session_id:
-            return path
+        page = field.read_page(path)
+        if page.meta.get(SESSION_FIELD) == session_id:
+            return page
     return None
 
 
@@ -77,11 +78,10 @@ def upsert_log(  # noqa: PLR0913
     }
     existing = find_session_log(vault, slug, session_id)
     if existing is not None:
-        page = field.read_page(existing)
-        meta = dict(page.meta)
+        meta = dict(existing.meta)
         meta.update({"title": title, "summary": summary, "updated": now, **source})
-        field.write_page(existing, meta, body)
-        return Upserted(path=existing, created=False)
+        field.write_page(existing.path, meta, body)
+        return Upserted(path=existing.path, created=False)
 
     day = log_date(title, today)
     stem = field.dated_stem(title, day)

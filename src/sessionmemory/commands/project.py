@@ -93,9 +93,9 @@ def _report(
     elif result.slug:
         headline = f"{action} {result.slug!r}" if action else result.slug
         # A directory outside git resolves by longest path prefix, so the directory asked
-        # about is routinely below the root the registry records, which is the one shown.
-        entry = _load(vault).get(result.slug)
-        pp.success(headline, details=[f"root: {entry.root if entry else target}"])
+        # about can sit below the root the registry records, which is the one shown.
+        root = result.project.root if result.project else target
+        pp.success(headline, details=[f"root: {root}"])
     else:
         pp.error(
             f"{target} is not a registered project",

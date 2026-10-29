@@ -12,10 +12,10 @@ from sessionmemory.commands._common import (
     JSON_OPTION,
     emit_json,
     fail,
-    require_project,
+    require_registered,
     require_vault,
 )
-from sessionmemory.lib import reconcile, registry
+from sessionmemory.lib import reconcile
 from sessionmemory.lib.commits import CommitsError
 
 DRY_RUN = typer.Option(
@@ -35,9 +35,11 @@ def reconcile_command(
             repository, or git cannot answer.
     """
     vault = require_vault()
-    slug = require_project(vault, cwd)
+    slug, resolved = require_registered(vault, cwd)
     try:
-        context = reconcile.Context.for_project(vault, slug, registry.load(vault)[slug].root)
+        context = reconcile.Context.for_project(
+            vault, slug, resolved.project.root if resolved.project else ""
+        )
     except reconcile.ContextError as error:
         fail(error.message, error.details)
     try:

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.metadata
-
 import typer
 
 from sessionmemory.commands import delete as delete_commands
@@ -38,6 +36,8 @@ PLUGIN = "Plugin internals"
 def _print_version(value: bool) -> None:  # noqa: FBT001
     """Print the installed version bare and exit, for a caller that compares it."""
     if value:
+        import importlib.metadata
+
         emit_value(importlib.metadata.version("sessionmemory"))
         raise typer.Exit
 

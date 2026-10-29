@@ -122,7 +122,7 @@ def _git(cwd: Path, *args: str) -> _GitAnswer:
     return _GitAnswer(stdout=completed.stdout.strip() or None, answered=True)
 
 
-def _main_worktree(cwd: Path, common_dir: Path, worktree_root: Path | None) -> Path:
+def _main_worktree(common_dir: Path, worktree_root: Path | None, configured: str | None) -> Path:
     """Return the main checkout's working tree directory.
 
     The parent of `--git-common-dir` is the main checkout only where the shared git
@@ -134,16 +134,15 @@ def _main_worktree(cwd: Path, common_dir: Path, worktree_root: Path | None) -> P
     the layouts where the parent rule fails, and it names the main working tree directly.
 
     Args:
-        cwd (Path): The directory being inspected.
-        common_dir (Path): The absolute `--git-common-dir` for `cwd`.
-        worktree_root (Path | None): The `--show-toplevel` for `cwd`, if git gave one.
+        common_dir (Path): The absolute `--git-common-dir` for the directory inspected.
+        worktree_root (Path | None): Its `--show-toplevel`, if git gave one.
+        configured (str | None): The repository's local `core.worktree`, if set.
 
     Returns:
         Path: The main checkout's root.
     """
     # core.worktree is stored relative to the shared git directory, which is the same
     # file for a linked worktree as for the checkout it was added from.
-    configured = _git(cwd, "config", "--local", "--get", "core.worktree").stdout
     if configured:
         return (common_dir / configured).resolve()
 
@@ -167,13 +166,16 @@ def git_context(cwd: Path) -> GitContext:
             when the repository is bare, and when git could not answer, so a caller that
             cares which of those it is reads `git_answered` and `is_bare`.
     """
-    common_dir = _git(cwd, "rev-parse", "--path-format=absolute", "--git-common-dir")
-    if common_dir.stdout is None:
+    # One rev-parse answers both, a line each, in the order asked.
+    asked = _git(
+        cwd, "rev-parse", "--path-format=absolute", "--git-common-dir", "--is-bare-repository"
+    )
+    if asked.stdout is None:
         return GitContext(
             repo_root=None,
             worktree_root=None,
             remotes=(),
-            git_answered=common_dir.answered,
+            git_answered=asked.answered,
             is_bare=False,
         )
 
@@ -181,23 +183,27 @@ def git_context(cwd: Path) -> GitContext:
     # parent-of-common-dir rule would name the directory containing it and hand that
     # directory's whole subtree a project slug. It has no working tree, so no working
     # directory belongs to it.
-    is_bare = _git(cwd, "rev-parse", "--is-bare-repository").stdout == "true"
-    if is_bare:
+    common_dir, _, bare = asked.stdout.partition("\n")
+    if bare.strip() == "true":
         return GitContext(
             repo_root=None, worktree_root=None, remotes=(), git_answered=True, is_bare=True
         )
 
     toplevel = _git(cwd, "rev-parse", "--show-toplevel").stdout
     worktree_root = Path(toplevel).resolve() if toplevel else None
-    repo_root = _main_worktree(cwd, Path(common_dir.stdout), worktree_root)
 
     # --local reads only this repository's config. Without it a stray remote in
     # ~/.gitconfig would be read as this repository's remote and become a registry key
     # every repository on the machine shares. A worktree reads the same local config as
     # its main checkout, so a worktree still resolves to its parent project.
-    listed = _git(cwd, "config", "--local", "--get-regexp", r"^remote\..*\.url").stdout or ""
-    urls = [line.split(" ", 1)[1] for line in listed.splitlines() if " " in line]
+    listed = _git(
+        cwd, "config", "--local", "--get-regexp", r"^(core\.worktree|remote\..*\.url)$"
+    ).stdout
+    entries = [line.split(" ", 1) for line in (listed or "").splitlines() if " " in line]
+    configured = next((value for key, value in entries if key == "core.worktree"), None)
+    urls = [value for key, value in entries if key != "core.worktree"]
     remotes = tuple(dict.fromkeys(registry.normalize_remote(url) for url in urls if url))
+    repo_root = _main_worktree(Path(common_dir), worktree_root, configured)
 
     return GitContext(
         repo_root=repo_root,

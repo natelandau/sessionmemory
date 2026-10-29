@@ -11,7 +11,7 @@ from sessionmemory.commands._common import (
     JSON_OPTION,
     emit_json,
     emit_value,
-    require_project,
+    require_registered,
     require_vault,
 )
 from sessionmemory.lib import inject
@@ -24,8 +24,10 @@ def inject_command(
 ) -> None:
     """Print what this project's session should start with."""
     vault = require_vault()
-    slug = require_project(vault, cwd)
-    injection = inject.build(vault, slug)
+    slug, resolved = require_registered(vault, cwd)
+    injection = inject.build(
+        vault, slug, reviewed=resolved.project.reviewed if resolved.project else None
+    )
     if as_json:
         emit_json(inject.payload(injection, command=command))
         return
