@@ -1667,7 +1667,8 @@ With `--json`, the payload nests each field's counts under its project:
 
 ## `sessionmemory delete`
 
-Delete files from the vault permanently, dropping a page's index row with it.
+Delete files from the vault permanently. Deleting a learning, a log, or a spec drops its
+index row too.
 
 | Option      | What it does                |
 | ----------- | --------------------------- |

@@ -45,6 +45,8 @@ does with the Python version.
 
 ## Code Layout
 
+- `src/sessionmemory/entry.py`: the console script. It answers a bare `--version` without
+  importing the commands, and hands everything else to `cli.py`, which registers them.
 - `src/sessionmemory/commands/`: Typer commands. They parse options, call the library,
   and report through `pp`. They know nothing about file formats.
 - `src/sessionmemory/lib/`: the logic, with no Typer imports.
@@ -57,7 +59,8 @@ does with the Python version.
 
 1. Library function in `lib/`.
 2. Command function in `commands/`. A command that touches an index builds its embedder
-   with `_common.build_embedder()` so the test stub stays selectable.
+   with `_common.build_embedder()` so the test stub stays selectable, and `--json` is
+   `_common.JSON_OPTION`.
 3. Register in `cli.py` with `app.command("<name>", help="...")(module.function)`. Use a
    group (`app.add_typer`, own `typer.Typer(cls=VersionedGroup, help=...)`, as `new.py`
    does) only when the command has sub-commands.
