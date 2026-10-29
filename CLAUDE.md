@@ -146,11 +146,6 @@ lock is `registry.locked`, held around every load-modify-save of `registry.toml`
 `registry.save` is called only inside it. The plugin's one lock is the per-project
 `sweep.lock` flock held by the sweep worker; that file is never deleted.
 
-### Doctor
-
-Every finding is a suggestion and `doctor` always exits 0. There is no `--fix`, and
-repair is not coming back: each finding forks on a judgment the command cannot make.
-
 ### Injection
 
 `lib/inject.build` never reads the index and never includes a page body, so its cost
