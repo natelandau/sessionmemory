@@ -13,7 +13,7 @@ from typer.testing import CliRunner
 from sessionmemory.cli import app
 from sessionmemory.commands import _common
 from sessionmemory.commands import local as local_commands
-from sessionmemory.lib import localmd, paths
+from sessionmemory.lib import localdeclined, localmd, paths
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -148,7 +148,7 @@ def _answer(answers: dict[str, str], asked: list[str]) -> Callable[..., object]:
 
 def test_sync_asks_one_question_per_entry(workspace, monkeypatch):
     """Verify each candidate gets its own question and only a yes is adopted."""
-    _, repo = workspace
+    vault, repo = workspace
     (repo / "CLAUDE.local.md").write_text("notes\n")
     _checkout_skill(repo, "a")
     _checkout_skill(repo, "b")
@@ -171,6 +171,7 @@ def test_sync_asks_one_question_per_entry(workspace, monkeypatch):
     assert (repo / "CLAUDE.local.md").is_symlink()
     assert (repo / ".claude" / "skills" / "b").is_symlink()
     assert not (repo / ".claude" / "skills" / "a").is_symlink()
+    assert localdeclined.read(_local(vault)).names == ("skills/a",)
 
 
 def test_sync_cancelled_question_adopts_nothing(workspace, monkeypatch):
@@ -185,6 +186,258 @@ def test_sync_cancelled_question_adopts_nothing(workspace, monkeypatch):
     assert result.exit_code == 0
     assert result.stdout == ""
     assert not (repo / "CLAUDE.local.md").is_symlink()
+
+
+def test_sync_no_is_recorded_and_never_asked_again(workspace, monkeypatch):
+    """Verify a no is written to the declined list and the next run asks nothing."""
+    vault, repo = workspace
+    _checkout_skill(repo, "a")
+    monkeypatch.setattr(_common, "interactive", lambda: True)
+    monkeypatch.setattr(local_commands.ask, "choose_one_from_list", _answer({"skills/a": "No"}, []))
+
+    assert runner.invoke(app, ["local", "sync"]).exit_code == 0
+    assert localdeclined.read(_local(vault)).names == ("skills/a",)
+
+    monkeypatch.setattr(local_commands.ask, "choose_one_from_list", _fail_prompt)
+    result = runner.invoke(app, ["local", "sync"])
+
+    assert result.exit_code == 0
+    assert not (repo / ".claude" / "skills" / "a").is_symlink()
+
+
+def test_sync_cancelled_question_records_nothing(workspace, monkeypatch):
+    """Verify cancelling an adopt question records no decline, so the next run asks again."""
+    vault, repo = workspace
+    _checkout_skill(repo, "a")
+    asked: list[str] = []
+
+    def cancel(*_args: object, message: str, **_kwargs: object) -> None:
+        asked.append(message)
+
+    monkeypatch.setattr(_common, "interactive", lambda: True)
+    monkeypatch.setattr(local_commands.ask, "choose_one_from_list", cancel)
+
+    runner.invoke(app, ["local", "sync"])
+    runner.invoke(app, ["local", "sync"])
+
+    assert not (_local(vault) / localdeclined.DECLINED_NAME).exists()
+    assert asked == ["Adopt .claude/skills/a into the vault?"] * 2
+
+
+def test_sync_names_declined_entries_in_one_line(workspace, monkeypatch):
+    """Verify a terminal run says how many entries are declined and where the list lives."""
+    vault, _ = workspace
+    localdeclined.add(_local(vault), ["skills/a", "rules/r.md"])
+    monkeypatch.setattr(_common, "interactive", lambda: True)
+    monkeypatch.setattr(local_commands.ask, "choose_one_from_list", _fail_prompt)
+
+    result = runner.invoke(app, ["local", "sync"])
+
+    assert result.exit_code == 0
+    assert "2 declined entries are not offered" in result.output
+    assert localdeclined.DECLINED_NAME in result.output
+
+
+def test_sync_reports_an_unparsable_declined_file(workspace, monkeypatch):
+    """Verify a declined file that does not parse is reported, left alone, and fails nothing."""
+    vault, repo = workspace
+    _vault_skill(vault, "v")
+    path = _local(vault) / localdeclined.DECLINED_NAME
+    path.write_text("names = [\n")
+
+    result = runner.invoke(app, ["local", "sync"])
+
+    assert result.exit_code == 0
+    assert "declined.toml" in result.output
+    assert (repo / ".claude" / "skills" / "v").is_symlink()
+    assert path.read_text() == "names = [\n"
+
+
+def test_decline_records_names_and_prints_them(workspace):
+    """Verify decline records each entry by name, whichever spelling was typed."""
+    vault, repo = workspace
+    _checkout_skill(repo, "a")
+
+    result = runner.invoke(app, ["local", "decline", ".claude/skills/a", "rules/r.md"])
+
+    assert result.exit_code == 0
+    assert result.stdout.splitlines() == ["skills/a", "rules/r.md"]
+    assert localdeclined.read(_local(vault)).names == ("rules/r.md", "skills/a")
+
+
+def test_decline_refuses_a_path_entry(workspace):
+    """Verify a path adopted only by name cannot be declined and nothing is written."""
+    vault, repo = workspace
+    (repo / ".claude" / "agents").mkdir(parents=True)
+
+    result = runner.invoke(app, ["local", "decline", ".claude/agents"])
+
+    assert result.exit_code == 1
+    assert "never offered" in result.output
+    assert not (_local(vault) / localdeclined.DECLINED_NAME).exists()
+
+
+def test_decline_refuses_an_entry_already_in_the_vault(workspace):
+    """Verify an entry the vault already holds cannot be declined."""
+    vault, _ = workspace
+    _vault_skill(vault, "v")
+
+    result = runner.invoke(app, ["local", "decline", "skills/v"])
+
+    assert result.exit_code == 1
+    assert "already in the vault" in result.output
+    assert not (_local(vault) / localdeclined.DECLINED_NAME).exists()
+
+
+def test_decline_refuses_when_the_file_cannot_be_read(workspace):
+    """Verify decline leaves a declined file that does not parse exactly as written."""
+    vault, _ = workspace
+    path = _local(vault) / localdeclined.DECLINED_NAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("names = [\n")
+
+    result = runner.invoke(app, ["local", "decline", "skills/a"])
+
+    assert result.exit_code == 1
+    assert path.read_text() == "names = [\n"
+
+
+def test_decline_accepts_a_copy_identical_to_the_vault(workspace):
+    """Verify a checkout copy identical to the vault's can be declined, as sync offers it."""
+    vault, repo = workspace
+    _vault_skill(vault, "v")
+    _checkout_skill(repo, "v").joinpath("SKILL.md").write_text("# v\n")
+    before = json.loads(runner.invoke(app, ["local", "sync", "--json"]).stdout)
+    assert "skills/v" in before["pending"]["adopt"]
+
+    result = runner.invoke(app, ["local", "decline", "skills/v"])
+
+    assert result.exit_code == 0
+    after = runner.invoke(app, ["local", "sync", "--json"])
+    assert after.exit_code == 0
+    payload = json.loads(after.stdout)
+    assert "skills/v" not in payload["pending"]["adopt"]
+    assert "skills/v" not in [row["name"] for row in payload["entries"]]
+
+
+def test_sync_reports_a_declined_copy_once_it_differs(workspace):
+    """Verify a declined copy that drifts from the vault's is a conflict again."""
+    vault, repo = workspace
+    _vault_skill(vault, "v")
+    skill = _checkout_skill(repo, "v").joinpath("SKILL.md")
+    skill.write_text("# v\n")
+    assert runner.invoke(app, ["local", "decline", "skills/v"]).exit_code == 0
+    skill.write_text("# mine\n")
+
+    result = runner.invoke(app, ["local", "sync", "--json"])
+
+    assert result.exit_code == 1
+    rows = json.loads(result.stdout)["entries"]
+    assert [(r["name"], r["status"]) for r in rows] == [("skills/v", "conflict")]
+
+
+def test_decline_restores_the_vault_ignore_lines(workspace):
+    """Verify a decline makes sure git sees local/, so the list reaches other machines."""
+    vault, _ = workspace
+    (vault / ".gitignore").write_text("*.tmp\n")
+
+    assert runner.invoke(app, ["local", "decline", "skills/a"]).exit_code == 0
+
+    assert "!projects/*/local/" in (vault / ".gitignore").read_text()
+
+
+def test_decline_refuses_a_case_only_mismatch(workspace):
+    """Verify a name that differs only in case from a checkout entry is refused."""
+    vault, repo = workspace
+    _checkout_skill(repo, "deploy-check")
+
+    result = runner.invoke(app, ["local", "decline", "skills/Deploy-Check"])
+
+    assert result.exit_code == 1
+    assert "skills/deploy-check" in result.output
+    assert not (_local(vault) / localdeclined.DECLINED_NAME).exists()
+
+
+def test_adopt_warns_when_a_decline_cannot_be_cleared(workspace):
+    """Verify adopt says so when a declined file with problems keeps the name listed."""
+    vault, repo = workspace
+    _checkout_skill(repo, "a")
+    path = _local(vault) / localdeclined.DECLINED_NAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('names = ["skills/a", 3]\n')
+
+    result = runner.invoke(app, ["local", "adopt", "skills/a"])
+
+    assert result.exit_code == 0
+    assert "still declined" in result.output
+    assert path.read_text() == 'names = ["skills/a", 3]\n'
+
+
+def test_sync_json_carries_declined_problems(workspace):
+    """Verify --json names each declined-file problem so the session start can relay it."""
+    vault, _ = workspace
+    _local(vault).mkdir(parents=True)
+    (_local(vault) / localdeclined.DECLINED_NAME).write_text("names = [\n")
+
+    result = runner.invoke(app, ["local", "sync", "--json"])
+
+    assert len(json.loads(result.stdout)["declined_problems"]) == 1
+
+
+def test_sync_survives_an_unreadable_declined_copy(workspace, mocker):
+    """Verify sync treats a declined copy it cannot read as different, not as a crash."""
+    vault, repo = workspace
+    _vault_skill(vault, "v")
+    _checkout_skill(repo, "v").joinpath("SKILL.md").write_text("# v\n")
+    localdeclined.add(_local(vault), ["skills/v"])
+    mocker.patch.object(
+        local_commands.localmd, "contents_match", autospec=True, side_effect=PermissionError
+    )
+
+    result = runner.invoke(app, ["local", "sync", "--json"])
+
+    assert not isinstance(result.exception, PermissionError)
+    assert [row["status"] for row in json.loads(result.stdout)["entries"]] == ["conflict"]
+
+
+def test_decline_refuses_an_unreadable_copy_and_records_the_rest(workspace, mocker):
+    """Verify a copy that cannot be read is refused while the other names are recorded."""
+    vault, repo = workspace
+    _vault_skill(vault, "v")
+    _checkout_skill(repo, "v")
+    mocker.patch.object(
+        local_commands.localmd, "contents_match", autospec=True, side_effect=PermissionError
+    )
+
+    result = runner.invoke(app, ["local", "decline", "skills/v", "skills/other"])
+
+    assert not isinstance(result.exception, PermissionError)
+    assert result.exit_code == 1
+    assert localdeclined.read(_local(vault)).names == ("skills/other",)
+
+
+def test_decline_sees_a_legacy_vault_copy(workspace):
+    """Verify a CLAUDE.local.md still at the vault's old path counts as in the vault."""
+    vault, _ = workspace
+    legacy = vault / "projects" / "demo" / "CLAUDE.local.md"
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text("notes\n")
+
+    result = runner.invoke(app, ["local", "decline", "CLAUDE.local.md"])
+
+    assert result.exit_code == 1
+    assert "already in the vault" in result.output
+
+
+def test_decline_json_lists_only_new_names(workspace):
+    """Verify --json lists the names this run added, not ones already declined."""
+    vault, _ = workspace
+    localdeclined.add(_local(vault), ["skills/old"])
+
+    result = runner.invoke(app, ["local", "decline", "skills/old", "skills/a", "--json"])
+
+    assert result.exit_code == 0
+    assert json.loads(result.stdout) == {"declined": ["skills/a"]}
 
 
 def test_sync_off_terminal_lists_candidates_and_exits_0(workspace, monkeypatch):
@@ -305,6 +558,7 @@ def test_link_json_lists_entries(workspace):
         ],
         "pending": {"adopt": [], "settings": None},
         "manifest_problems": [],
+        "declined_problems": [],
     }
     assert second.exit_code == 0
     assert [e["status"] for e in json.loads(second.stdout)["entries"]] == ["present", "present"]
@@ -474,6 +728,7 @@ def test_link_with_nothing_in_the_vault_exits_0(workspace):
         "entries": [],
         "pending": {"adopt": [], "settings": None},
         "manifest_problems": [],
+        "declined_problems": [],
     }
 
 

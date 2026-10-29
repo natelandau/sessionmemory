@@ -173,6 +173,23 @@ def interactive() -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty()
 
 
+def answer(question: str, yes: str, no: str = "No, leave it alone") -> bool | None:
+    """Ask one yes-or-no question, telling a no apart from a cancelled question.
+
+    Use it where a no is remembered, so walking away from the prompt is not taken as one.
+
+    Args:
+        question (str): The question.
+        yes (str): The yes answer, naming what it does.
+        no (str): The no answer, naming what it does.
+
+    Returns:
+        bool | None: True for yes, False for no, None when the person cancelled.
+    """
+    picked = ask.choose_one_from_list(choices=[(yes, "yes"), (no, "no")], message=question)
+    return None if picked is None else picked == "yes"
+
+
 def confirm(question: str, yes: str) -> bool:
     """Ask one yes-or-no question whose answers say what each choice does.
 
@@ -183,8 +200,7 @@ def confirm(question: str, yes: str) -> bool:
     Returns:
         bool: True only when the person chose yes; cancelling counts as no.
     """
-    choices = [(yes, "yes"), ("No, leave it alone", "no")]
-    return ask.choose_one_from_list(choices=choices, message=question) == "yes"
+    return answer(question=question, yes=yes) is True
 
 
 def init_question(vault: Path, *, force: bool) -> tuple[str, str]:

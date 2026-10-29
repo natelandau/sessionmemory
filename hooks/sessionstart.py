@@ -108,14 +108,16 @@ LOCAL_LINKED_NOTE = (
 LOCAL_PENDING_NOTE = (
     "Local files in this checkout are waiting on a decision about the vault. Before other "
     "work, ask the person each question below, one at a time, in these words. Copy or "
-    "overwrite nothing until they answer; a no leaves the file alone."
+    "overwrite nothing until they answer. A no to an adopt question leaves the file alone "
+    "and is recorded so it is never asked again."
 )
 
 LOCAL_PENDING_COMMAND = (
-    "Then, for each yes, run `{command} <the command shown> --cwd .`, naming every entry "
-    "to adopt in one `local adopt`. After the vault's settings copy is written into the "
-    "checkout, tell the person to start a new session before approving anything, since "
-    "Claude Code read its settings before this ran."
+    "Then, for each answer, run `{command} <the command shown> --cwd .`, naming every "
+    "entry to adopt in one `local adopt` and every entry declined in one `local decline`. "
+    "After the vault's settings copy is written into the checkout, tell the person to "
+    "start a new session before approving anything, since Claude Code read its settings "
+    "before this ran."
 )
 
 SETTINGS_PATH = ".claude/settings.local.json"
@@ -123,6 +125,12 @@ SETTINGS_PATH = ".claude/settings.local.json"
 LOCAL_MANIFEST_NOTE = (
     "This project's local/entries.toml lists paths that cannot be linked, so they are "
     "missing from this checkout. Tell the person, and suggest `sessionmemory doctor`:"
+)
+
+LOCAL_DECLINED_NOTE = (
+    "This project's local/declined.toml cannot be fully read, so entries the person "
+    "declined can be asked about again, and `local decline` refuses until the file is "
+    "fixed. Tell the person, and suggest `sessionmemory doctor`:"
 )
 
 # The order the log clause counts `local sync` statuses in, whatever order the CLI lists.
@@ -229,13 +237,13 @@ def _memory_block(
     return "\n\n".join(blocks) or None
 
 
-def _manifest_block(payload: dict[str, Any] | None) -> list[str]:
-    """The block naming `entries.toml` lines that sync could not use, or none."""
-    problems = payload.get("manifest_problems") if payload is not None else None
+def _problems_block(payload: dict[str, Any] | None, *, key: str, note: str) -> list[str]:
+    """The block naming the problems sync reported under `key`, or none."""
+    problems = payload.get(key) if payload is not None else None
     if not isinstance(problems, list):
         return []
     lines = [f"- {line}" for line in problems if isinstance(line, str)]
-    return ["\n".join([LOCAL_MANIFEST_NOTE, *lines])] if lines else []
+    return ["\n".join([note, *lines])] if lines else []
 
 
 def _local_block(
@@ -291,7 +299,8 @@ def _local_block(
         blocks.append(_linked_entries_note(names))
     if ask:
         blocks.append(ask)
-    blocks.extend(_manifest_block(payload))
+    blocks.extend(_problems_block(payload, key="manifest_problems", note=LOCAL_MANIFEST_NOTE))
+    blocks.extend(_problems_block(payload, key="declined_problems", note=LOCAL_DECLINED_NOTE))
     return blocks
 
 
@@ -352,7 +361,8 @@ def _pending_block(pending: dict[str, Any], *, command: str) -> tuple[str | None
     lines = [LOCAL_PENDING_NOTE, ""]
     lines.extend(
         f'- "Adopt {_relpath(name)} into the vault?" Yes moves it into the vault and links it '
-        f"back here. (local adopt {shlex.quote(name)})"
+        "back here; no keeps it here and stops asking. "
+        f"(yes: local adopt {shlex.quote(name)}, no: local decline {shlex.quote(name)})"
         for name in adopt
     )
     if settings:

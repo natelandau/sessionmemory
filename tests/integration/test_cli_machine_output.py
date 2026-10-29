@@ -319,3 +319,19 @@ def test_local_adopt_output_is_parseable_in_a_colored_shell(colored_checkout, as
     assert target.name == "r.md"
     assert target.is_file()
     assert rule.is_symlink()
+
+
+@pytest.mark.parametrize("as_json", [True, False], ids=["json", "names"])
+def test_local_decline_output_is_parseable_in_a_colored_shell(colored_checkout, as_json):
+    """Verify `local decline` prints its JSON or recorded names unstyled in a colored shell."""
+    env, repo = colored_checkout
+    flags = ["--json"] if as_json else []
+
+    result = _run(env, "local", "decline", "rules/r.md", *flags, "--cwd", str(repo))
+
+    assert result.returncode == 0, result.stderr
+    assert ESCAPE not in result.stdout
+    if as_json:
+        assert json.loads(result.stdout) == {"declined": ["rules/r.md"]}
+    else:
+        assert result.stdout.decode().strip() == "rules/r.md"

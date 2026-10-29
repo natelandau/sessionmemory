@@ -294,6 +294,7 @@ sub-commands never offer it, adopt it, copy it, or link over it.
 | ----------- | ----------------------------------------------------------------------------- |
 | `sync`      | Link the vault's entries into this checkout, then copy settings as you chose  |
 | `adopt`     | Move entries from this checkout into the vault and link each one back         |
+| `decline`   | Keep entries out of the vault, so `sync` never offers them again              |
 | `status`    | Report how each entry in this checkout relates to the vault                   |
 
 Each sub-command takes `--cwd`, the directory to resolve the project from, and `--json`.
@@ -470,6 +471,17 @@ adopts them:
   └─ Adopt them into the vault with: sessionmemory local adopt CLAUDE.local.md skills/deploy-check rules/style.md --cwd .
 ```
 
+`sync` does not offer an entry that you declined (see
+[`local decline`](#sessionmemory-local-decline)). On a terminal, it prints how many
+entries are declined:
+
+```
+2 declined entries are not offered; remove a name from ~/repos/my-vault/projects/invoice-api/local/declined.toml to be asked again
+```
+
+If `declined.toml` is not valid TOML, `sync` names the problem and offers each entry that
+the file lists. It does not change the file.
+
 The command prints each path it wrote on stdout. Keeping the checkout's settings:
 
 ```bash
@@ -537,18 +549,20 @@ work:
       "summary": []
     }
   },
-  "manifest_problems": []
+  "manifest_problems": [],
+  "declined_problems": []
 }
 ```
 
-`pending.adopt` names each entry that the command can adopt: an untracked entry that is
-`unadopted`, or `diverged` with identical contents. `pending.settings` is `null` unless
+`pending.adopt` names each entry that the command can adopt and that you did not
+decline: an untracked entry that is `unadopted`, or `diverged` with identical contents. `pending.settings` is `null` unless
 the settings state is `differs`, `checkout only`, or `vault only`. `reason` and `remedy`
 are set for a `conflict`. A `settings` object follows when
 `--keep-settings` ran, with `kept` and the `path` that holds the kept copy. When both
 copies were already the same, nothing is written and `path` names the existing copy.
 `manifest_problems` holds one line for each line of `local/entries.toml` that the command
-cannot use, and is empty when there is none.
+cannot use, and is empty when there is none. `declined_problems` does the same for
+`local/declined.toml`.
 
 When nothing is linked or pending, the command says so on stderr and exits 0:
 
@@ -597,9 +611,9 @@ A removed link is reported the same way:
 ! removed ~/repos/invoice-api/.claude/rules/review.md, whose vault entry is gone
 ```
 
-The command exits 1 when any linked entry is a `conflict`, when a `--keep-settings` or
-an adopt that you chose at the terminal failed, or when `local/entries.toml` holds a line
-that the command cannot use. `--json` still prints the whole payload. One conflict never
+The command exits 1 when any linked entry is a `conflict`, when a `--keep-settings`, an
+adopt, or a decline that you chose at the terminal failed, or when `local/entries.toml`
+holds a line that the command cannot use. `--json` still prints the whole payload. One conflict never
 stops the other entries. A conflict for an entry that the same run then adopts is not
 reported.
 
@@ -654,6 +668,9 @@ With `--json`, it prints the `name` and vault `target` of each entry adopted:
 
 `adopt` does not link the vault's other entries or touch `settings.local.json`, which it
 refuses by name. Run `local sync` for those.
+
+An entry that you adopt is removed from `local/declined.toml`, so a declined entry comes
+back when you adopt it by name.
 
 The command does these steps for each entry, in order:
 
@@ -782,6 +799,72 @@ in the note about entries that load from the next session.
 
 > **Note:** A program that saves a file by renaming a new file over it replaces the link
 > with a regular file. `local status` then shows `diverged`.
+
+### `sessionmemory local decline`
+
+Keep entries in this checkout and out of the vault. Neither `local sync` nor the session
+start hook offers a declined entry again, in any checkout of the project.
+
+```bash
+sessionmemory local decline skills/deploy-check --cwd .
+```
+
+| Argument or option | What it does                                                                                  |
+| ------------------ | --------------------------------------------------------------------------------------------- |
+| `NAME...`          | `CLAUDE.local.md`, `skills/<name>`, or `rules/<name>`, or the path to one in the checkout     |
+| `--json`           | Emit JSON instead of prose                                                                    |
+| `--cwd DIR`        | Directory to resolve the project from                                                         |
+
+The command prints each name that it recorded on stdout:
+
+```
+skills/deploy-check
+```
+
+With `--json`, it prints the names that this run added. A name that the file already
+lists is not repeated:
+
+```json
+{
+  "declined": [
+    "rules/style.md"
+  ]
+}
+```
+
+The names go in `local/declined.toml`, which the vault shares with every checkout of the
+project:
+
+```toml
+# Entries a person declined to adopt with local decline or local sync. Neither
+# local sync nor session start offers them again in any checkout. Remove a name
+# to be asked again.
+names = [
+    "rules/style.md",
+    "skills/deploy-check",
+]
+```
+
+A name that this checkout does not hold is recorded, because another checkout can hold
+it. If the checkout holds a copy that is identical to the vault copy, you can decline it
+too. `sync` then keeps that copy and does not report it as a conflict. If the two copies
+differ later, `sync` reports the conflict again.
+
+The command refuses these names, and exits 1 when it refuses any name:
+
+- A path that you adopt by name, because `sync` never offers one.
+- An entry that the vault holds, unless the checkout copy is identical to the vault copy.
+- A name that differs only in case from an entry in the checkout, such as
+  `skills/Deploy-Check` for `.claude/skills/deploy-check`.
+
+It also refuses every name when `declined.toml` holds anything it cannot use, such as
+invalid TOML, a repeated name, or a name that is not an entry kind, and does not change
+the file.
+
+To be offered an entry again, delete its line from `declined.toml`, or adopt it with
+[`local adopt`](#sessionmemory-local-adopt). If `adopt` cannot update `declined.toml`, it
+still adopts the entry and warns that the name is still declined. Nothing deletes a line
+by itself, because an entry that is missing from one checkout can still exist in another.
 
 ## `sessionmemory new learning`
 

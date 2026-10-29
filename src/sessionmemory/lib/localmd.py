@@ -44,6 +44,7 @@ from sessionmemory.lib import (
     atomic,
     bootstrap,
     gitinfo,
+    localdeclined,
     localmanifest,
     localtree,
     paths,
@@ -257,6 +258,18 @@ def manifest(co: Checkout) -> localmanifest.Manifest:
         localmanifest.Manifest: The usable paths and any problems in the file.
     """
     return localmanifest.read(co.local)
+
+
+def declined(co: Checkout) -> localdeclined.Declined:
+    """Read the project's list of entries the person declined to adopt.
+
+    Args:
+        co (Checkout): The checkout whose project's `local/` folder holds the list.
+
+    Returns:
+        localdeclined.Declined: The usable names and any problems in the file.
+    """
+    return localdeclined.read(co.local)
 
 
 def entry(co: Checkout, name: str) -> Entry:
@@ -1047,7 +1060,7 @@ def _offerable(item: Entry) -> bool:
 
 
 def candidates(co: Checkout, *, tracked: set[str] | None = None) -> list[Entry]:
-    """List the entries `adopt` may offer: untracked, and unadopted or identical.
+    """List the entries `adopt` may offer: untracked, undeclined, and unadopted or identical.
 
     Args:
         co (Checkout): The checkout to inspect.
@@ -1058,10 +1071,14 @@ def candidates(co: Checkout, *, tracked: set[str] | None = None) -> list[Entry]:
             matching contents, which adopt finishes by linking.
     """
     # A path entry is adopted only by name, so it is never offered.
+    refused = set(declined(co).names)
     pool = [
         item
         for item in entries(co)
-        if item.kind != "path" and not blocked(co, item) and _offerable(item)
+        if item.kind != "path"
+        and item.name not in refused
+        and not blocked(co, item)
+        and _offerable(item)
     ]
     if tracked is None:
         tracked = tracked_names(co, pool)
@@ -1076,6 +1093,20 @@ class AdoptResult:
     target: Path
     already_linked: bool
     relative_imports: list[str]
+    still_declined: bool = False
+
+
+def _clear_decline(co: Checkout, item: Entry) -> bool:
+    """Drop an adopted entry from the declined list, reporting whether it is still listed.
+
+    A failure here never undoes the adopt it follows, so it is reported, not raised.
+    """
+    if item.name not in declined(co).names:
+        return False
+    try:
+        return not localdeclined.remove(co.local, item.name)
+    except OSError:
+        return True
 
 
 def _check_shape(item: Entry) -> None:
@@ -1350,7 +1381,11 @@ def adopt(co: Checkout, item: Entry, *, tracked: bool) -> AdoptResult:
 
     def result(*, imports: list[str], already: bool = False) -> AdoptResult:
         return AdoptResult(
-            entry=item, target=item.target, already_linked=already, relative_imports=imports
+            entry=item,
+            target=item.target,
+            already_linked=already,
+            relative_imports=imports,
+            still_declined=_clear_decline(co, item),
         )
 
     if current is State.LINKED and not blocked(co, item):
