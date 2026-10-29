@@ -73,7 +73,7 @@ def _checkout(cwd: Path | None) -> localmd.Checkout:
         return localmd.checkout(
             vault=vault,
             slug=slug,
-            cwd=cwd if cwd is not None else Path.cwd(),
+            cwd=_common.target_dir(cwd),
             worktree=resolved.worktree_root,
         )
     except localmd.LocalMdError as err:

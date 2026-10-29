@@ -134,7 +134,7 @@ def new_spec(
 
 
 def _new_living_document(
-    folder: Callable[[Path, str], Path],
+    locate: Callable[[Path, str], Path],
     title: str,
     body: str,
     body_file: Path | None,
@@ -146,7 +146,7 @@ def _new_living_document(
     slug = require_project(vault, cwd)
     body = resolve_body(body, body_file)
     _write(
-        lambda: field.new_living_document(folder(vault, slug), title=title, body=body, now=now()),
+        lambda: field.new_living_document(locate(vault, slug), title=title, body=body, now=now()),
         title,
         as_json=as_json,
     )

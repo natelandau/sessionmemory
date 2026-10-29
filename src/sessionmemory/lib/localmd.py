@@ -212,7 +212,8 @@ def checkout(vault: Path, slug: str, cwd: Path, worktree: Path | None = None) ->
         slug (str): The project's slug.
         cwd (Path): Any directory inside the checkout.
         worktree (Path | None): The work tree's top level when the caller already asked
-            git for it, so git is not asked again.
+            git for it, so git is not asked again. Ignored while a `GIT_` variable is set,
+            since the caller's answer was not given under `_git_safe_env`.
 
     Returns:
         Checkout: The work tree's top level and the project it belongs to.
@@ -220,7 +221,7 @@ def checkout(vault: Path, slug: str, cwd: Path, worktree: Path | None = None) ->
     Raises:
         LocalMdError: When `cwd` is not inside a git work tree.
     """
-    if worktree is None:
+    if worktree is None or any(key.startswith("GIT_") for key in os.environ):
         done = _git(cwd, "rev-parse", "--show-toplevel")
         toplevel = done.stdout.strip()
         if done.returncode != 0 or not toplevel:

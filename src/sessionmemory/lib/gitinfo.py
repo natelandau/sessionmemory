@@ -200,7 +200,8 @@ def git_context(cwd: Path) -> GitContext:
         cwd, "config", "--local", "--get-regexp", r"^(core\.worktree|remote\..*\.url)$"
     ).stdout
     entries = [line.split(" ", 1) for line in (listed or "").splitlines() if " " in line]
-    configured = next((value for key, value in entries if key == "core.worktree"), None)
+    # Git reads the last value of a key set more than once.
+    configured = next((value for key, value in reversed(entries) if key == "core.worktree"), None)
     urls = [value for key, value in entries if key != "core.worktree"]
     remotes = tuple(dict.fromkeys(registry.normalize_remote(url) for url in urls if url))
     repo_root = _main_worktree(Path(common_dir), worktree_root, configured)
