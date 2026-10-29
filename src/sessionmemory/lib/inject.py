@@ -95,7 +95,9 @@ def _review_due(*, learnings: int, reviewed: str, today: str) -> bool:
     return elapsed > timedelta(days=REVIEW_INTERVAL_DAYS)
 
 
-def build(vault: Path, slug: str, *, today: str | None = None) -> Injection:
+def build(
+    vault: Path, slug: str, *, today: str | None = None, reviewed: str | None = None
+) -> Injection:
     """Read the project's pages and files; the index is never consulted here.
 
     Specs are counted rather than listed. A spec outlives the work it describes, so a
@@ -104,9 +106,13 @@ def build(vault: Path, slug: str, *, today: str | None = None) -> Injection:
 
     Reference docs and runbooks are listed by filename. They are few and edited in place
     rather than accumulated, and a name a session recognizes is what sends it to read one.
+
+    `reviewed` is the project's last review day when the caller already loaded its
+    registry entry, or None to read it here.
     """
     titles = _titles(paths.learnings_dir(vault, slug))
-    reviewed = _reviewed(vault, slug)
+    if reviewed is None:
+        reviewed = _reviewed(vault, slug)
     return Injection(
         project=slug,
         titles=titles,

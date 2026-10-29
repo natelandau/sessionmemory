@@ -1,8 +1,8 @@
 """Tests for the console-script entry point.
 
 Every other integration test invokes the Typer `app` directly through `CliRunner`, which
-never runs `cli.main`. That leaves the entry point itself, `def main(): app()`, unmeasured
-even though `bin/sessionmemory` and the installed console script both call nothing else.
+never runs `entry.main` or `cli.main`. That leaves the entry points themselves unmeasured
+even though `bin/sessionmemory` and the installed console script call nothing else.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ import sys
 import pytest
 from typer.testing import CliRunner
 
+from sessionmemory import entry
 from sessionmemory.cli import app, main
 
 
@@ -22,6 +23,28 @@ def test_main_runs_the_typer_app(monkeypatch, capsys):
 
     with pytest.raises(SystemExit) as excinfo:
         main()
+
+    assert excinfo.value.code == 0
+    assert "Usage:" in capsys.readouterr().out
+
+
+def test_entry_answers_a_bare_version_without_building_the_cli(monkeypatch, capsys):
+    """Verify the console script prints the version alone and never imports the commands."""
+    monkeypatch.setattr(sys, "argv", ["sessionmemory", "--version"])
+    monkeypatch.delitem(sys.modules, "sessionmemory.cli")
+
+    entry.main()
+
+    assert capsys.readouterr().out == f"{importlib.metadata.version('sessionmemory')}\n"
+    assert "sessionmemory.cli" not in sys.modules
+
+
+def test_entry_hands_any_other_arguments_to_the_cli(monkeypatch, capsys):
+    """Verify the console script runs the Typer app for anything but a bare --version."""
+    monkeypatch.setattr(sys, "argv", ["sessionmemory", "--help"])
+
+    with pytest.raises(SystemExit) as excinfo:
+        entry.main()
 
     assert excinfo.value.code == 0
     assert "Usage:" in capsys.readouterr().out

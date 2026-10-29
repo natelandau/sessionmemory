@@ -2,31 +2,31 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path  # noqa: TC003
 
 import typer
 from nclutils import pp
 
 from sessionmemory.commands._common import (
     CWD_OPTION,
+    JSON_OPTION,
     emit_json,
     fail,
-    require_project,
+    require_registered,
     require_vault,
 )
-from sessionmemory.lib import reconcile, registry
-from sessionmemory.lib.commits import CommitsError, Repository
+from sessionmemory.lib import reconcile
+from sessionmemory.lib.commits import CommitsError
 
 DRY_RUN = typer.Option(
     False,  # noqa: FBT003
     "--dry-run",
     help="Report what would change without writing.",
 )
-JSON = typer.Option(False, "--json", help="Emit JSON instead of prose.")  # noqa: FBT003
 
 
 def reconcile_command(
-    cwd: Path | None = CWD_OPTION, *, dry_run: bool = DRY_RUN, as_json: bool = JSON
+    cwd: Path | None = CWD_OPTION, *, dry_run: bool = DRY_RUN, as_json: bool = JSON_OPTION
 ) -> None:
     """Bring this project's logs in line with what landed on the trunk.
 
@@ -35,16 +35,13 @@ def reconcile_command(
             repository, or git cannot answer.
     """
     vault = require_vault()
-    slug = require_project(vault, cwd)
-    registered = registry.load(vault)[slug].root
-    # Path("") is the shell's directory, which would silently reconcile the wrong tree.
-    if not registered or not Path(registered).is_absolute():
-        fail("project has no registered root", [f"registered root: {registered!r}"])
-    root = Path(registered)
-    if not Repository(root).is_repository():
-        fail("project root is not a git repository", [str(root)])
-
-    context = reconcile.Context(vault=vault, slug=slug, root=root)
+    slug, resolved = require_registered(vault, cwd)
+    try:
+        context = reconcile.Context.for_project(
+            vault, slug, resolved.project.root if resolved.project else ""
+        )
+    except reconcile.ContextError as error:
+        fail(error.message, error.details)
     try:
         reports = reconcile.run(context, dry_run=dry_run)
     except CommitsError as error:

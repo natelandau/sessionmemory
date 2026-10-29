@@ -12,6 +12,10 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
+# libyaml's loader builds the same values as the pure-Python one at a fraction of the cost,
+# which matters to the callers that parse every page in a field.
+_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
@@ -93,7 +97,7 @@ def _load(raw_meta: str) -> dict[str, Any]:
         FrontmatterError: If the block is not valid YAML or not a mapping.
     """
     try:
-        loaded = yaml.safe_load(raw_meta)
+        loaded = yaml.load(raw_meta, Loader=_LOADER)  # noqa: S506
     except yaml.YAMLError as error:
         msg = f"frontmatter is not valid YAML: {error}"
         raise FrontmatterError(msg) from error

@@ -372,6 +372,54 @@ def mark_superseded(path: Path, *, by: str) -> None:
     field.write_page(path, meta, body)
 
 
+def create(
+    directory: Path,
+    *,
+    title: str,
+    body: str,
+    now: str,
+    day: str,
+    summary: str | None = None,
+    supersedes: str | None = None,
+) -> Path:
+    """Create a draft spec, and mark the spec it replaces superseded.
+
+    The new spec is removed when the old one cannot be marked, so a returned path always
+    means both writes landed.
+
+    Args:
+        directory (Path): The project's specs folder.
+        title (str): The new spec's title.
+        body (str): The new spec's markdown body.
+        now (str): The creation timestamp.
+        day (str): The date the filename leads with.
+        summary (str | None): The summary a search result shows, or None for the opening
+            paragraph.
+        supersedes (str | None): The spec this one replaces, by name.
+
+    Returns:
+        Path: The new spec.
+
+    Raises:
+        SpecError: If the replaced spec is missing or unreadable, or cannot be marked.
+    """
+    old: Path | None = None
+    if supersedes is not None:
+        old = resolve_name(directory, supersedes)
+        load_for_edit(old)
+    path = field.new_document(
+        directory, title=title, body=body, now=now, day=day, status="draft", summary=summary
+    )
+    if old is not None:
+        try:
+            mark_superseded(old, by=path.name)
+        except (SpecError, field.PageError, OSError) as error:
+            path.unlink(missing_ok=True)
+            msg = f"could not mark {old.name} superseded, so {path.name} was removed: {error}"
+            raise SpecError(msg) from error
+    return path
+
+
 def status_problems(meta: Mapping[str, Any], *, filename: str, siblings: set[str]) -> list[str]:
     """List what is wrong with a spec's status, so `doctor` can suggest a fix.
 

@@ -34,7 +34,9 @@ class Resolution:
 
     slug: str | None
     registered: bool
+    project: registry.Project | None
     repo_root: Path | None
+    worktree_root: Path | None
     is_worktree: bool
 
 
@@ -63,13 +65,17 @@ def resolve(vault: Path, cwd: Path) -> Resolution:
         return Resolution(
             slug=None,
             registered=False,
+            project=None,
             repo_root=context.repo_root,
+            worktree_root=context.worktree_root,
             is_worktree=context.is_worktree,
         )
 
     return Resolution(
         slug=found.slug,
         registered=True,
+        project=found,
         repo_root=context.repo_root,
+        worktree_root=context.worktree_root,
         is_worktree=context.is_worktree,
     )

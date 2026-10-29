@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.metadata
 import json
 import os
 import sys
@@ -11,7 +10,7 @@ from typing import TYPE_CHECKING, NoReturn
 
 import typer
 import typer.core
-from nclutils import ask, pp
+from nclutils import pp
 
 # Typer vendors Click, so the `click` package's classes never match its errors.
 from typer._click import core as click_core
@@ -30,10 +29,12 @@ from sessionmemory.lib.resolve import resolve as resolve_project
 
 if TYPE_CHECKING:
     from sessionmemory.lib.embed import Embedder
+    from sessionmemory.lib.resolve import Resolution
 
 EMBEDDER_ENV_VAR = "SESSIONMEMORY_EMBEDDER"
 
 CWD_OPTION = typer.Option(None, "--cwd", "-C", help="Directory to resolve the project from.")
+JSON_OPTION = typer.Option(False, "--json", help="Emit JSON instead of prose.")  # noqa: FBT003
 
 
 # The two ways to name the vault, offered together whenever neither is set.
@@ -65,6 +66,8 @@ def _unknown_command_hint(message: str) -> str:
     A miss Typer can correct is a typo, so a newer release is only offered as the cause
     when no close match was suggested.
     """
+    import importlib.metadata
+
     try:
         version = importlib.metadata.version("sessionmemory")
     except importlib.metadata.PackageNotFoundError:
@@ -186,6 +189,9 @@ def answer(question: str, yes: str, no: str = "No, leave it alone") -> bool | No
     Returns:
         bool | None: True for yes, False for no, None when the person cancelled.
     """
+    # Imported here, since the prompt library costs every command tens of milliseconds to load.
+    from nclutils import ask
+
     picked = ask.choose_one_from_list(choices=[(yes, "yes"), (no, "no")], message=question)
     return None if picked is None else picked == "yes"
 
@@ -252,6 +258,23 @@ def ask_text(message: str) -> str | None:
         return None
 
 
+def configured_vault() -> Path:
+    """Return the configured vault root, initialized or not, or exit naming how to set it.
+
+    Returns:
+        Path: The resolved vault directory.
+
+    Raises:
+        Exit: When no vault root is configured or the configured one names a missing
+            directory.
+    """
+    try:
+        return vault_root()
+    except VaultNotConfiguredError as error:
+        pp.error(str(error), details=VAULT_FIX)
+        raise typer.Exit(1) from error
+
+
 def require_vault() -> Path:
     """Return an initialized vault root, or exit with the command that fixes it.
 
@@ -266,42 +289,35 @@ def require_vault() -> Path:
         Exit: When the variable is unset, names a missing directory, or names a
             directory that `sessionmemory init` has never touched.
     """
-    try:
-        vault = vault_root()
-    except VaultNotConfiguredError as error:
-        pp.error(str(error), details=VAULT_FIX)
-        raise typer.Exit(1) from error
+    vault = configured_vault()
+    if is_initialized(vault):
+        return vault
 
-    if not is_initialized(vault) and interactive():
+    if interactive():
         if offer_init(vault) is None:
-            pp.error(f"{vault} is not a vault")
-            raise typer.Exit(1)
+            fail(f"{vault} is not a vault")
         pp.success(f"initialized {vault}")
         return vault
 
-    if not is_initialized(vault):
-        # An empty directory is the ordinary bootstrap case, and `sessionmemory init` is safe
-        # for a caller, human or agent, to run there. A non-empty directory holding no
-        # marker is different: initializing it is a one-time human decision about a
-        # specific path, never something to hand an agent as its next action, so that
-        # case is described rather than phrased as a `run:` instruction to follow.
-        if is_empty(vault):
-            pp.error(f"{vault} is not a vault", details=["run: sessionmemory init"])
-            raise typer.Exit(1)
+    # An empty directory is the ordinary bootstrap case, and `sessionmemory init` is safe
+    # for a caller, human or agent, to run there. A non-empty directory holding no
+    # marker is different: initializing it is a one-time human decision about a
+    # specific path, never something to hand an agent as its next action, so that
+    # case is described rather than phrased as a `run:` instruction to follow.
+    if is_empty(vault):
+        fail(f"{vault} is not a vault", ["run: sessionmemory init"])
 
-        pp.error(
-            f"{vault} is not an initialized vault",
-            details=[
-                "it holds files but no _system/vault.toml marker",
-                (
-                    "if this is an existing vault, a human can initialize it once by "
-                    "hand with: sessionmemory init --force"
-                ),
-            ],
-        )
-        raise typer.Exit(1)
-
-    return vault
+    pp.error(
+        f"{vault} is not an initialized vault",
+        details=[
+            "it holds files but no _system/vault.toml marker",
+            (
+                "if this is an existing vault, a human can initialize it once by "
+                "hand with: sessionmemory init --force"
+            ),
+        ],
+    )
+    raise typer.Exit(1)
 
 
 def fail(message: str, details: list[str] | None = None) -> NoReturn:
@@ -314,7 +330,7 @@ def fail(message: str, details: list[str] | None = None) -> NoReturn:
     Raises:
         Exit: Always, with code 1.
     """
-    pp.error(message, details=details if details is not None else [])
+    pp.error(message, details=details or [])
     raise typer.Exit(1)
 
 
@@ -333,6 +349,61 @@ def report_malformed_registry(vault: Path, error: registry.RegistryError) -> NoR
     raise typer.Exit(1) from error
 
 
+def target_dir(cwd: Path | None) -> Path:
+    """Return the directory a `--cwd` option names, or the shell's, resolved.
+
+    Args:
+        cwd (Path | None): The `--cwd` value.
+
+    Returns:
+        Path: The resolved directory.
+    """
+    return (cwd or Path.cwd()).resolve()
+
+
+def resolve_or_exit(vault: Path, target: Path) -> Resolution:
+    """Resolve which project `target` belongs to, exiting on a malformed registry.
+
+    Args:
+        vault (Path): The vault root.
+        target (Path): The directory to resolve.
+
+    Returns:
+        Resolution: The match, or an unregistered result.
+    """
+    try:
+        return resolve_project(vault, target)
+    except registry.RegistryError as error:
+        report_malformed_registry(vault, error)
+
+
+def require_registered(vault: Path, cwd: Path | None = None) -> tuple[str, Resolution]:
+    """Return the current project's slug and what git said resolving it, or exit.
+
+    Args:
+        vault (Path): The vault root.
+        cwd (Path | None): The directory to resolve, or None for the shell's.
+
+    Returns:
+        tuple[str, Resolution]: The resolved project slug, and the resolution it came from.
+
+    Raises:
+        Exit: When the working directory is not a registered project.
+    """
+    target = target_dir(cwd)
+    resolved = resolve_or_exit(vault, target)
+    if resolved.slug is not None:
+        return resolved.slug, resolved
+    if not interactive():
+        fail("this directory is not a registered project", ["run: sessionmemory project register"])
+    # Imported here, since the project command imports this module.
+    from sessionmemory.commands.project import offer_registration
+
+    if offer_registration(vault, target):
+        return require_registered(vault, target)
+    fail("this directory is not a registered project")
+
+
 def require_project(vault: Path, cwd: Path | None = None) -> str:
     """Return the current project's slug, or exit with instructions.
 
@@ -342,28 +413,5 @@ def require_project(vault: Path, cwd: Path | None = None) -> str:
 
     Returns:
         str: The resolved project slug.
-
-    Raises:
-        Exit: When the working directory is not a registered project.
     """
-    try:
-        result = resolve_project(vault, (cwd if cwd is not None else Path.cwd()).resolve())
-    except registry.RegistryError as error:
-        report_malformed_registry(vault, error)
-
-    if not result.registered or result.slug is None:
-        if interactive():
-            # Imported here, since the project command imports this module.
-            from sessionmemory.commands.project import offer_registration
-
-            target = (cwd if cwd is not None else Path.cwd()).resolve()
-            if offer_registration(vault, target):
-                return require_project(vault, target)
-            pp.error("this directory is not a registered project")
-            raise typer.Exit(1)
-        pp.error(
-            "this directory is not a registered project",
-            details=["run: sessionmemory project register"],
-        )
-        raise typer.Exit(1)
-    return result.slug
+    return require_registered(vault, cwd)[0]

@@ -10,6 +10,7 @@ from nclutils import pp
 
 from sessionmemory.commands._common import (
     CWD_OPTION,
+    JSON_OPTION,
     build_embedder,
     emit_json,
     fail,
@@ -19,11 +20,10 @@ from sessionmemory.commands._common import (
 from sessionmemory.lib import fieldindex, paths
 
 ALL = typer.Option(False, "--all", help="Reindex every project in the vault.")  # noqa: FBT003
-JSON = typer.Option(False, "--json", help="Emit JSON instead of prose.")  # noqa: FBT003
 
 
 def reindex_command(
-    cwd: Path | None = CWD_OPTION, *, all_projects: bool = ALL, as_json: bool = JSON
+    cwd: Path | None = CWD_OPTION, *, all_projects: bool = ALL, as_json: bool = JSON_OPTION
 ) -> None:
     """Bring this project's learnings, logs, and specs indexes up to date, or every project's.
 
@@ -40,11 +40,7 @@ def reindex_command(
         ]
     else:
         slug = require_project(vault, cwd)
-        fields = [
-            (slug, paths.LEARNINGS_DIR, paths.learnings_dir(vault, slug)),
-            (slug, paths.LOGS_DIR, paths.logs_dir(vault, slug)),
-            (slug, paths.SPECS_DIR, paths.specs_dir(vault, slug)),
-        ]
+        fields = [(slug, directory.name, directory) for directory in paths.index_dirs(vault, slug)]
     embedder = build_embedder()
 
     if as_json:

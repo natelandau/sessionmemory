@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+# Typer resolves annotations from the module's globals to build its CLI.
+from pathlib import Path  # noqa: TC003
+from typing import TYPE_CHECKING
 
 import typer
 from nclutils import pp
@@ -10,19 +12,21 @@ from nclutils import pp
 from sessionmemory.commands import _common
 from sessionmemory.commands._common import (
     CWD_OPTION,
+    JSON_OPTION,
     VersionedGroup,
     emit_json,
     fail,
     report_malformed_registry,
     require_vault,
+    resolve_or_exit,
+    target_dir,
 )
 from sessionmemory.lib import paths as paths_lib
-from sessionmemory.lib import registry
+from sessionmemory.lib import registration, registry
 from sessionmemory.lib.config import today
-from sessionmemory.lib.gitinfo import git_context
-from sessionmemory.lib.ids import slugify
-from sessionmemory.lib.resolve import Resolution
-from sessionmemory.lib.resolve import resolve as resolve_project
+
+if TYPE_CHECKING:
+    from sessionmemory.lib.resolve import Resolution
 
 app = typer.Typer(
     cls=VersionedGroup,
@@ -30,7 +34,6 @@ app = typer.Typer(
     help="Show this directory's project, or register it.",
 )
 
-JSON_OPTION = typer.Option(False, "--json", help="Emit JSON instead of prose.")  # noqa: FBT003
 SLUG_OPTION = typer.Option(
     None, "--slug", help="Name the project instead of deriving it from the remote or directory."
 )
@@ -41,121 +44,11 @@ DEPRECATED_REGISTER_OPTION = typer.Option(False, "--register", hidden=True)  # n
 DEPRECATED_MARK_REVIEWED_OPTION = typer.Option(False, "--mark-reviewed", hidden=True)  # noqa: FBT003
 
 
-def _target(cwd: Path | None) -> Path:
-    """Return the directory to operate on.
-
-    Args:
-        cwd (Path | None): An explicit directory, or None for the current one.
-
-    Returns:
-        Path: The resolved directory.
-    """
-    return (cwd or Path.cwd()).resolve()
-
-
-def _slug_from_remotes(remotes: tuple[str, ...]) -> str | None:
-    """Return the repository name from the first normalized remote.
-
-    The remote is preferred over the directory name because a checkout can be renamed
-    or cloned into a differently named directory while the remote stays put.
-
-    Args:
-        remotes (tuple[str, ...]): Normalized remote keys, as `host/owner/name`.
-
-    Returns:
-        str | None: The repository name, or None when there are no remotes.
-    """
-    for remote in remotes:
-        name = remote.rstrip("/").rsplit("/", 1)[-1]
-        if name:
-            return name
-    return None
-
-
-def _derived_slug(remotes: tuple[str, ...], root: Path) -> str:
-    """Slugify the best name available for a project the caller did not name.
-
-    A derived slug has to satisfy the same rule an explicit `--slug` must already meet,
-    since either becomes a directory name under `projects/`. Explicit input is refused
-    rather than corrected because a caller must not silently get a slug it did not ask
-    for, but a remote or directory name has no caller to surprise, so it is slugified:
-    `My.Repo` becomes `my-repo`. A remote is preferred over the directory name because a
-    checkout can be renamed while the remote stays put, and the directory name is the
-    only source a project outside git has.
-
-    Args:
-        remotes (tuple[str, ...]): Normalized remote keys, as `host/owner/name`.
-        root (Path): The project root being registered.
-
-    Returns:
-        str: The slug to register under.
-
-    Raises:
-        Exit: When neither the remote nor the directory name yields a slug.
-    """
-    for candidate in (_slug_from_remotes(remotes), root.name):
-        if not candidate:
-            continue
-        try:
-            return slugify(candidate)
-        except ValueError:
-            continue
-
-    pp.error(
-        f"cannot derive a slug from {root.name or str(root)!r}",
-        details=["name it explicitly, for example: --slug my-project"],
-    )
-    raise typer.Exit(1)
-
-
-def _require_slug_form(slug: str) -> None:
-    """Refuse a `--slug` that is not already the form the vault files projects under.
-
-    An explicit value is rejected rather than quietly corrected: a caller that asked
-    for one slug must not silently end up with another, and the slug becomes a
-    directory name under `projects/`, so anything outside the slug alphabet is either a
-    path escape or a name that will not match its own notes.
-
-    Args:
-        slug (str): The value passed to `--slug`.
-
-    Raises:
-        Exit: When the value is blank or is not its own slugification.
-    """
-    if not slug.strip():
-        pp.error("--slug must not be empty")
-        raise typer.Exit(1)
-
+def _load(vault: Path) -> dict[str, registry.Project]:
     try:
-        normalized: str | None = slugify(slug)
-    except ValueError:
-        normalized = None
-
-    if normalized != slug:
-        pp.error(
-            "--slug must be lowercase letters, digits, and hyphens",
-            details=[f"try: --slug {normalized}"] if normalized else [],
-        )
-        raise typer.Exit(1)
-
-
-def _entry_root(vault: Path, slug: str, fallback: Path) -> str:
-    """Return the root the registry records for `slug`.
-
-    A directory outside git resolves by longest path prefix, so the directory asked
-    about is routinely several levels below the one the entry was registered at, and
-    reporting the former would name a root the registry does not hold.
-
-    Args:
-        vault (Path): The vault root.
-        slug (str): The project the entry belongs to.
-        fallback (Path): The directory asked about, for an entry that has since gone.
-
-    Returns:
-        str: The recorded root.
-    """
-    entry = registry.load(vault).get(slug)
-    return entry.root if entry else str(fallback)
+        return registry.load(vault)
+    except registry.RegistryError as error:
+        report_malformed_registry(vault, error)
 
 
 def _report(
@@ -183,35 +76,25 @@ def _report(
     Raises:
         Exit: With code 1 when the directory is not registered.
     """
-    result = resolved
-    if result is None:
-        try:
-            result = resolve_project(vault, target)
-        except registry.RegistryError as error:
-            report_malformed_registry(vault, error)
-
-    project_paths = (
-        paths_lib.project_paths(vault, result.slug) if result.registered and result.slug else {}
-    )
-
-    payload = {
-        "slug": result.slug,
-        "registered": result.registered,
-        "repo_root": str(result.repo_root) if result.repo_root else None,
-        "is_worktree": result.is_worktree,
-        "project_dir": (
-            str(paths_lib.project_dir(vault, result.slug))
-            if result.registered and result.slug
-            else None
-        ),
-        "paths": project_paths,
-    }
+    result = resolved or resolve_or_exit(vault, target)
+    project_paths = paths_lib.project_paths(vault, result.slug) if result.slug else {}
 
     if as_json:
-        emit_json(payload)
-    elif result.registered:
-        headline = f"{action} {result.slug!r}" if action else result.slug or ""
-        root = _entry_root(vault, result.slug, target) if result.slug else str(target)
+        emit_json(
+            {
+                "slug": result.slug,
+                "registered": result.registered,
+                "repo_root": str(result.repo_root) if result.repo_root else None,
+                "is_worktree": result.is_worktree,
+                "project_dir": project_paths.get("project_dir"),
+                "paths": project_paths,
+            }
+        )
+    elif result.slug:
+        headline = f"{action} {result.slug!r}" if action else result.slug
+        # A directory outside git resolves by longest path prefix, so the directory asked
+        # about can sit below the root the registry records, which is the one shown.
+        root = result.project.root if result.project else target
         pp.success(headline, details=[f"root: {root}"])
     else:
         pp.error(
@@ -223,110 +106,7 @@ def _report(
         raise typer.Exit(1)
 
 
-def _register(
-    vault: Path,
-    target: Path,
-    slug: str | None,
-) -> None:
-    """Record this directory in the vault registry.
-
-    Args:
-        vault (Path): The vault root.
-        target (Path): The directory to register.
-        slug (str | None): An explicit slug, or None to derive one.
-
-    Raises:
-        Exit: When the target is not an existing directory, when git could not determine
-            whether it is a repository, when it is a bare repository, when it is already
-            registered, when its slug is already in use, or when no slug can be derived
-            from its remote or its directory name.
-    """
-    # A slug is permanent and its notes have to be moved by hand, so a mistyped --cwd is
-    # the one accident registration must not accept.
-    if not target.is_dir():
-        pp.error(
-            f"{target} is not a directory",
-            details=["--cwd takes a directory that exists"],
-        )
-        raise typer.Exit(1)
-
-    context = git_context(target)
-
-    # An entry recorded while git was unavailable stays wrong once git works again: a
-    # repository would be filed as a plain directory, with no remote and the wrong root.
-    if not context.git_answered:
-        pp.error(
-            f"cannot tell whether {target} is a git repository",
-            details=[
-                "git did not answer: it may be missing, or it may refuse this directory",
-                "fix that first, since a slug is permanent once notes carry it",
-            ],
-        )
-        raise typer.Exit(1)
-
-    # A bare repository has no working tree, so no working directory belongs to it and
-    # nothing filed under it could ever be resolved back.
-    if context.is_bare:
-        pp.error(
-            f"{target} is a bare repository",
-            details=["register a working checkout instead"],
-        )
-        raise typer.Exit(1)
-
-    # A directory outside git has no remote and no repository root, so the directory
-    # itself is the only key it can be registered and resolved under.
-    root = context.repo_root or target
-
-    slug = _chosen_slug(vault, context.remotes, root, slug)
-
-    # Held from load to save, so a registration racing this one cannot be lost.
-    with registry.locked(vault):
-        try:
-            projects = registry.load(vault)
-        except registry.RegistryError as error:
-            report_malformed_registry(vault, error)
-
-        existing = registry.find_by_remote(projects, context.remotes) or registry.find_by_root(
-            projects, str(root)
-        )
-        if existing:
-            pp.error(f"already registered as {existing.slug!r}")
-            raise typer.Exit(1)
-
-        resolved_slug = slug if slug is not None else _derived_slug(context.remotes, root)
-        if resolved_slug in projects:
-            pp.error(f"slug {resolved_slug!r} is already in use; pass --slug")
-            raise typer.Exit(1)
-
-        # Read before the new entry is inserted, or it would match itself.
-        enclosing = registry.find_by_path_prefix(projects, str(root))
-
-        projects[resolved_slug] = registry.Project(
-            slug=resolved_slug,
-            remotes=context.remotes,
-            root=str(root),
-        )
-        registry.save(vault, projects)
-
-    # The folder is created here rather than on the first page write because the
-    # plugin's sweep runs inside it, and a project's first sweep is what writes its
-    # first page.
-    for field in paths_lib.FIELD_DIRS:
-        (paths_lib.project_dir(vault, resolved_slug) / field).mkdir(parents=True, exist_ok=True)
-
-    # Registering inside another project is legitimate, but an accidental one looks
-    # exactly like a deliberate one, so the nesting is reported rather than assumed.
-    if enclosing is not None:
-        pp.warning(
-            f"{root} sits inside project {enclosing.slug!r}",
-            details=[
-                f"{resolved_slug!r} now wins for paths under {root}",
-                f"remove it from the registry if you meant to use {enclosing.slug!r}",
-            ],
-        )
-
-
-def _free_slug(vault: Path, remotes: tuple[str, ...], root: Path, slug: str | None) -> str | None:
+def _free_slug(vault: Path, found: registration.Candidate, slug: str | None) -> str | None:
     """Ask a person at a terminal for another slug while the one in hand is taken.
 
     The registry is read without its lock, since a person may take a while to answer;
@@ -339,24 +119,17 @@ def _free_slug(vault: Path, remotes: tuple[str, ...], root: Path, slug: str | No
     Raises:
         Exit: When the person cancels the prompt.
     """
-    try:
-        projects = registry.load(vault)
-    except registry.RegistryError as error:
-        report_malformed_registry(vault, error)
-    if registry.find_by_remote(projects, remotes) or registry.find_by_root(projects, str(root)):
+    projects = _load(vault)
+    if registration.existing(projects, found):
         return slug
-    wanted = slug if slug is not None else _derived_slug(remotes, root)
+    wanted = slug if slug is not None else registration.derive_slug(found)
     problem = f"slug {wanted!r} is already in use"
     while wanted in projects:
         pp.warning(problem)
         answer = _common.ask_text("Another slug for this project")
         if answer is None:
             raise typer.Exit(1)
-        try:
-            normalized: str | None = slugify(answer)
-        except ValueError:
-            normalized = None
-        if normalized != answer:
+        if registration.as_slug(answer) != answer:
             problem = f"{answer!r} is not a slug: use lowercase letters, digits, and hyphens"
             continue
         wanted = answer
@@ -364,17 +137,42 @@ def _free_slug(vault: Path, remotes: tuple[str, ...], root: Path, slug: str | No
     return wanted
 
 
-def _chosen_slug(vault: Path, remotes: tuple[str, ...], root: Path, slug: str | None) -> str | None:
-    """Check an explicit slug's form, and on a terminal swap a taken slug for a free one.
+def _register(vault: Path, found: registration.Candidate, slug: str | None) -> None:
+    """Record a directory in the vault registry, on a terminal swapping a taken slug.
 
-    Returns:
-        str | None: The slug to register under, or None to derive one.
+    Raises:
+        Exit: When the slug is malformed or taken, the directory is already registered,
+            or no slug can be derived from its remote or its directory name.
     """
-    if slug is not None:
-        _require_slug_form(slug)
-    if _common.interactive():
-        return _free_slug(vault, remotes, root, slug)
-    return slug
+    try:
+        if slug is not None:
+            registration.check_slug(slug)
+        if _common.interactive():
+            slug = _free_slug(vault, found, slug)
+        registered = registration.record(vault, found, slug)
+    except registration.RegistrationError as error:
+        fail(error.message, error.details)
+    except registry.RegistryError as error:
+        report_malformed_registry(vault, error)
+
+    # Registering inside another project is legitimate, but an accidental one looks
+    # exactly like a deliberate one, so the nesting is reported rather than assumed.
+    if registered.enclosing is not None:
+        enclosing = registered.enclosing.slug
+        pp.warning(
+            f"{found.root} sits inside project {enclosing!r}",
+            details=[
+                f"{registered.slug!r} now wins for paths under {found.root}",
+                f"remove it from the registry if you meant to use {enclosing!r}",
+            ],
+        )
+
+
+def _candidate(target: Path) -> registration.Candidate:
+    try:
+        return registration.candidate(target)
+    except registration.RegistrationError as error:
+        fail(error.message, error.details)
 
 
 def offer_registration(vault: Path, target: Path) -> bool:
@@ -387,12 +185,15 @@ def offer_registration(vault: Path, target: Path) -> bool:
     Returns:
         bool: True when the person agreed and the directory is now registered.
     """
-    context = git_context(target)
-    slug = _derived_slug(context.remotes, context.repo_root or target)
+    found = _candidate(target)
+    try:
+        slug = registration.derive_slug(found)
+    except registration.RegistrationError as error:
+        fail(error.message, error.details)
     question = f"{target} is not a registered project. Register it as {slug!r}?"
     if not _common.confirm(question=question, yes="Yes, register it"):
         return False
-    _register(vault, target, None)
+    _register(vault, found, None)
     return True
 
 
@@ -432,14 +233,11 @@ def project_command(
         pp.warning("--mark-reviewed is deprecated; run: sessionmemory project mark-reviewed")
         mark_reviewed_command(cwd=cwd, as_json=as_json)
     else:
-        vault, target = require_vault(), _target(cwd)
+        vault, target = require_vault(), target_dir(cwd)
         action: str | None = None
         resolved: Resolution | None = None
         if not as_json and _common.interactive():
-            try:
-                resolved = resolve_project(vault, target)
-            except registry.RegistryError as error:
-                report_malformed_registry(vault, error)
+            resolved = resolve_or_exit(vault, target)
             if not resolved.registered and offer_registration(vault, target):
                 action, resolved = "registered", None
         _report(vault, target, action, as_json=as_json, resolved=resolved)
@@ -459,8 +257,8 @@ def register_command(
             registered, or its slug is taken or cannot be derived.
     """
     vault = require_vault()
-    target = _target(cwd)
-    _register(vault, target, slug)
+    target = target_dir(cwd)
+    _register(vault, _candidate(target), slug)
     _report(vault, target, "registered", as_json=as_json)
 
 
@@ -472,13 +270,10 @@ def mark_reviewed_command(cwd: Path | None = CWD_OPTION, *, as_json: bool = JSON
         Exit: With code 1 when the directory has no project.
     """
     vault = require_vault()
-    target = _target(cwd)
+    target = target_dir(cwd)
     action: str | None = None
-    try:
-        resolved = resolve_project(vault, target)
-    except registry.RegistryError as error:
-        report_malformed_registry(vault, error)
-    if resolved.registered and resolved.slug:
+    resolved = resolve_or_exit(vault, target)
+    if resolved.slug:
         registry.mark_reviewed(vault, resolved.slug, today())
         action = "reviewed"
     _report(vault, target, action, as_json=as_json, resolved=resolved)

@@ -44,6 +44,7 @@ import contextlib
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from enum import StrEnum
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from sessionmemory.lib import changes, field, paths
@@ -52,7 +53,6 @@ from sessionmemory.lib.frontmatter import FrontmatterError, parse
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from pathlib import Path
 
     from sessionmemory.lib.field import Page
 
@@ -101,6 +101,46 @@ class Context:
     vault: Path
     slug: str
     root: Path
+
+    @classmethod
+    def for_project(cls, vault: Path, slug: str, registered_root: str) -> Context:
+        """Build the context for a registered project, refusing a root git cannot reconcile.
+
+        Args:
+            vault (Path): The vault root.
+            slug (str): The project's slug.
+            registered_root (str): The root the registry records for the project.
+
+        Returns:
+            Context: The project's context.
+
+        Raises:
+            ContextError: When the root is blank, relative, or not a git repository.
+        """
+        # Path("") is the shell's directory, which would silently reconcile the wrong tree.
+        if not registered_root or not Path(registered_root).is_absolute():
+            msg = "project has no registered root"
+            raise ContextError(msg, [f"registered root: {registered_root!r}"])
+        root = Path(registered_root)
+        if not Repository(root).is_repository():
+            msg = "project root is not a git repository"
+            raise ContextError(msg, [str(root)])
+        return cls(vault=vault, slug=slug, root=root)
+
+
+class ContextError(Exception):
+    """A project whose registered root cannot be reconciled."""
+
+    def __init__(self, message: str, details: list[str]) -> None:
+        """Create the error.
+
+        Args:
+            message (str): The one-line reason.
+            details (list[str]): Follow-up lines for the reader.
+        """
+        super().__init__(message)
+        self.message = message
+        self.details = details
 
 
 @dataclass

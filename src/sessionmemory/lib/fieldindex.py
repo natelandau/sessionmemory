@@ -19,10 +19,9 @@ import hashlib
 import json
 import sqlite3
 import statistics
+import struct
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
-
-import sqlite_vec
 
 from sessionmemory.lib import field, paths, specs
 
@@ -96,6 +95,9 @@ def connect(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     try:
         conn.row_factory = sqlite3.Row
+        # Imported here, since sqlite_vec pulls in numpy and most commands never open an index.
+        import sqlite_vec
+
         conn.enable_load_extension(True)  # noqa: FBT003
         sqlite_vec.load(conn)
         conn.enable_load_extension(False)  # noqa: FBT003
@@ -105,6 +107,11 @@ def connect(path: Path) -> sqlite3.Connection:
         conn.close()
         raise
     return conn
+
+
+def _vector_bytes(vector: list[float]) -> bytes:
+    """Pack a vector as the float32 bytes sqlite-vec reads, matching its `serialize_float32`."""
+    return struct.pack(f"{len(vector)}f", *vector)
 
 
 def _open(path: Path) -> sqlite3.Connection:
@@ -191,7 +198,7 @@ def _refresh(conn: sqlite3.Connection, field_dir: Path, embedder: Embedder) -> R
         "INSERT OR REPLACE INTO pages (filename, frontmatter, last_modified, sha256_hash, embedding)"
         " VALUES (?, ?, ?, ?, ?)",
         [
-            (name, meta, modified, digest, sqlite_vec.serialize_float32(vector))
+            (name, meta, modified, digest, _vector_bytes(vector))
             for (name, meta, modified, digest, _text), vector in zip(pending, vectors, strict=True)
         ],
     )
@@ -213,14 +220,29 @@ def refresh(field_dir: Path, embedder: Embedder) -> Refresh:
         conn.close()
 
 
+def default_cutoffs(field_dir: Path) -> tuple[float, float]:
+    """Return the measured `max_distance` and `min_margin` for searching `field_dir`.
+
+    Args:
+        field_dir (Path): The directory searched.
+
+    Returns:
+        tuple[float, float]: The distance cutoff and the margin, the specs pair for
+            `specs/` and the fields' pair for the rest.
+    """
+    if _is_specs(field_dir):
+        return SPECS_MAX_DISTANCE, SPECS_MIN_MARGIN
+    return DEFAULT_MAX_DISTANCE, DEFAULT_MIN_MARGIN
+
+
 def search(
     field_dir: Path,
     embedder: Embedder,
     query: str,
     *,
     limit: int,
-    max_distance: float = DEFAULT_MAX_DISTANCE,
-    min_margin: float = DEFAULT_MIN_MARGIN,
+    max_distance: float | None = None,
+    min_margin: float | None = None,
     exclude: Callable[[dict[str, Any]], bool] | None = None,
 ) -> list[Hit]:
     """Return the pages that stand out as nearest to `query`, nearest first, refreshing the index first.
@@ -228,18 +250,23 @@ def search(
     A hit sits within `max_distance` and at least `min_margin` nearer than the field's
     median page. A cutoff rather than a bare top-k, so a query nothing answers returns
     nothing instead of the nearest pages dressed up as hits. A `min_margin` of 0 leaves
-    only the absolute cutoff. `exclude` drops a page by its frontmatter after the median
-    is measured, so a dropped page never uses up `limit`.
+    only the absolute cutoff. Either left as None takes the measured default for the
+    directory searched, since specs were measured apart from the fields. `exclude` drops a
+    page by its frontmatter after the median is measured, so a dropped page never uses up
+    `limit`.
     """
     if not field_dir.is_dir():
         return []
+    default_distance, default_margin = default_cutoffs(field_dir)
+    max_distance = default_distance if max_distance is None else max_distance
+    min_margin = default_margin if min_margin is None else min_margin
     conn = _open(index_path(field_dir, embedder))
     try:
         _refresh(conn, field_dir, embedder)
         rows = conn.execute(
             "SELECT filename, frontmatter, vec_distance_cosine(embedding, ?) AS distance"
             " FROM pages ORDER BY distance",
-            (sqlite_vec.serialize_float32(embedder.encode_query(query)),),
+            (_vector_bytes(embedder.encode_query(query)),),
         ).fetchall()
     finally:
         conn.close()

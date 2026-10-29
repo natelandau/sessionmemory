@@ -76,7 +76,7 @@ def test_delete_prose_reports_a_missing_path(workspace):
 def test_delete_a_page_outside_any_field_directory_skips_the_index(workspace):
     """Verify deleting a file that is not in a field directory never touches the index.
 
-    A backlog file, for example, has no index row to forget; only `paths.FIELD_DIRS`
+    A backlog file, for example, has no index row to forget; only `paths.INDEX_DIRS`
     directories carry one.
     """
     vault, _ = workspace

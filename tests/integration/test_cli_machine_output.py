@@ -23,7 +23,7 @@ ESCAPE = b"\x1b["
 
 # argv[0] would be the console script in real use, but running the entry point through
 # the interpreter needs no assumption about where the script was installed.
-CLI = [sys.executable, "-c", "from sessionmemory.cli import main; main()"]
+CLI = [sys.executable, "-c", "from sessionmemory.entry import main; main()"]
 
 # What the repository owner's shell exports. FORCE_COLOR alone is not enough: rich also
 # needs a terminal type it can name a color system for.

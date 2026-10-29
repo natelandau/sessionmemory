@@ -150,12 +150,13 @@ def _git_safe_env() -> dict[str, str]:
     return {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
 
 
-def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+def _git(cwd: Path, *args: str, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
     """Run git in `cwd`.
 
     Args:
         cwd (Path): The directory to run in.
         *args: Arguments passed to git.
+        input_text (str | None): Text for git's standard input, or None to inherit it.
 
     Returns:
         subprocess.CompletedProcess[str]: The finished process, whatever its exit code.
@@ -163,7 +164,7 @@ def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
     Raises:
         LocalMdError: When git cannot be run or does not finish in time.
     """
-    done = gitinfo.run_git(cwd, *args, env=_git_safe_env())
+    done = gitinfo.run_git(cwd, *args, env=_git_safe_env(), input_text=input_text)
     if done is None:
         command = next((arg for arg in args if not arg.startswith("-")), args[0])
         msg = f"git could not run in {cwd}"
@@ -203,13 +204,16 @@ class Entry:
         return f"{_CHECKOUT_CLAUDE}/{self.name}"
 
 
-def checkout(vault: Path, slug: str, cwd: Path) -> Checkout:
+def checkout(vault: Path, slug: str, cwd: Path, worktree: Path | None = None) -> Checkout:
     """Locate the work tree holding `cwd` and the vault's `local/` folder for `slug`.
 
     Args:
         vault (Path): The vault root.
         slug (str): The project's slug.
         cwd (Path): Any directory inside the checkout.
+        worktree (Path | None): The work tree's top level when the caller already asked
+            git for it, so git is not asked again. Ignored while a `GIT_` variable is set,
+            since the caller's answer was not given under `_git_safe_env`.
 
     Returns:
         Checkout: The work tree's top level and the project it belongs to.
@@ -217,13 +221,15 @@ def checkout(vault: Path, slug: str, cwd: Path) -> Checkout:
     Raises:
         LocalMdError: When `cwd` is not inside a git work tree.
     """
-    done = _git(cwd, "rev-parse", "--show-toplevel")
-    toplevel = done.stdout.strip()
-    if done.returncode != 0 or not toplevel:
-        msg = f"{cwd} is not inside a git work tree"
-        raise LocalMdError(msg)
+    if worktree is None or any(key.startswith("GIT_") for key in os.environ):
+        done = _git(cwd, "rev-parse", "--show-toplevel")
+        toplevel = done.stdout.strip()
+        if done.returncode != 0 or not toplevel:
+            msg = f"{cwd} is not inside a git work tree"
+            raise LocalMdError(msg)
+        worktree = Path(toplevel).resolve()
     return Checkout(
-        worktree=Path(toplevel).resolve(),
+        worktree=worktree,
         vault=vault,
         slug=slug,
         local=paths.local_dir(vault, slug),
@@ -270,6 +276,65 @@ def declined(co: Checkout) -> localdeclined.Declined:
         localdeclined.Declined: The usable names and any problems in the file.
     """
     return localdeclined.read(co.local)
+
+
+def declinable(co: Checkout, raw: str, cwd: Path, present: list[str]) -> str:
+    """Return the entry name `raw` means, refusing one there is nothing to decline for.
+
+    A name this checkout lacks is still accepted, since another checkout may hold it.
+
+    Args:
+        co (Checkout): The checkout the name is read against.
+        raw (str): The name or path as typed.
+        cwd (Path): The directory a relative path is read from.
+        present (list[str]): The names of this checkout's entries.
+
+    Returns:
+        str: The entry's name.
+
+    Raises:
+        LocalMdError: When `raw` names no entry, differs only in case from one present,
+            is adopted only by name, or is already in the vault and not offered.
+    """
+    try:
+        item = resolve_adopt(co=co, raw=raw, cwd=cwd)
+        # A checkout copy identical to the vault's is offered by sync, so it can be declined.
+        offered = state(item) is State.DIVERGED and identical(item)
+        in_vault = item.target.is_symlink() or item.target.exists()
+    except OSError as err:
+        msg = f"could not read {raw} in {co.worktree}: {err}"
+        raise LocalMdError(msg) from err
+    # candidates() compares names exactly, so a case-only spelling would silence nothing.
+    other = localmanifest.same_but_case(item.name, present)
+    if other is not None:
+        msg = f"{item.name} differs only in case from {other}"
+        raise LocalMdError(msg, [f"Decline it as {other}."])
+    if item.kind == "path":
+        msg = f"{item.name} is adopted only by name and is never offered, so there is nothing to decline"
+        raise LocalMdError(msg)
+    if in_vault and not offered:
+        msg = f"{item.name} is already in the vault, so there is nothing to decline"
+        raise LocalMdError(msg)
+    return item.name
+
+
+def decline(co: Checkout, names: list[str]) -> list[str]:
+    """Record entries the person declined, so `candidates` never offers them again.
+
+    Args:
+        co (Checkout): The checkout whose project's `local/` folder holds the list.
+        names (list[str]): Entry names such as `skills/<name>`.
+
+    Returns:
+        list[str]: The names that were not listed before.
+
+    Raises:
+        localdeclined.DeclinedError: When the list has problems or a name is not one an
+            adopt question can offer.
+    """
+    # Like every write under local/, so a global ignore cannot keep the list off git.
+    bootstrap.ensure_local_ignore(co.vault)
+    return localdeclined.add(co.local, names)
 
 
 def entry(co: Checkout, name: str) -> Entry:
@@ -435,8 +500,13 @@ def _listed(co: Checkout) -> list[Entry]:
     return [path_entry(co, relpath) for relpath in manifest(co).paths]
 
 
-def _vault_names(co: Checkout, *, shaped: bool = True) -> set[str]:
-    """Name the vault's entries of the right shape, or with `shaped` unset, the wrong one."""
+def _vault_names(
+    co: Checkout, *, shaped: bool = True, listed: list[Entry] | None = None
+) -> set[str]:
+    """Name the vault's entries of the right shape, or with `shaped` unset, the wrong one.
+
+    `listed` is the manifest's entries when the caller already read them.
+    """
     found = {
         name
         for name, (kind, path) in _names_in(co.local, _VAULT_CLAUDE).items()
@@ -444,14 +514,14 @@ def _vault_names(co: Checkout, *, shaped: bool = True) -> set[str]:
     }
     found.update(
         item.name
-        for item in _listed(co)
+        for item in (_listed(co) if listed is None else listed)
         if (item.target.is_symlink() or item.target.exists())
         and _present(item.target, item.kind) is shaped
     )
     return found
 
 
-def _checkout_names(co: Checkout) -> set[str]:
+def _checkout_names(co: Checkout, listed: list[Entry]) -> set[str]:
     """Name each checkout entry that is a symlink or of its kind's shape.
 
     A plain file among the skills is not a skill, so it is never offered for adoption.
@@ -462,9 +532,7 @@ def _checkout_names(co: Checkout) -> set[str]:
         if path.is_symlink() or _present(path, kind)
     }
     found.update(
-        item.name
-        for item in _listed(co)
-        if item.link.is_symlink() or _present(item.link, item.kind)
+        item.name for item in listed if item.link.is_symlink() or _present(item.link, item.kind)
     )
     return found
 
@@ -483,7 +551,9 @@ def entries(co: Checkout) -> list[Entry]:
         list[Entry]: The entries, `CLAUDE.local.md` first, then skills, then rules, each
             by name.
     """
-    return _sorted(entry(co, name) for name in _vault_names(co) | _checkout_names(co))
+    listed = _listed(co)
+    names = _vault_names(co, listed=listed) | _checkout_names(co, listed)
+    return _sorted(entry(co, name) for name in names)
 
 
 def vault_entries(co: Checkout) -> list[Entry]:
@@ -582,6 +652,21 @@ def contents_match(item: Entry) -> bool | None:
     if item.link.is_dir() and item.target.is_dir():
         return localtree.same_tree(item.link, item.target)
     return None
+
+
+def identical(item: Entry) -> bool:
+    """Report whether the checkout copy matches the vault copy, reading an unreadable one as no.
+
+    Args:
+        item (Entry): The entry to inspect.
+
+    Returns:
+        bool: True only when both copies exist and match.
+    """
+    try:
+        return contents_match(item) is True
+    except OSError:
+        return False
 
 
 def _kind_folder(co: Checkout, kind: Kind) -> Path:
@@ -703,6 +788,31 @@ def ignored(co: Checkout, item: Entry) -> bool:
         msg = f"git check-ignore failed in {co.worktree}"
         raise LocalMdError(msg, [done.stderr.strip()] if done.stderr.strip() else [])
     return done.returncode == 0
+
+
+def ignored_names(co: Checkout, items: list[Entry]) -> set[str]:
+    """Name the entries whose link path git already ignores, in one git call.
+
+    Args:
+        co (Checkout): The checkout to inspect.
+        items (list[Entry]): The entries to check, none behind a blocked `.claude/`.
+
+    Returns:
+        set[str]: The names of entries `git check-ignore` matches.
+
+    Raises:
+        LocalMdError: When git fails for any reason other than "none ignored".
+    """
+    by_path = {item.relpath: item.name for item in items}
+    if not by_path:
+        return set()
+    done = _git(
+        co.worktree, "check-ignore", "--stdin", "-z", input_text="".join(f"{p}\0" for p in by_path)
+    )
+    if done.returncode not in (0, 1):
+        msg = f"git check-ignore failed in {co.worktree}"
+        raise LocalMdError(msg, [done.stderr.strip()] if done.stderr.strip() else [])
+    return {by_path[path] for path in done.stdout.split("\0") if path in by_path}
 
 
 _GLOB_CHARS = re.compile(r"([\[\]*?\\])")
@@ -1702,7 +1812,17 @@ def settings_pending(co: Checkout, *, tracked: bool) -> SettingsPending | None:
     )
 
 
-def keep_settings(co: Checkout, side: Literal["checkout", "vault"], *, tracked: bool) -> Path:
+@dataclass(frozen=True)
+class KeptSettings:
+    """Where the kept settings copy now lives, and whether keeping it wrote anything."""
+
+    path: Path
+    written: bool
+
+
+def keep_settings(
+    co: Checkout, side: Literal["checkout", "vault"], *, tracked: bool
+) -> KeptSettings:
     """Write the chosen settings copy over the other one, as the person decided.
 
     Args:
@@ -1711,7 +1831,8 @@ def keep_settings(co: Checkout, side: Literal["checkout", "vault"], *, tracked: 
         tracked (bool): Whether git tracks the settings path.
 
     Returns:
-        Path: The path that now holds the kept copy's content.
+        KeptSettings: The path that now holds the kept copy's content, and False for
+            `written` when the two copies already matched.
 
     Raises:
         LocalMdError: When the entry is tracked, behind a blocked `.claude/`, a symlink,
@@ -1738,7 +1859,7 @@ def keep_settings(co: Checkout, side: Literal["checkout", "vault"], *, tracked: 
         msg = f"the {side} has no {SETTINGS_NAME} to keep"
         raise LocalMdError(msg, [f"Nothing is at {source}."])
     if current is CopyState.SAME:
-        return dest
+        return KeptSettings(path=dest, written=False)
     data = source.read_bytes()
     # The replacement takes the umask default, and the file can hold `env` secrets, so a
     # new copy takes the source's mode rather than a world-readable one.
@@ -1751,4 +1872,4 @@ def keep_settings(co: Checkout, side: Literal["checkout", "vault"], *, tracked: 
     ensure_ignored(co, item)
     atomic.write_bytes(dest, data)
     dest.chmod(mode)
-    return dest
+    return KeptSettings(path=dest, written=True)

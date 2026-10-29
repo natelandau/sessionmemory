@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
 PROJECTS_DIR = "projects"
@@ -28,6 +29,7 @@ LOCAL_DIR = "local"
 LOCAL_MD_FILE = "CLAUDE.local.md"
 
 FIELD_DIRS: tuple[str, ...] = (LEARNINGS_DIR, LOGS_DIR)
+INDEX_DIRS: tuple[str, ...] = (*FIELD_DIRS, SPECS_DIR)
 
 
 def project_dir(vault: Path, slug: str) -> Path:
@@ -80,22 +82,31 @@ def legacy_local_md_path(vault: Path, slug: str) -> Path:
     return project_dir(vault, slug) / LOCAL_MD_FILE
 
 
+_PROJECT_PATHS: dict[str, Callable[[Path, str], Path]] = {
+    "project_dir": project_dir,
+    LEARNINGS_DIR: learnings_dir,
+    LOGS_DIR: logs_dir,
+    SPECS_DIR: specs_dir,
+    PLANS_DIR: plans_dir,
+    RUNBOOKS_DIR: runbooks_dir,
+    REFERENCE_DIR: reference_dir,
+    "backlog": backlog_path,
+    LOCAL_DIR: local_dir,
+}
+PROJECT_PATH_KEYS: tuple[str, ...] = tuple(_PROJECT_PATHS)
+
+
 def project_paths(vault: Path, slug: str) -> dict[str, str]:
     """Return every path a caller of `sessionmemory project --json` reads, by its payload key.
 
     The keys are what `sessionmemory project --json` emits and the plugin's hooks read.
     """
-    return {
-        "project_dir": str(project_dir(vault, slug)),
-        "learnings": str(learnings_dir(vault, slug)),
-        "logs": str(logs_dir(vault, slug)),
-        "specs": str(specs_dir(vault, slug)),
-        "plans": str(plans_dir(vault, slug)),
-        "runbooks": str(runbooks_dir(vault, slug)),
-        "reference": str(reference_dir(vault, slug)),
-        "backlog": str(backlog_path(vault, slug)),
-        "local": str(local_dir(vault, slug)),
-    }
+    return {key: str(locate(vault, slug)) for key, locate in _PROJECT_PATHS.items()}
+
+
+def index_dirs(vault: Path, slug: str) -> list[Path]:
+    """Return one project's indexed directories, learnings, logs, then specs, existing or not."""
+    return [project_dir(vault, slug) / name for name in INDEX_DIRS]
 
 
 def iter_project_slugs(vault: Path) -> list[str]:
@@ -119,8 +130,8 @@ def iter_field_dirs(vault: Path) -> list[Path]:
 def iter_index_dirs(vault: Path) -> list[Path]:
     """Return every existing indexed directory, sorted by project then learnings, logs, specs."""
     return [
-        project_dir(vault, slug) / name
+        directory
         for slug in iter_project_slugs(vault)
-        for name in (*FIELD_DIRS, SPECS_DIR)
-        if (project_dir(vault, slug) / name).is_dir()
+        for directory in index_dirs(vault, slug)
+        if directory.is_dir()
     ]

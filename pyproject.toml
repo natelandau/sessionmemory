@@ -15,7 +15,7 @@
     version = "0.16.0"
 
     [project.scripts]
-        sessionmemory = "sessionmemory.cli:main"
+        sessionmemory = "sessionmemory.entry:main"
 
 [dependency-groups]
     dev = [

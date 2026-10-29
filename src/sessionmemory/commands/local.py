@@ -2,28 +2,30 @@
 
 from __future__ import annotations
 
+import contextlib
 import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 import typer
-from nclutils import ask, pp
+from nclutils import pp
 
 from sessionmemory.commands import _common
 from sessionmemory.commands._common import (
     CWD_OPTION,
+    JSON_OPTION,
     VersionedGroup,
     emit_json,
     emit_value,
     fail,
-    require_project,
+    require_registered,
     require_vault,
 )
-from sessionmemory.lib import bootstrap, localdeclined, localmanifest, localmd, paths
+from sessionmemory.lib import localdeclined, localmanifest, localmd, paths
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Generator
 
 app = typer.Typer(
     cls=VersionedGroup,
@@ -31,7 +33,6 @@ app = typer.Typer(
     help="Keep private files such as CLAUDE.local.md in the vault and sync them to checkouts.",
 )
 
-JSON = typer.Option(False, "--json", help="Emit JSON instead of prose.")  # noqa: FBT003
 ADOPT_NAMES = typer.Argument(
     ...,
     help=(
@@ -67,19 +68,32 @@ def _checkout(cwd: Path | None) -> localmd.Checkout:
         localmd.Checkout: The checkout holding `cwd`.
     """
     vault = require_vault()
-    slug = require_project(vault=vault, cwd=cwd)
+    slug, resolved = require_registered(vault=vault, cwd=cwd)
     try:
-        return localmd.checkout(vault=vault, slug=slug, cwd=cwd if cwd is not None else Path.cwd())
+        return localmd.checkout(
+            vault=vault,
+            slug=slug,
+            cwd=_common.target_dir(cwd),
+            worktree=resolved.worktree_root,
+        )
     except localmd.LocalMdError as err:
         fail(err.message, details=err.details)
 
 
-def _warn_legacy(co: localmd.Checkout, legacy: Path) -> None:
-    """Name both vault copies of CLAUDE.local.md when they differ and neither was moved."""
-    pp.warning(
-        localmd.legacy_conflict(legacy=legacy, target=co.local / paths.LOCAL_MD_FILE),
-        details=[localmd.KEEP_ONE],
-    )
+@contextlib.contextmanager
+def _or_fail(co: localmd.Checkout, doing: str) -> Generator[None]:
+    """Exit on a library or filesystem error, naming what was being done to the checkout.
+
+    Args:
+        co (localmd.Checkout): The checkout being worked on.
+        doing (str): What failed, as in "could not <doing> the entries of <worktree>".
+    """
+    try:
+        yield
+    except localmd.LocalMdError as err:
+        fail(err.message, details=err.details)
+    except OSError as err:
+        fail(f"could not {doing} the entries of {co.worktree}: {err}")
 
 
 def _migrate(co: localmd.Checkout) -> None:
@@ -88,8 +102,12 @@ def _migrate(co: localmd.Checkout) -> None:
         legacy = localmd.migrate_legacy(vault=co.vault, slug=co.slug)
     except OSError as err:
         fail(f"could not move the vault's old {paths.LOCAL_MD_FILE} into {co.local}: {err}")
+    # Both vault copies of CLAUDE.local.md differ, so neither was moved.
     if legacy is not None:
-        _warn_legacy(co=co, legacy=legacy)
+        pp.warning(
+            localmd.legacy_conflict(legacy=legacy, target=co.local / paths.LOCAL_MD_FILE),
+            details=[localmd.KEEP_ONE],
+        )
 
 
 Side = Literal["checkout", "vault"]
@@ -168,27 +186,27 @@ def _ask_settings(pending: localmd.SettingsPending) -> Side | None:
             f"What each copy of {pending.relpath} has that the other lacks:",
             details=list(pending.summary),
         )
-    choices: list[tuple[str, Side | Literal["neither"]]] = [
-        (f"local (modified {pending.checkout_mtime})", "checkout"),
-        (f"vault (modified {pending.vault_mtime})", "vault"),
-        ("exit (leave both as they are)", "neither"),
-    ]
-    side = ask.choose_one_from_list(
-        choices=choices,
-        message=f"{pending.relpath} differs between this checkout and the vault. Which copy wins?",
+    return _which(
+        f"{pending.relpath} differs between this checkout and the vault. Which copy wins?",
+        [
+            (f"local (modified {pending.checkout_mtime})", "checkout"),
+            (f"vault (modified {pending.vault_mtime})", "vault"),
+        ],
     )
-    return side if side in {"checkout", "vault"} else None
 
 
 _EXIT = "exit (leave both as they are)"
 
 
-def _which(question: str, choices: list[tuple[str, Settle]]) -> Settle | None:
+def _which[A: str](question: str, choices: list[tuple[str, A]]) -> A | None:
     """Ask which of two copies wins, offering exit as the last answer.
 
     Returns:
-        Settle | None: The chosen action, or None for exit or a cancel.
+        A | None: The chosen action, or None for exit or a cancel.
     """
+    # Imported here, like `_common.answer`, so only a run that asks pays for it.
+    from nclutils import ask
+
     answer = ask.choose_one_from_list(choices=[*choices, (_EXIT, "exit")], message=question)
     return next((action for _, action in choices if action == answer), None)
 
@@ -381,9 +399,7 @@ def _decline(co: localmd.Checkout, names: list[str]) -> list[str] | None:
         list[str] | None: The names newly recorded, or None when nothing could be written.
     """
     try:
-        # Like every write under local/, so a global ignore cannot keep the list off git.
-        bootstrap.ensure_local_ignore(co.vault)
-        return localdeclined.add(co.local, names)
+        return localmd.decline(co, names)
     except localdeclined.DeclinedError as err:
         pp.error(err.message, details=err.details)
     except OSError as err:
@@ -400,21 +416,19 @@ def _keep(co: localmd.Checkout, side: Side, tracked: set[str]) -> tuple[Path | N
     """
     item = localmd.settings_entry(co)
     try:
-        current = localmd.copy_state(co=co, item=item, tracked=item.name in tracked)
-        written = localmd.keep_settings(co=co, side=side, tracked=item.name in tracked)
+        kept = localmd.keep_settings(co=co, side=side, tracked=item.name in tracked)
     except localmd.LocalMdError as err:
         pp.error(err.message, details=err.details)
         return None, False
     except OSError as err:
         pp.error(f"could not copy {item.name}: {err}")
         return None, False
-    changed = current is not localmd.CopyState.SAME
-    if side == "vault" and changed:
+    if side == "vault" and kept.written:
         pp.warning(
             "Claude Code read its settings before this ran; start a new session before "
             "approving anything so it does not write the old copy back"
         )
-    return written, changed
+    return kept.path, kept.written
 
 
 _SETTLED: dict[Settle, Callable[[localmd.Entry], str]] = {
@@ -491,16 +505,9 @@ class _Done:
             self.notices.append(text)
 
 
-def _link_warning(result: localmd.LinkResult) -> None:
-    """Explain a conflict and the remedy that fits its cause.
-
-    Args:
-        result (localmd.LinkResult): A `conflict` result from `link_all`.
-    """
-    pp.warning(
-        result.reason or f"{result.entry.name} was not linked",
-        details=[result.remedy] if result.remedy else [],
-    )
+def _adopted(result: localmd.AdoptResult) -> str:
+    verb = "was already linked to" if result.already_linked else "moved into"
+    return f"{result.entry.relpath} {verb} the vault"
 
 
 def _report_links(results: list[localmd.LinkResult]) -> None:
@@ -509,7 +516,10 @@ def _report_links(results: list[localmd.LinkResult]) -> None:
         if result.status == "created":
             emit_value(str(result.entry.link))
         elif result.status == "conflict":
-            _link_warning(result)
+            pp.warning(
+                result.reason or f"{result.entry.name} was not linked",
+                details=[result.remedy] if result.remedy else [],
+            )
         elif result.status == "tracked":
             pp.warning(f"{result.entry.link} is tracked by git; the vault copy stays in the vault")
         elif result.status == "removed":
@@ -586,7 +596,7 @@ class _Report:
     declined_path: Path
     manifest_problems: tuple[str, ...] = ()
 
-    def payload(self, plan: _Plan) -> dict[str, object]:
+    def payload(self) -> dict[str, object]:
         """Build the `--json` payload; `settings` only when `--keep-settings` ran."""
         payload: dict[str, object] = {
             "entries": _link_rows(self.results),
@@ -597,8 +607,8 @@ class _Report:
             "manifest_problems": list(self.manifest_problems),
             "declined_problems": list(self.declined.problems),
         }
-        if plan.keep is not None and self.done.kept is not None:
-            payload["settings"] = {"kept": plan.keep, "path": str(self.done.kept)}
+        if self.done.kept is not None:
+            payload["settings"] = {"kept": self.done.kept_side, "path": str(self.done.kept)}
         return payload
 
     @property
@@ -630,8 +640,7 @@ class _Report:
             else:
                 pp.success(f"linked {result.entry.relpath} from the vault")
         for result in self.done.adopted:
-            verb = "was already linked to" if result.already_linked else "moved into"
-            pp.success(f"{result.entry.relpath} {verb} the vault")
+            pp.success(_adopted(result))
         if self.done.kept is not None:
             source, dest = (
                 ("this checkout's", "the vault's")
@@ -661,7 +670,7 @@ class _Report:
 )
 def sync_command(
     keep_settings: Side | None = KEEP_SETTINGS,
-    as_json: bool = JSON,  # noqa: FBT001
+    as_json: bool = JSON_OPTION,  # noqa: FBT001
     cwd: Path | None = CWD_OPTION,
 ) -> None:
     """Link the vault's entries into this checkout, then settle what the person chooses.
@@ -670,14 +679,10 @@ def sync_command(
         Exit: When an entry is in conflict, or an adopt or keep the person chose failed.
     """
     co = _checkout(cwd)
-    try:
+    with _or_fail(co, "link"):
         # One listing of git's index serves linking, the pending report, and every answer.
         tracked = localmd.tracked_all(co)
         results = localmd.link_all(co, tracked=tracked)
-    except localmd.LocalMdError as err:
-        fail(err.message, details=err.details)
-    except OSError as err:
-        fail(f"could not link the entries of {co.worktree}: {err}")
 
     problems = localmd.manifest(co).problems
     if problems:
@@ -720,7 +725,9 @@ def sync_command(
         | {
             r.entry.name
             for r in results
-            if r.status == "conflict" and r.entry.name in declined.names and _identical(r.entry)
+            if r.status == "conflict"
+            and r.entry.name in declined.names
+            and localmd.identical(r.entry)
         }
     )
     results = [
@@ -740,7 +747,7 @@ def sync_command(
         declined_path=co.local / localdeclined.DECLINED_NAME,
     )
     if as_json:
-        emit_json(report.payload(plan))
+        emit_json(report.payload())
     elif ask_inline:
         report.terminal()
     else:
@@ -755,7 +762,7 @@ def sync_command(
 )
 def adopt_command(
     names: list[str] = ADOPT_NAMES,
-    as_json: bool = JSON,  # noqa: FBT001
+    as_json: bool = JSON_OPTION,  # noqa: FBT001
     cwd: Path | None = CWD_OPTION,
 ) -> None:
     """Move entries from this checkout into the vault and link each one back.
@@ -765,12 +772,8 @@ def adopt_command(
     """
     co = _checkout(cwd)
     _migrate(co)
-    try:
+    with _or_fail(co, "read"):
         tracked = localmd.tracked_all(co)
-    except localmd.LocalMdError as err:
-        fail(err.message, details=err.details)
-    except OSError as err:
-        fail(f"could not read the entries of {co.worktree}: {err}")
     done = _Done()
     # A relative path reads from the shell's directory, not --cwd, as a shell would.
     done.carry_out(co=co, plan=_Plan(adopt=names), tracked=tracked)
@@ -786,8 +789,7 @@ def adopt_command(
         )
     elif _common.interactive():
         for result in done.adopted:
-            verb = "was already linked to" if result.already_linked else "moved into"
-            pp.success(f"{result.entry.relpath} {verb} the vault")
+            pp.success(_adopted(result))
         for notice in done.notices:
             pp.info(notice)
     else:
@@ -799,55 +801,15 @@ def adopt_command(
         raise typer.Exit(1)
 
 
-def _identical(item: localmd.Entry) -> bool:
-    """Report whether the checkout copy matches the vault copy, reading an unreadable one as no."""
+def _declinable(co: localmd.Checkout, raw: str, cwd: Path, present: list[str]) -> str | None:
+    """Return the entry name `raw` means, or None after reporting why it cannot be declined."""
     try:
-        return localmd.contents_match(item) is True
-    except OSError:
-        return False
-
-
-def _declinable(co: localmd.Checkout, raw: str, cwd: Path, names: list[str]) -> str | None:
-    """Return the entry name `raw` means, reporting why it cannot be declined.
-
-    A name this checkout lacks is still accepted, since another checkout may hold it.
-
-    Args:
-        co (localmd.Checkout): The checkout the name is read against.
-        raw (str): The name or path as typed.
-        cwd (Path): The directory a relative path is read from.
-        names (list[str]): The names of this checkout's entries.
-
-    Returns:
-        str | None: The entry's name, or None when it was refused.
-    """
-    try:
-        item = localmd.resolve_adopt(co=co, raw=raw, cwd=cwd)
-        # A checkout copy identical to the vault's is offered by sync, so it can be declined.
-        offered = localmd.state(item) is localmd.State.DIVERGED and _identical(item)
-        in_vault = item.target.is_symlink() or item.target.exists()
+        return localmd.declinable(co=co, raw=raw, cwd=cwd, present=present)
     except localmd.LocalMdError as err:
         pp.error(err.message, details=err.details)
-        return None
     except OSError as err:
         pp.error(f"could not read {raw} in {co.worktree}: {err}")
-        return None
-    # candidates() compares names exactly, so a case-only spelling would silence nothing.
-    other = localmanifest.same_but_case(item.name, names)
-    if other is not None:
-        pp.error(
-            f"{item.name} differs only in case from {other}", details=[f"Decline it as {other}."]
-        )
-        return None
-    if item.kind == "path":
-        pp.error(
-            f"{item.name} is adopted only by name and is never offered, so there is nothing to decline"
-        )
-        return None
-    if in_vault and not offered:
-        pp.error(f"{item.name} is already in the vault, so there is nothing to decline")
-        return None
-    return item.name
+    return None
 
 
 @app.command(
@@ -856,7 +818,7 @@ def _declinable(co: localmd.Checkout, raw: str, cwd: Path, names: list[str]) -> 
 )
 def decline_command(
     names: list[str] = DECLINE_NAMES,
-    as_json: bool = JSON,  # noqa: FBT001
+    as_json: bool = JSON_OPTION,  # noqa: FBT001
     cwd: Path | None = CWD_OPTION,
 ) -> None:
     """Record entries the person keeps out of the vault, so no checkout offers them again.
@@ -866,14 +828,10 @@ def decline_command(
     """
     co = _checkout(cwd)
     _migrate(co)
-    try:
+    with _or_fail(co, "read"):
         present = [item.name for item in localmd.entries(co)]
-    except localmd.LocalMdError as err:
-        fail(err.message, details=err.details)
-    except OSError as err:
-        fail(f"could not read the entries of {co.worktree}: {err}")
     # A relative path reads from the shell's directory, not --cwd, as a shell would.
-    resolved = [_declinable(co=co, raw=raw, cwd=Path.cwd(), names=present) for raw in names]
+    resolved = [_declinable(co=co, raw=raw, cwd=Path.cwd(), present=present) for raw in names]
     wanted = [name for name in resolved if name is not None]
     added = _decline(co, wanted) if wanted else []
     if as_json:
@@ -901,7 +859,14 @@ def _flags(row: dict[str, object]) -> list[str]:
     return flags
 
 
-def _status_row(co: localmd.Checkout, item: localmd.Entry, *, tracked: bool) -> dict[str, object]:
+def _status_row(
+    item: localmd.Entry,
+    *,
+    tracked: bool,
+    ignored: bool | None,
+    state: str,
+    match: bool | None,
+) -> dict[str, object]:
     """Describe one entry for `status`, in the shape `--json` prints.
 
     Returns:
@@ -910,41 +875,17 @@ def _status_row(co: localmd.Checkout, item: localmd.Entry, *, tracked: bool) -> 
     return {
         "kind": item.kind,
         "name": item.name,
-        "state": str(localmd.state(item)),
+        "state": state,
         "link": str(item.link),
         "target": str(item.target),
-        # Git cannot be asked about a path behind a symlinked or non-folder `.claude/`.
-        "ignored": None if localmd.blocked(co=co, item=item) else localmd.ignored(co=co, item=item),
+        "ignored": ignored,
         "tracked": tracked,
-        "match": localmd.contents_match(item),
-    }
-
-
-def _settings_row(
-    co: localmd.Checkout, item: localmd.Entry, *, tracked: bool
-) -> dict[str, object] | None:
-    """Describe the settings entry for `status`, or None when neither side has a copy.
-
-    Returns:
-        dict[str, object] | None: The row, with the copy state in place of a link state.
-    """
-    current = localmd.copy_state(co=co, item=item, tracked=tracked)
-    if current is None:
-        return None
-    return {
-        "kind": item.kind,
-        "name": item.name,
-        "state": str(current),
-        "link": str(item.link),
-        "target": str(item.target),
-        "ignored": None if localmd.blocked(co=co, item=item) else localmd.ignored(co=co, item=item),
-        "tracked": tracked,
-        "match": None,
+        "match": match,
     }
 
 
 @app.command("status", help="Report how each of this checkout's entries relates to the vault.")
-def status_command(cwd: Path | None = CWD_OPTION, as_json: bool = JSON) -> None:  # noqa: FBT001
+def status_command(cwd: Path | None = CWD_OPTION, as_json: bool = JSON_OPTION) -> None:  # noqa: FBT001
     """Report how each of this checkout's entries relates to the vault.
 
     Raises:
@@ -952,18 +893,41 @@ def status_command(cwd: Path | None = CWD_OPTION, as_json: bool = JSON) -> None:
     """
     co = _checkout(cwd)
     _migrate(co)
-    try:
+    with _or_fail(co, "read"):
         items = localmd.entries(co)
         settings = localmd.settings_entry(co)
-        tracked = localmd.tracked_names(co=co, items=[*items, settings])
-        rows = [_status_row(co=co, item=item, tracked=item.name in tracked) for item in items]
-        settings_row = _settings_row(co=co, item=settings, tracked=settings.name in tracked)
-        if settings_row is not None:
-            rows.append(settings_row)
-    except localmd.LocalMdError as err:
-        fail(err.message, details=err.details)
-    except OSError as err:
-        fail(f"could not read the entries of {co.worktree}: {err}")
+        everything = [*items, settings]
+        tracked = localmd.tracked_names(co=co, items=everything)
+        # Git cannot be asked about a path behind a symlinked or non-folder `.claude/`.
+        askable = [item for item in everything if not localmd.blocked(co=co, item=item)]
+        ignored = localmd.ignored_names(co=co, items=askable)
+        asked = {item.name for item in askable}
+
+        def is_ignored(item: localmd.Entry) -> bool | None:
+            return item.name in ignored if item.name in asked else None
+
+        rows = [
+            _status_row(
+                item=item,
+                tracked=item.name in tracked,
+                ignored=is_ignored(item),
+                state=str(localmd.state(item)),
+                match=localmd.contents_match(item),
+            )
+            for item in items
+        ]
+        # The settings file is copied, never linked, so its copy state stands in.
+        copy_state = localmd.copy_state(co=co, item=settings, tracked=settings.name in tracked)
+        if copy_state is not None:
+            rows.append(
+                _status_row(
+                    item=settings,
+                    tracked=settings.name in tracked,
+                    ignored=is_ignored(settings),
+                    state=str(copy_state),
+                    match=None,
+                )
+            )
 
     if as_json:
         emit_json({"local": str(co.local), "entries": rows})

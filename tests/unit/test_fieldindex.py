@@ -288,6 +288,19 @@ def test_refresh_embeds_a_spec_by_its_derived_input(tmp_path, monkeypatch):
     assert seen == ["Pricing\n\nProblem"]
 
 
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("specs", (fieldindex.SPECS_MAX_DISTANCE, fieldindex.SPECS_MIN_MARGIN)),
+        ("learnings", (fieldindex.DEFAULT_MAX_DISTANCE, fieldindex.DEFAULT_MIN_MARGIN)),
+        ("logs", (fieldindex.DEFAULT_MAX_DISTANCE, fieldindex.DEFAULT_MIN_MARGIN)),
+    ],
+)
+def test_default_cutoffs_follow_the_directory(tmp_path, name, expected):
+    """Verify specs take their own measured cutoffs and the fields share theirs."""
+    assert fieldindex.default_cutoffs(tmp_path / name) == expected
+
+
 def test_search_in_specs_shows_the_derived_summary_and_status(tmp_path):
     """Verify a spec hit carries the hit summary and its status."""
     directory = tmp_path / "specs"

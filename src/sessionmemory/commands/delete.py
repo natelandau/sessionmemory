@@ -12,14 +12,19 @@ from typing import TYPE_CHECKING
 import typer
 from nclutils import pp
 
-from sessionmemory.commands._common import build_embedder, emit_json, fail, require_vault
+from sessionmemory.commands._common import (
+    JSON_OPTION,
+    build_embedder,
+    emit_json,
+    fail,
+    require_vault,
+)
 from sessionmemory.lib import fieldindex, paths
 
 if TYPE_CHECKING:
     from sessionmemory.lib.embed import Embedder
 
 PATHS = typer.Argument(..., help="Files to delete.")
-JSON = typer.Option(False, "--json", help="Emit JSON instead of prose.")  # noqa: FBT003
 
 
 def _check_vault_boundary(targets: list[Path], vault: Path) -> None:
@@ -41,14 +46,14 @@ def _delete_targets(targets: list[Path]) -> list[dict[str, object]]:
         deleted = absolute.is_file()
         if deleted:
             absolute.unlink()
-            if absolute.parent.name in paths.FIELD_DIRS:
+            if absolute.parent.name in paths.INDEX_DIRS:
                 embedder = embedder or build_embedder()
                 fieldindex.forget(absolute.parent, embedder, absolute.name)
         records.append({"path": str(target), "deleted": deleted})
     return records
 
 
-def delete_command(targets: list[Path] = PATHS, *, as_json: bool = JSON) -> None:
+def delete_command(targets: list[Path] = PATHS, *, as_json: bool = JSON_OPTION) -> None:
     """Delete files from the vault, dropping a page's index row with it.
 
     Raises:
