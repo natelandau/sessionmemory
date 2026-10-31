@@ -1,3 +1,9 @@
+## v0.18.0 (2026-10-31)
+
+### Feat
+
+- **local**: support registered folders outside git
+
 ## v0.17.0 (2026-10-29)
 
 ### Feat
