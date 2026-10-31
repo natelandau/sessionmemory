@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from sessionmemory.lib import localdeclined, localmanifest, localmd, localtree, paths
+from sessionmemory.lib import localdeclined, localmanifest, localmd, localtree, paths, registry
 from sessionmemory.lib.localmd import LocalMdError, State
 
 NAME = paths.LOCAL_MD_FILE
@@ -48,8 +48,8 @@ def _vault_copy(md: localmd.Entry, text: str = "# local\n") -> None:
 
 def _track(co: localmd.Checkout, md: localmd.Entry, text: str = "committed\n") -> None:
     md.link.write_text(text)
-    _git("add", NAME, cwd=co.worktree)
-    _git("commit", "-q", "-m", "track", cwd=co.worktree)
+    _git("add", NAME, cwd=co.root)
+    _git("commit", "-q", "-m", "track", cwd=co.root)
 
 
 def _link(co: localmd.Checkout, md: localmd.Entry) -> localmd.LinkResult:
@@ -63,12 +63,12 @@ def _adopt(co: localmd.Checkout, md: localmd.Entry) -> localmd.AdoptResult:
 def _exclude(co: localmd.Checkout) -> Path:
     out = subprocess.run(
         ["git", "rev-parse", "--git-path", "info/exclude"],
-        cwd=co.worktree,
+        cwd=co.root,
         check=True,
         capture_output=True,
         text=True,
     ).stdout.strip()
-    return co.worktree / out
+    return co.root / out
 
 
 def test_checkout_uses_worktree_top_level(vault, repo, tmp_path):
@@ -90,8 +90,86 @@ def test_checkout_outside_git_raises(vault, tmp_path):
     plain = tmp_path / "plain"
     plain.mkdir()
 
-    with pytest.raises(LocalMdError):
+    with pytest.raises(LocalMdError, match="is not inside a git work tree"):
         localmd.checkout(vault, "demo", plain)
+
+
+@pytest.fixture
+def plain(tmp_path) -> Path:
+    """Build a folder outside any git work tree."""
+    root = tmp_path / "plain"
+    root.mkdir()
+    return root
+
+
+@pytest.fixture
+def plain_co(vault, plain) -> localmd.Checkout:
+    """Return the checkout for a project slugged demo registered at a folder outside git."""
+    return localmd.checkout(vault, "demo", plain, registered_root=plain)
+
+
+def test_checkout_in_git_sets_in_git(co):
+    """Verify a checkout inside a git work tree is marked as in git."""
+    assert co.in_git is True
+
+
+def test_checkout_outside_git_uses_the_registered_root(vault, plain):
+    """Verify a folder outside git roots its entries at the registered root, not the cwd."""
+    sub = plain / "a" / "b"
+    sub.mkdir(parents=True)
+
+    co = localmd.checkout(vault, "demo", sub, registered_root=plain)
+
+    assert co.root == plain.resolve()
+    assert co.in_git is False
+    assert localmd.entry(co, NAME).link == plain.resolve() / NAME
+
+
+def test_checkout_outside_git_ignores_git_env(vault, plain, repo, monkeypatch):
+    """Verify checkout ignores a GIT_DIR exported by a git hook for a plain folder."""
+    monkeypatch.setenv("GIT_DIR", str(repo / ".git"))
+
+    co = localmd.checkout(vault, "demo", plain, registered_root=plain)
+
+    assert (co.root, co.in_git) == (plain.resolve(), False)
+
+
+def test_git_only_steps_do_nothing_outside_git(plain_co, mocker):
+    """Verify outside git nothing is tracked, every link counts as hidden, and git is never asked."""
+    mocker.patch.object(localmd, "_git", autospec=True, side_effect=AssertionError("git ran"))
+    md = localmd.entry(plain_co, NAME)
+
+    assert localmd.tracked_names(plain_co, [md]) == set()
+    assert localmd.ignored(plain_co, md) is True
+    assert localmd.ignored_names(plain_co, [md]) is None
+    assert localmd.ensure_ignored(plain_co, md) is False
+
+
+def test_adopt_and_link_outside_git(plain_co):
+    """Verify adopting and relinking work in a folder outside git."""
+    md = localmd.entry(plain_co, NAME)
+    md.link.write_text("# workspace\n")
+
+    localmd.adopt(plain_co, md, tracked=False)
+
+    assert md.link.is_symlink()
+    assert md.target.read_text() == "# workspace\n"
+    md.link.unlink()
+    assert localmd.link(plain_co, md, tracked=False).status == "created"
+
+
+def test_links_made_outside_git_are_ignored_after_git_init(vault, plain, plain_co):
+    """Verify a folder that later becomes a repository gets ignore lines on the next link."""
+    md = localmd.entry(plain_co, NAME)
+    md.link.write_text("# workspace\n")
+    localmd.adopt(plain_co, md, tracked=False)
+    _git("init", "-q", ".", cwd=plain)
+
+    co = localmd.checkout(vault, "demo", plain)
+
+    assert co.in_git is True
+    assert _link(co, localmd.entry(co, NAME)).status == "present"
+    assert localmd.ignored(co, localmd.entry(co, NAME))
 
 
 def test_state_none(co, md):
@@ -400,7 +478,7 @@ def test_adopt_reports_relative_imports(co, md):
 
 def test_ensure_ignored_creates_info_dir(co, md):
     """Verify the exclude file is created when .git/info is missing."""
-    info = co.worktree / ".git" / "info"
+    info = co.root / ".git" / "info"
     if info.exists():
         for child in info.iterdir():
             child.unlink()
@@ -423,7 +501,7 @@ def test_ensure_ignored_adds_newline_before_entry(co, md):
 
 def test_ensure_ignored_skips_when_gitignore_covers_it(co, md):
     """Verify an existing ignore rule means no exclude write."""
-    (co.worktree / ".gitignore").write_text(f"{NAME}\n")
+    (co.root / ".gitignore").write_text(f"{NAME}\n")
 
     assert localmd.ensure_ignored(co, md) is False
     exclude = _exclude(co)
@@ -462,7 +540,9 @@ def test_ignored_raises_when_git_fails_outside_a_repository(tmp_path):
     """Verify a git fatal error is an error rather than "not ignored"."""
     plain = tmp_path / "plain"
     plain.mkdir()
-    co = localmd.Checkout(worktree=plain, vault=tmp_path, slug="demo", local=tmp_path / "local")
+    co = localmd.Checkout(
+        root=plain, in_git=True, vault=tmp_path, slug="demo", local=tmp_path / "local"
+    )
 
     with pytest.raises(LocalMdError):
         localmd.ignored(co, localmd.entry(co, NAME))
@@ -502,7 +582,7 @@ def test_link_creates_without_a_temporary_name(co, md, monkeypatch):
 
     assert _link(co, md).status == "created"
     assert localmd.state(md) is State.LINKED
-    assert not list(co.worktree.glob(".CLAUDE.local.md.*.tmp"))
+    assert not list(co.root.glob(".CLAUDE.local.md.*.tmp"))
 
 
 def test_link_reports_a_file_that_appears_before_the_link(co, md, monkeypatch):
@@ -544,7 +624,7 @@ def test_adopt_removes_a_copy_that_does_not_read_back(co, md, monkeypatch):
 
 def test_ensure_ignored_does_not_repeat_an_entry_a_gitignore_negates(co, md):
     """Verify an exclude entry overridden by a `.gitignore` negation is written once."""
-    (co.worktree / ".gitignore").write_text(f"!{NAME}\n")
+    (co.root / ".gitignore").write_text(f"!{NAME}\n")
 
     assert localmd.ensure_ignored(co, md) is True
     assert localmd.ensure_ignored(co, md) is False
@@ -638,7 +718,7 @@ def _vault_skill(co: localmd.Checkout, name: str = "a", text: str = "# skill\n")
 
 
 def _checkout_skill(co: localmd.Checkout, name: str = "a", text: str = "# skill\n") -> Path:
-    folder = co.worktree / ".claude" / "skills" / name
+    folder = co.root / ".claude" / "skills" / name
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "SKILL.md").write_text(text)
     return folder
@@ -651,10 +731,10 @@ def _names(entries: list[localmd.Entry]) -> list[str]:
 def test_entries_unions_vault_and_checkout(co):
     """Verify entries come from both sides, skip hidden names, and sort by kind."""
     _vault_skill(co, "a")
-    rules = co.worktree / ".claude" / "rules"
+    rules = co.root / ".claude" / "rules"
     rules.mkdir(parents=True)
     (rules / "b.md").write_text("rule\n")
-    (co.worktree / ".claude" / "skills" / ".hidden").mkdir(parents=True)
+    (co.root / ".claude" / "skills" / ".hidden").mkdir(parents=True)
 
     assert _names(localmd.entries(co)) == ["skills/a", "rules/b.md"]
 
@@ -676,17 +756,17 @@ def test_entry_paths_per_kind(co):
     """Verify each kind maps to its checkout path and its vault path."""
     skill = localmd.entry(co, "skills/a")
     assert skill.kind == "skill"
-    assert skill.link == co.worktree / ".claude" / "skills" / "a"
+    assert skill.link == co.root / ".claude" / "skills" / "a"
     assert skill.target == co.local / "claude" / "skills" / "a"
 
     rule = localmd.entry(co, "rules/b.md")
     assert rule.kind == "rule"
-    assert rule.link == co.worktree / ".claude" / "rules" / "b.md"
+    assert rule.link == co.root / ".claude" / "rules" / "b.md"
     assert rule.target == co.local / "claude" / "rules" / "b.md"
 
     md = localmd.entry(co, NAME)
     assert md.kind == "local-md"
-    assert md.link == co.worktree / NAME
+    assert md.link == co.root / NAME
     assert md.target == co.local / NAME
 
 
@@ -730,7 +810,7 @@ def test_state_skill_folder_unadopted_and_not_linked(co):
 def test_tracked_names_one_git_call(co, monkeypatch):
     """Verify one git call covers every entry, and a file under a folder marks it tracked."""
     tracked_file = _checkout_skill(co, "a") / "SKILL.md"
-    _git("add", str(tracked_file.relative_to(co.worktree)), cwd=co.worktree)
+    _git("add", str(tracked_file.relative_to(co.root)), cwd=co.root)
     calls: list[tuple[str, ...]] = []
     real_git = localmd._git
 
@@ -769,7 +849,7 @@ def _fail_if_called(*_args: object, **_kwargs: object) -> None:
 def test_tracked_names_does_not_match_a_name_prefix(co):
     """Verify a tracked `skills/ab` does not mark `skills/a` tracked."""
     tracked_file = _checkout_skill(co, "ab") / "SKILL.md"
-    _git("add", str(tracked_file.relative_to(co.worktree)), cwd=co.worktree)
+    _git("add", str(tracked_file.relative_to(co.root)), cwd=co.root)
     entries = [localmd.entry(co, "skills/a"), localmd.entry(co, "skills/ab")]
 
     assert localmd.tracked_names(co, entries) == {"skills/ab"}
@@ -811,7 +891,7 @@ def test_link_creates_missing_parent_folder(co):
     """Verify linking a skill creates `.claude/skills/` when it is missing."""
     _vault_skill(co, "a")
     skill = localmd.entry(co, "skills/a")
-    assert not (co.worktree / ".claude").exists()
+    assert not (co.root / ".claude").exists()
 
     assert localmd.link(co, skill, tracked=False).status == "created"
     assert skill.link.readlink() == skill.target
@@ -822,7 +902,7 @@ def test_link_tracked_entry_is_tracked_status_and_untouched(co, md, vault):
     _vault_skill(co, "a")
     _vault_copy(md, "vault\n")
     tracked_file = _checkout_skill(co, "a", "committed\n") / "SKILL.md"
-    _git("add", str(tracked_file.relative_to(co.worktree)), cwd=co.worktree)
+    _git("add", str(tracked_file.relative_to(co.root)), cwd=co.root)
     _track(co, md)
 
     results = localmd.link_all(co)
@@ -840,7 +920,7 @@ def test_link_tracked_entry_is_tracked_status_and_untouched(co, md, vault):
 def test_link_all_removes_dangling_link_into_local(co, vault):
     """Verify a dangling link into the project's local folder is removed."""
     _vault_skill(co, "a")
-    gone = co.worktree / ".claude" / "skills" / "gone"
+    gone = co.root / ".claude" / "skills" / "gone"
     gone.parent.mkdir(parents=True)
     gone.symlink_to(co.local / "claude" / "skills" / "gone")
 
@@ -852,7 +932,7 @@ def test_link_all_removes_dangling_link_into_local(co, vault):
 
 def test_link_all_keeps_dangling_link_elsewhere(co, vault, tmp_path):
     """Verify a dangling link pointing outside the local folder is left alone."""
-    elsewhere = co.worktree / ".claude" / "rules" / "x.md"
+    elsewhere = co.root / ".claude" / "rules" / "x.md"
     elsewhere.parent.mkdir(parents=True)
     elsewhere.symlink_to(tmp_path / "missing.md")
 
@@ -1067,7 +1147,7 @@ def test_adopt_refuses_tracked_skill(co):
 
 def test_adopt_rule_reports_relative_imports(co):
     """Verify a rule's relative imports are reported."""
-    rules = co.worktree / ".claude" / "rules"
+    rules = co.root / ".claude" / "rules"
     rules.mkdir(parents=True)
     (rules / "r.md").write_text("see @./x.md and @/abs.md\n")
     rule = localmd.entry(co, "rules/r.md")
@@ -1092,11 +1172,11 @@ def test_candidates_excludes_tracked_linked_foreign(co, tmp_path):
     _checkout_skill(co, "a")
     _vault_skill(co, "b")
     localmd.link(co, localmd.entry(co, "skills/b"), tracked=False)
-    foreign = co.worktree / ".claude" / "skills" / "c"
+    foreign = co.root / ".claude" / "skills" / "c"
     (tmp_path / "elsewhere").mkdir()
     foreign.symlink_to(tmp_path / "elsewhere")
     tracked_file = _checkout_skill(co, "d") / "SKILL.md"
-    _git("add", str(tracked_file.relative_to(co.worktree)), cwd=co.worktree)
+    _git("add", str(tracked_file.relative_to(co.root)), cwd=co.root)
     _vault_skill(co, "m")
     _checkout_skill(co, "m")
     _vault_skill(co, "n", "vault\n")
@@ -1118,8 +1198,8 @@ def test_link_all_refuses_entries_behind_a_symlinked_folder(co, md, vault, tmp_p
     """Verify a symlinked `.claude` or kind folder conflicts its entries while others link."""
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
-    (co.worktree / symlinked).parent.mkdir(parents=True, exist_ok=True)
-    (co.worktree / symlinked).symlink_to(elsewhere)
+    (co.root / symlinked).parent.mkdir(parents=True, exist_ok=True)
+    (co.root / symlinked).symlink_to(elsewhere)
     _vault_copy(md)
     _vault_skill(co, "a")
 
@@ -1137,7 +1217,7 @@ def test_candidates_skip_entries_behind_a_symlinked_folder(co, tmp_path):
     """Verify skills reached through a symlinked `.claude` are never offered."""
     elsewhere = tmp_path / "elsewhere"
     (elsewhere / "skills" / "b").mkdir(parents=True)
-    (co.worktree / ".claude").symlink_to(elsewhere)
+    (co.root / ".claude").symlink_to(elsewhere)
 
     assert localmd.candidates(co) == []
 
@@ -1146,7 +1226,7 @@ def test_adopt_refuses_entry_behind_a_symlinked_folder(co, tmp_path):
     """Verify adopt never moves a folder reached through a symlinked `.claude`."""
     elsewhere = tmp_path / "elsewhere"
     (elsewhere / "skills" / "b").mkdir(parents=True)
-    (co.worktree / ".claude").symlink_to(elsewhere)
+    (co.root / ".claude").symlink_to(elsewhere)
     skill = localmd.entry(co, "skills/b")
 
     with pytest.raises(LocalMdError, match="symlink"):
@@ -1162,8 +1242,8 @@ def test_remove_dangling_skips_a_symlinked_kind_folder(co, vault, tmp_path):
     elsewhere.mkdir()
     gone = elsewhere / "gone"
     gone.symlink_to(co.local / "claude" / "skills" / "gone")
-    (co.worktree / ".claude").mkdir()
-    (co.worktree / ".claude" / "skills").symlink_to(elsewhere)
+    (co.root / ".claude").mkdir()
+    (co.root / ".claude" / "skills").symlink_to(elsewhere)
 
     assert localmd.link_all(co) == []
     assert gone.is_symlink()
@@ -1175,7 +1255,7 @@ def test_link_all_isolates_a_malformed_vault_entry(co, vault):
     skills.mkdir(parents=True)
     (skills / "README.md").write_text("stray\n")
     _vault_skill(co, "good")
-    gone = co.worktree / ".claude" / "skills" / "gone"
+    gone = co.root / ".claude" / "skills" / "gone"
     gone.parent.mkdir(parents=True)
     gone.symlink_to(skills / "gone")
 
@@ -1191,8 +1271,8 @@ def test_link_all_isolates_a_malformed_vault_entry(co, vault):
 
 def test_link_all_conflicts_entries_under_a_file_kind_folder(co, md, vault):
     """Verify a regular file at `.claude/skills` conflicts skills and writes no exclude line."""
-    (co.worktree / ".claude").mkdir()
-    (co.worktree / ".claude" / "skills").write_text("not a folder\n")
+    (co.root / ".claude").mkdir()
+    (co.root / ".claude" / "skills").write_text("not a folder\n")
     _vault_copy(md)
     _vault_skill(co, "a")
 
@@ -1258,7 +1338,7 @@ def test_link_all_isolates_an_entry_whose_state_cannot_be_read(co, monkeypatch):
 def test_link_writes_no_exclude_line_when_the_folder_cannot_be_made(co, monkeypatch):
     """Verify a kind folder that cannot be created leaves no exclude line behind."""
     _vault_skill(co, "a")
-    skills = co.worktree / ".claude" / "skills"
+    skills = co.root / ".claude" / "skills"
     real_mkdir = Path.mkdir
 
     def failing_mkdir(self: Path, *args: object, **kwargs: object) -> None:
@@ -1278,7 +1358,7 @@ def test_link_writes_no_exclude_line_when_the_folder_cannot_be_made(co, monkeypa
 
 def test_a_file_among_checkout_skills_is_not_an_entry(co):
     """Verify a plain file in `.claude/skills/` is never read as a skill to adopt."""
-    skills = co.worktree / ".claude" / "skills"
+    skills = co.root / ".claude" / "skills"
     skills.mkdir(parents=True)
     (skills / "README.md").write_text("notes\n")
     _checkout_skill(co, "a")
@@ -1364,14 +1444,14 @@ def test_link_reason_for_a_blocked_folder_names_the_folder(co, tmp_path):
     """Verify an entry behind a symlinked `.claude` is told to fix that folder."""
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
-    (co.worktree / ".claude").symlink_to(elsewhere)
+    (co.root / ".claude").symlink_to(elsewhere)
     _vault_skill(co, "a")
 
     [result] = localmd.link_all(co)
 
     assert result.status == "conflict"
     assert result.reason is not None
-    assert str(co.worktree / ".claude" / "skills") in result.reason
+    assert str(co.root / ".claude" / "skills") in result.reason
     assert result.remedy is not None
     assert "adopt" not in result.remedy
 
@@ -1437,7 +1517,7 @@ def test_exclude_line_escapes_each_metacharacter(co, name, line):
 
 def test_adopt_rule_folder_reports_relative_imports_in_its_markdown(co):
     """Verify a rule folder's markdown files are scanned, and its other files are not."""
-    folder = co.worktree / ".claude" / "rules" / "team"
+    folder = co.root / ".claude" / "rules" / "team"
     folder.mkdir(parents=True)
     (folder / "a.md").write_text("see @./x.md\n")
     (folder / "notes.txt").write_text("see @./y.md\n")
@@ -1611,7 +1691,7 @@ def test_adopt_linked_entry_behind_a_symlinked_folder_names_the_folder(co, tmp_p
     """Verify an already linked entry behind a symlinked `.claude` is refused, not passed to git."""
     elsewhere = tmp_path / "elsewhere"
     (elsewhere / "skills").mkdir(parents=True)
-    (co.worktree / ".claude").symlink_to(elsewhere)
+    (co.root / ".claude").symlink_to(elsewhere)
     skill = localmd.entry(co, "skills/b")
     skill.target.mkdir(parents=True)
     (elsewhere / "skills" / "b").symlink_to(skill.target)
@@ -1623,7 +1703,7 @@ def test_adopt_linked_entry_behind_a_symlinked_folder_names_the_folder(co, tmp_p
 def test_link_all_reports_a_dangling_link_it_cannot_remove(co, vault, monkeypatch):
     """Verify a failed removal is a conflict and the other results are still returned."""
     _vault_skill(co, "a")
-    gone = co.worktree / ".claude" / "skills" / "gone"
+    gone = co.root / ".claude" / "skills" / "gone"
     gone.parent.mkdir(parents=True)
     gone.symlink_to(co.local / "claude" / "skills" / "gone")
     real_unlink = Path.unlink
@@ -1664,7 +1744,7 @@ def test_settings_entry_paths(co):
 
     assert item.kind == "settings"
     assert item.name == "settings.local.json"
-    assert item.link == co.worktree / ".claude" / "settings.local.json"
+    assert item.link == co.root / ".claude" / "settings.local.json"
     assert item.target == co.local / "claude" / "settings.local.json"
     assert item.mode == "copy"
     assert localmd.entry(co, "skills/a").mode == "link"
@@ -1692,10 +1772,10 @@ def test_copy_state_tracked_and_blocked(co, tmp_path):
     item = _settings(co, checkout="{}", vault='{"a": 1}')
     assert localmd.copy_state(co, item, tracked=True) is localmd.CopyState.TRACKED
 
-    shutil.rmtree(co.worktree / ".claude")
+    shutil.rmtree(co.root / ".claude")
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
-    (co.worktree / ".claude").symlink_to(elsewhere)
+    (co.root / ".claude").symlink_to(elsewhere)
     assert localmd.copy_state(co, item, tracked=False) is localmd.CopyState.BLOCKED
 
 
@@ -1703,7 +1783,7 @@ def test_copy_state_blocked_with_no_copies_is_none(co, tmp_path):
     """Verify a blocked .claude with no settings on either side reports nothing."""
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
-    (co.worktree / ".claude").symlink_to(elsewhere)
+    (co.root / ".claude").symlink_to(elsewhere)
 
     assert localmd.copy_state(co, localmd.settings_entry(co), tracked=False) is None
 
@@ -1811,7 +1891,7 @@ def test_keep_refuses_tracked_blocked_and_missing_side(co, tmp_path):
 
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
-    (co.worktree / ".claude").symlink_to(elsewhere)
+    (co.root / ".claude").symlink_to(elsewhere)
     with pytest.raises(LocalMdError):
         localmd.keep_settings(co, "vault", tracked=False)
     assert not (elsewhere / "settings.local.json").exists()
@@ -1906,21 +1986,21 @@ def test_keep_checkout_ignores_the_checkout_copy(co):
 
 def test_adopt_path_file_lists_it_and_links_back(co):
     """Verify adopting a file by path moves it under claude/, lists it, and links it."""
-    (co.worktree / ".claude").mkdir()
-    (co.worktree / ".claude" / "t.toml").write_text("a = 1\n")
+    (co.root / ".claude").mkdir()
+    (co.root / ".claude" / "t.toml").write_text("a = 1\n")
     item = localmd.path_entry(co, ".claude/t.toml")
 
     result = localmd.adopt(co, item, tracked=False)
 
     assert result.target == co.local / "claude" / "t.toml"
-    assert (co.worktree / ".claude" / "t.toml").is_symlink()
+    assert (co.root / ".claude" / "t.toml").is_symlink()
     assert localmd.manifest(co).paths == (".claude/t.toml",)
     assert result.relative_imports == []
 
 
 def test_adopt_path_folder_links_whole_folder(co):
     """Verify adopting a folder by path links the folder itself and skips the import scan."""
-    folder = co.worktree / ".claude" / "agents"
+    folder = co.root / ".claude" / "agents"
     folder.mkdir(parents=True)
     (folder / "a.md").write_text("see @./b.md\n")
 
@@ -1941,27 +2021,27 @@ def test_link_all_links_listed_path_and_creates_parent(co):
     results = localmd.link_all(co)
 
     assert [(r.entry.name, r.status) for r in results] == [("notes/private.md", "created")]
-    assert (co.worktree / "notes" / "private.md").resolve() == target.resolve()
+    assert (co.root / "notes" / "private.md").resolve() == target.resolve()
     assert "/notes/private.md" in _exclude(co).read_text()
 
 
 def test_link_all_removes_dangling_link_at_listed_path(co):
     """Verify a link at a listed path whose vault copy is gone is removed, the line kept."""
     localmanifest.add(co.local, ".claude/t.toml")
-    (co.worktree / ".claude").mkdir()
-    (co.worktree / ".claude" / "t.toml").symlink_to(co.local / "claude" / "t.toml")
+    (co.root / ".claude").mkdir()
+    (co.root / ".claude" / "t.toml").symlink_to(co.local / "claude" / "t.toml")
 
     results = localmd.link_all(co)
 
     assert [(r.entry.name, r.status) for r in results] == [(".claude/t.toml", "removed")]
-    assert not (co.worktree / ".claude" / "t.toml").is_symlink()
+    assert not (co.root / ".claude" / "t.toml").is_symlink()
     assert localmd.manifest(co).paths == (".claude/t.toml",)
 
 
 def test_readopt_linked_path_restores_lost_manifest_line(co):
     """Verify adopting a linked path again lists it when its manifest line was lost."""
-    (co.worktree / ".claude").mkdir()
-    (co.worktree / ".claude" / "t.toml").write_text("a = 1\n")
+    (co.root / ".claude").mkdir()
+    (co.root / ".claude" / "t.toml").write_text("a = 1\n")
     item = localmd.path_entry(co, ".claude/t.toml")
     localmd.adopt(co, item, tracked=False)
     (co.local / "entries.toml").unlink()
@@ -1974,14 +2054,14 @@ def test_readopt_linked_path_restores_lost_manifest_line(co):
 
 def test_adopt_path_refused_when_manifest_broken(co):
     """Verify a manifest with problems stops adopt before anything moves."""
-    (co.worktree / "x.txt").write_text("x\n")
+    (co.root / "x.txt").write_text("x\n")
     co.local.mkdir(parents=True)
     (co.local / "entries.toml").write_text("paths = 3\n")
 
     with pytest.raises(LocalMdError):
         localmd.adopt(co, localmd.path_entry(co, "x.txt"), tracked=False)
 
-    assert not (co.worktree / "x.txt").is_symlink()
+    assert not (co.root / "x.txt").is_symlink()
     assert not (co.local / "x.txt").exists()
 
 
@@ -1989,17 +2069,17 @@ def test_path_entry_blocked_by_symlinked_parent(co, tmp_path):
     """Verify a symlinked folder above a path entry blocks it and is named."""
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
-    (co.worktree / "notes").symlink_to(elsewhere)
+    (co.root / "notes").symlink_to(elsewhere)
     item = localmd.path_entry(co, "notes/private.md")
 
     assert localmd.blocked(co, item) is True
-    assert localmd.blocking_folder(co, item) == co.worktree / "notes"
+    assert localmd.blocking_folder(co, item) == co.root / "notes"
 
 
 def test_candidates_never_offer_path_entries(co):
     """Verify a listed path present only in the checkout is never offered."""
     localmanifest.add(co.local, "x.txt")
-    (co.worktree / "x.txt").write_text("x\n")
+    (co.root / "x.txt").write_text("x\n")
 
     assert localmd.candidates(co) == []
 
@@ -2025,16 +2105,16 @@ def test_entry_falls_back_to_path_entry(co):
 )
 def test_resolve_adopt_routes(co, raw, kind, name):
     """Verify a typed name or path resolves to the entry it means."""
-    item = localmd.resolve_adopt(co, raw, co.worktree)
+    item = localmd.resolve_adopt(co, raw, co.root)
 
     assert (item.kind, item.name) == (kind, name)
 
 
 def test_resolve_adopt_from_subdirectory(co):
     """Verify a relative path resolves against the shell's directory, not the top level."""
-    (co.worktree / ".claude").mkdir()
+    (co.root / ".claude").mkdir()
 
-    item = localmd.resolve_adopt(co, "t.toml", co.worktree / ".claude")
+    item = localmd.resolve_adopt(co, "t.toml", co.root / ".claude")
 
     assert item.name == ".claude/t.toml"
 
@@ -2043,7 +2123,7 @@ def test_resolve_adopt_from_subdirectory(co):
 def test_resolve_adopt_refuses(co, raw):
     """Verify a path outside the checkout, the checkout, settings, or git's folder is refused."""
     with pytest.raises(LocalMdError):
-        localmd.resolve_adopt(co, raw, co.worktree)
+        localmd.resolve_adopt(co, raw, co.root)
 
 
 @pytest.mark.parametrize("raw", [".claude/agents/foo.md", "notes/../.claude/agents/x"])
@@ -2052,7 +2132,7 @@ def test_resolve_adopt_refuses_path_inside_listed_path(co, raw):
     localmanifest.add(co.local, ".claude/agents")
 
     with pytest.raises(LocalMdError, match=r"\.claude/agents"):
-        localmd.resolve_adopt(co, raw, co.worktree)
+        localmd.resolve_adopt(co, raw, co.root)
 
 
 def test_resolve_adopt_refuses_path_around_listed_path(co):
@@ -2060,7 +2140,7 @@ def test_resolve_adopt_refuses_path_around_listed_path(co):
     localmanifest.add(co.local, ".claude/agents/sub")
 
     with pytest.raises(LocalMdError, match=r"\.claude/agents/sub"):
-        localmd.resolve_adopt(co, ".claude/agents", co.worktree)
+        localmd.resolve_adopt(co, ".claude/agents", co.root)
 
 
 def test_resolve_adopt_refuses_case_variant_of_listed_path(co):
@@ -2068,18 +2148,18 @@ def test_resolve_adopt_refuses_case_variant_of_listed_path(co):
     localmanifest.add(co.local, "docs")
 
     with pytest.raises(LocalMdError, match="only in case"):
-        localmd.resolve_adopt(co, "Docs", co.worktree)
+        localmd.resolve_adopt(co, "Docs", co.root)
 
 
 def test_resolve_adopt_names_overlap_inside_linked_folder(co):
     """Verify a path inside an adopted, linked folder reports the overlap, not the vault."""
-    folder = co.worktree / ".claude" / "agents"
+    folder = co.root / ".claude" / "agents"
     folder.mkdir(parents=True)
     (folder / "reviewer.md").write_text("# reviewer\n")
     localmd.adopt(co, localmd.path_entry(co, ".claude/agents"), tracked=False)
 
     with pytest.raises(LocalMdError, match="overlaps"):
-        localmd.resolve_adopt(co, ".claude/agents/reviewer.md", co.worktree)
+        localmd.resolve_adopt(co, ".claude/agents/reviewer.md", co.root)
 
 
 def test_resolve_adopt_overlap_ignores_case(co):
@@ -2087,16 +2167,16 @@ def test_resolve_adopt_overlap_ignores_case(co):
     localmanifest.add(co.local, ".claude/agents")
 
     with pytest.raises(LocalMdError, match="overlaps"):
-        localmd.resolve_adopt(co, ".Claude/Agents/x.md", co.worktree)
+        localmd.resolve_adopt(co, ".Claude/Agents/x.md", co.root)
 
 
 def test_resolve_adopt_relative_cwd_reads_lexically(co, monkeypatch):
     """Verify a relative base directory still reports an overlap inside a linked folder."""
-    folder = co.worktree / ".claude" / "agents"
+    folder = co.root / ".claude" / "agents"
     folder.mkdir(parents=True)
     (folder / "reviewer.md").write_text("# reviewer\n")
     localmd.adopt(co, localmd.path_entry(co, ".claude/agents"), tracked=False)
-    monkeypatch.chdir(co.worktree)
+    monkeypatch.chdir(co.root)
 
     with pytest.raises(LocalMdError, match="overlaps"):
         localmd.resolve_adopt(co, ".claude/agents/reviewer.md", Path())
@@ -2104,8 +2184,8 @@ def test_resolve_adopt_relative_cwd_reads_lexically(co, monkeypatch):
 
 def test_adopt_failed_listing_removes_created_folders(co, monkeypatch):
     """Verify a listing failure after the copy leaves no copy and no empty folder behind."""
-    (co.worktree / "notes").mkdir()
-    (co.worktree / "notes" / "private.md").write_text("x\n")
+    (co.root / "notes").mkdir()
+    (co.root / "notes" / "private.md").write_text("x\n")
 
     def refuse(*_args: object) -> bool:
         msg = "no"
@@ -2117,7 +2197,7 @@ def test_adopt_failed_listing_removes_created_folders(co, monkeypatch):
         localmd.adopt(co, localmd.path_entry(co, "notes/private.md"), tracked=False)
 
     assert not (co.local / "notes").exists()
-    assert (co.worktree / "notes" / "private.md").read_text() == "x\n"
+    assert (co.root / "notes" / "private.md").read_text() == "x\n"
 
 
 # Resolving a conflict the person chose how to settle
@@ -2232,8 +2312,8 @@ def test_keep_legacy_keeps_the_chosen_copy_and_links_it(co, md, vault, keep, exp
 @pytest.mark.parametrize("raw", [".claude/settings.local.json", "settings.local.json"])
 def test_resolve_adopt_refuses_the_settings_file(co, raw):
     """Verify adopting the settings file is refused in favor of choosing a copy."""
-    (co.worktree / ".claude").mkdir()
-    cwd = co.worktree / ".claude" if raw == "settings.local.json" else co.worktree
+    (co.root / ".claude").mkdir()
+    cwd = co.root / ".claude" if raw == "settings.local.json" else co.root
 
     with pytest.raises(localmd.LocalMdError, match="kept by copy, not adopted"):
         localmd.resolve_adopt(co, raw, cwd)
@@ -2273,7 +2353,7 @@ def test_adopt_removes_the_name_from_the_declined_list(co):
     """Verify adopting a declined entry, named by its checkout path, clears the decline."""
     _checkout_skill(co, "a")
     localdeclined.add(co.local, ["skills/a"])
-    item = localmd.resolve_adopt(co=co, raw=".claude/skills/a", cwd=co.worktree)
+    item = localmd.resolve_adopt(co=co, raw=".claude/skills/a", cwd=co.root)
 
     localmd.adopt(co, item, tracked=False)
 
@@ -2300,3 +2380,143 @@ def test_adopt_reads_the_declined_list_once_when_nothing_is_declined(co, mocker)
     localmd.adopt(co, localmd.entry(co, "skills/a"), tracked=False)
 
     assert spy.call_count == 1
+
+
+def _register(vault: Path, **roots: Path) -> None:
+    """Register each slug at its root, replacing the vault's registry."""
+    registry.save(
+        vault,
+        {
+            slug: registry.Project(slug=slug, remotes=(), root=str(root))
+            for slug, root in roots.items()
+        },
+    )
+
+
+def test_child_project_finds_a_nested_git_repo(plain, plain_co):
+    """Verify a path in, or at, a repository inside the root belongs to that repository."""
+    (plain / "api").mkdir()
+    _git("init", "-q", ".", cwd=plain / "api")
+
+    assert localmd.child_project(plain_co, "api/local.toml") == plain.resolve() / "api"
+    assert localmd.child_project(plain_co, "api") == plain.resolve() / "api"
+    assert localmd.child_project(plain_co, "notes/todo.md") is None
+
+
+def test_child_project_finds_a_git_file(plain, plain_co):
+    """Verify a `.git` file, as a linked worktree holds, marks a child repository."""
+    (plain / "wt").mkdir()
+    (plain / "wt" / ".git").write_text("gitdir: /elsewhere\n")
+
+    assert localmd.child_project(plain_co, "wt/a.md") == plain.resolve() / "wt"
+
+
+def test_child_project_finds_a_registered_child(vault, plain):
+    """Verify a registered folder inside the root is its own project."""
+    (plain / "docs").mkdir()
+    _register(vault, demo=plain, docs=plain / "docs", elsewhere=plain.parent / "other")
+
+    co = localmd.checkout(vault, "demo", plain, registered_root=plain)
+
+    assert co.child_roots == (plain.resolve() / "docs",)
+    assert localmd.child_project(co, "docs/a.md") == plain.resolve() / "docs"
+    assert localmd.child_project(co, "docsx/a.md") is None
+
+
+def test_child_project_ignores_the_root_itself(co):
+    """Verify the checkout's own repository is not a child of itself."""
+    assert localmd.child_project(co, "notes/a.md") is None
+
+
+def test_child_project_compares_resolved_roots(vault, plain, tmp_path):
+    """Verify a child registered through a symlinked path is still found."""
+    (plain / "docs").mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(plain)
+    _register(vault, demo=plain, docs=alias / "docs")
+
+    co = localmd.checkout(vault, "demo", plain, registered_root=alias)
+
+    assert localmd.child_project(co, "docs/a.md") == plain.resolve() / "docs"
+
+
+def test_checkout_at_finds_registered_children(vault, plain):
+    """Verify the registry-driven checkout knows its child projects too."""
+    (plain / "docs").mkdir()
+    _register(vault, demo=plain, docs=plain / "docs")
+
+    assert localmd.checkout_at(vault, "demo", plain).child_roots == (plain.resolve() / "docs",)
+
+
+def test_adopt_refuses_a_path_in_a_child_project(plain, plain_co):
+    """Verify adopt refuses a path that a nested repository owns."""
+    (plain / "api").mkdir()
+    _git("init", "-q", ".", cwd=plain / "api")
+    (plain / "api" / "local.toml").write_text("key = 1\n")
+
+    with pytest.raises(LocalMdError, match="belongs to the project at"):
+        localmd.resolve_adopt(co=plain_co, raw="api/local.toml", cwd=plain)
+
+
+def test_manifest_moves_a_child_project_path_to_problems(plain, plain_co):
+    """Verify a listed path that now sits in a child project is reported, not linked."""
+    localmanifest.add(plain_co.local, "api/local.toml")
+    localmanifest.add(plain_co.local, "notes.md")
+    (plain / "api").mkdir()
+    _git("init", "-q", ".", cwd=plain / "api")
+
+    found = localmd.manifest(plain_co)
+
+    assert found.paths == ("notes.md",)
+    assert any("api/local.toml" in p and "its own project" in p for p in found.problems)
+
+
+def test_child_project_does_not_follow_a_linked_entry(plain, plain_co):
+    """Verify a linked folder entry is judged where it sits, not by its vault copy."""
+    copy = plain_co.local / "tools"
+    (copy / ".git").mkdir(parents=True)
+    (plain / "tools").symlink_to(copy)
+
+    assert localmd.child_project(plain_co, "tools") is None
+
+
+def test_manifest_of_a_vault_stand_in_skips_the_child_check(vault, plain_co):
+    """Verify a checkout rooted at the vault never judges listed paths by the vault's tree."""
+    localmanifest.add(plain_co.local, "repo/x.toml")
+    (vault / "repo" / ".git").mkdir(parents=True)
+    stand_in = localmd.vault_stand_in(vault, "demo")
+
+    assert localmd.manifest(stand_in).paths == ("repo/x.toml",)
+
+
+def test_checkout_at_uses_the_work_tree_top_level(vault, repo):
+    """Verify a registered root inside a repository roots the checkout where sync links."""
+    sub = repo / "sub"
+    sub.mkdir()
+
+    co = localmd.checkout_at(vault, "demo", sub)
+
+    assert (co.root, co.in_git) == (repo.resolve(), True)
+
+
+def _refused() -> subprocess.CompletedProcess[str]:
+    return subprocess.CompletedProcess(
+        args=["git"], returncode=128, stdout="", stderr="fatal: detected dubious ownership"
+    )
+
+
+def test_checkout_refused_by_git_raises_despite_registered_root(vault, plain, mocker):
+    """Verify a git refusal other than "not a repository" never reads as outside git."""
+    mocker.patch.object(localmd, "_git", autospec=True, return_value=_refused())
+
+    with pytest.raises(LocalMdError, match="git could not say"):
+        localmd.checkout(vault, "demo", plain, registered_root=plain)
+
+
+def test_checkout_at_refused_by_git_keeps_git_checks(vault, plain, mocker):
+    """Verify doctor's checkout stays in git when git refuses to answer."""
+    mocker.patch.object(localmd, "_git", autospec=True, return_value=_refused())
+
+    co = localmd.checkout_at(vault, "demo", plain)
+
+    assert (co.root, co.in_git) == (plain.resolve(), True)

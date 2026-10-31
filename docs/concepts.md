@@ -221,8 +221,16 @@ Three limits come from how Claude Code loads these files:
   file's content to the injected block in the session that created the link. After you
   keep the vault's settings copy, start a new session before you approve anything.
 
-The commands find the `CLAUDE.local.md` at the root of the work tree, and the entries
-directly inside `.claude/skills/` and `.claude/rules/`, without being told. Any other
+A project folder does not need to be a git repository. A workspace folder that holds
+several repositories side by side can be a registered project, and its local files work
+the same way. A folder inside a project that is a git repository or a registered project
+is its own project, so no entry of the outer project goes inside it. Claude Code reads a
+`CLAUDE.local.md` from each parent folder, so a session inside such a repository also
+loads the workspace's file, as it loads a `CLAUDE.md` there.
+
+The commands find the `CLAUDE.local.md` at the project's root, and the entries directly
+inside `.claude/skills/` and `.claude/rules/`, without being told. The root is the top
+level of the git work tree, or the registered root of a folder outside git. Any other
 private file or folder, such as a tool's config file in `.claude/`, becomes an entry when
 you adopt it by its path. Its vault copy keeps the same path, with `.claude/` stored as
 `claude/`. A folder holds no record of where an entry inside it starts, so

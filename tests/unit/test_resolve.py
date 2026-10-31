@@ -30,6 +30,7 @@ def test_unregistered_directory(tmp_path):
     result = resolve(vault, tmp_path)
     assert not result.registered
     assert result.slug is None
+    assert result.matched_by is None
 
 
 def test_match_by_remote(tmp_path, monkeypatch):
@@ -45,6 +46,7 @@ def test_match_by_remote(tmp_path, monkeypatch):
     result = resolve(vault, tmp_path)
     assert result.slug == "gx"
     assert result.registered
+    assert result.matched_by == "remote"
 
 
 def test_match_by_repository_root_when_no_remote(tmp_path, monkeypatch):
@@ -57,7 +59,9 @@ def test_match_by_repository_root_when_no_remote(tmp_path, monkeypatch):
         "sessionmemory.lib.resolve.git_context",
         lambda _cwd: _FakeContext(repo_root=tmp_path, remotes=()),
     )
-    assert resolve(vault, tmp_path).slug == "gx"
+    result = resolve(vault, tmp_path)
+    assert result.slug == "gx"
+    assert result.matched_by == "root"
 
 
 def test_worktree_resolves_to_the_parent_project(tmp_path, monkeypatch):
@@ -90,6 +94,7 @@ def test_subdirectory_of_a_registered_root_resolves(tmp_path, monkeypatch):
     result = resolve(vault, root / "a" / "b" / "c")
     assert result.slug == "gx"
     assert result.registered
+    assert result.matched_by == "path"
 
 
 def test_the_deepest_registered_root_wins(tmp_path, monkeypatch):

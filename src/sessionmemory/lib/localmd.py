@@ -18,12 +18,15 @@ an entry, so a `.DS_Store` or a set-aside folder left by a crash is skipped.
 
 A link is absolute. The vault's root differs from machine to machine and a linked
 worktree sits at a different depth from the main checkout, so no relative path is
-correct for both. Paths are taken from the git work tree's top level, which is where
-Claude Code looks for them, rather than from the registered root or the working directory.
+correct for both. Paths are taken from the checkout's root: the git work tree's top
+level, which is where Claude Code looks for them, rather than the registered root or the
+working directory. A project folder outside git has no work tree, so its registered root
+is the root, and with no history to keep a link out of, nothing there is tracked or
+ignored.
 
-The ignore entry goes in `info/exclude`, never in a `.gitignore`, because a
-`.gitignore` is a committed file and linking must not leave a change to commit. Git
-reads `info/exclude` from the shared git directory, so one entry covers every linked
+In a git work tree the ignore entry goes in `info/exclude`, never in a `.gitignore`,
+because a `.gitignore` is a committed file and linking must not leave a change to commit.
+Git reads `info/exclude` from the shared git directory, so one entry covers every linked
 worktree of a repository.
 """
 
@@ -48,12 +51,13 @@ from sessionmemory.lib import (
     localmanifest,
     localtree,
     paths,
+    registry,
     settingsdiff,
 )
 
 if TYPE_CHECKING:
     import subprocess
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Mapping
 
 Kind = Literal["local-md", "skill", "rule", "path", "settings"]
 Mode = Literal["link", "copy"]
@@ -174,12 +178,19 @@ def _git(cwd: Path, *args: str, input_text: str | None = None) -> subprocess.Com
 
 @dataclass(frozen=True)
 class Checkout:
-    """One git work tree, and the vault root, slug, and `local/` folder of its project."""
+    """The folder entries are linked into, and its project's vault root, slug, and `local/`.
 
-    worktree: Path
+    `root` is the resolved git work tree's top level, or the resolved registered root of a
+    project folder outside git, where `in_git` is false. `child_roots` are the resolved
+    roots of other registered projects inside it.
+    """
+
+    root: Path
+    in_git: bool
     vault: Path
     slug: str
     local: Path
+    child_roots: tuple[Path, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -198,14 +209,21 @@ class Entry:
 
     @property
     def relpath(self) -> str:
-        """The link path relative to the work tree's top level, as git names it."""
+        """The link path relative to the checkout's root, as git names it."""
         if self.kind in {"local-md", "path"}:
             return self.name
         return f"{_CHECKOUT_CLAUDE}/{self.name}"
 
 
-def checkout(vault: Path, slug: str, cwd: Path, worktree: Path | None = None) -> Checkout:
-    """Locate the work tree holding `cwd` and the vault's `local/` folder for `slug`.
+def checkout(
+    vault: Path,
+    slug: str,
+    cwd: Path,
+    worktree: Path | None = None,
+    registered_root: Path | None = None,
+    projects: Mapping[str, registry.Project] | None = None,
+) -> Checkout:
+    """Locate the root holding `cwd` and the vault's `local/` folder for `slug`.
 
     Args:
         vault (Path): The vault root.
@@ -214,26 +232,142 @@ def checkout(vault: Path, slug: str, cwd: Path, worktree: Path | None = None) ->
         worktree (Path | None): The work tree's top level when the caller already asked
             git for it, so git is not asked again. Ignored while a `GIT_` variable is set,
             since the caller's answer was not given under `_git_safe_env`.
+        registered_root (Path | None): The project's registered root, used as the root
+            when git says `cwd` is not inside a repository. Pass it only when resolution
+            matched the project by path.
+        projects (Mapping[str, registry.Project] | None): The loaded registry, or None to
+            read it, for finding the child projects inside the root.
 
     Returns:
-        Checkout: The work tree's top level and the project it belongs to.
+        Checkout: The root and the project it belongs to.
 
     Raises:
-        LocalMdError: When `cwd` is not inside a git work tree.
+        LocalMdError: When `cwd` is not inside a git work tree and no registered root
+            was given, or when git refuses to say whether it is.
     """
-    if worktree is None or any(key.startswith("GIT_") for key in os.environ):
-        done = _git(cwd, "rev-parse", "--show-toplevel")
-        toplevel = done.stdout.strip()
-        if done.returncode != 0 or not toplevel:
-            msg = f"{cwd} is not inside a git work tree"
-            raise LocalMdError(msg)
-        worktree = Path(toplevel).resolve()
+    if worktree is not None and not any(key.startswith("GIT_") for key in os.environ):
+        return _build_checkout(
+            vault=vault, slug=slug, root=worktree, in_git=True, projects=projects
+        )
+    done = _git(cwd, "rev-parse", "--show-toplevel")
+    toplevel = done.stdout.strip()
+    if done.returncode == 0 and toplevel:
+        return _build_checkout(
+            vault=vault, slug=slug, root=Path(toplevel), in_git=True, projects=projects
+        )
+    if registered_root is None:
+        msg = f"{cwd} is not inside a git work tree"
+        raise LocalMdError(msg)
+    stderr = done.stderr.strip()
+    # Any other refusal, such as `safe.directory`, may hide a repository whose links must
+    # stay ignored, so only git's own verdict lets a folder count as outside git.
+    if done.returncode != 0 and gitinfo.NOT_A_REPOSITORY not in stderr.lower():
+        msg = f"git could not say whether {cwd} is inside a work tree"
+        raise LocalMdError(msg, [stderr] if stderr else [])
+    return _build_checkout(
+        vault=vault, slug=slug, root=registered_root, in_git=False, projects=projects
+    )
+
+
+def checkout_at(
+    vault: Path,
+    slug: str,
+    root: Path,
+    projects: Mapping[str, registry.Project] | None = None,
+) -> Checkout:
+    """Build the checkout for a project's registered root, asking git whether it is a repo.
+
+    For callers such as `doctor` that start from the registry rather than a working
+    directory. A root inside a repository is checked at the work tree's top level, where
+    sync links. When git cannot run or will not answer, the root is taken as a work tree,
+    so the git-only checks raise and the caller reports that git could not be asked.
+
+    Args:
+        vault (Path): The vault root.
+        slug (str): The project's slug.
+        root (Path): The project's registered root, an existing directory.
+        projects (Mapping[str, registry.Project] | None): The loaded registry, or None to
+            read it.
+
+    Returns:
+        Checkout: The checkout for the project.
+    """
+    try:
+        return checkout(vault=vault, slug=slug, cwd=root, registered_root=root, projects=projects)
+    except LocalMdError:
+        return _build_checkout(vault=vault, slug=slug, root=root, in_git=True, projects=projects)
+
+
+def vault_stand_in(vault: Path, slug: str) -> Checkout:
+    """Build a checkout with no folder to link into, for checks of the vault side only.
+
+    Args:
+        vault (Path): The vault root.
+        slug (str): The project's slug.
+
+    Returns:
+        Checkout: A checkout rooted at the vault, outside git, with no child projects.
+    """
     return Checkout(
-        worktree=worktree,
+        root=vault, in_git=False, vault=vault, slug=slug, local=paths.local_dir(vault, slug)
+    )
+
+
+def _build_checkout(
+    vault: Path,
+    slug: str,
+    root: Path,
+    *,
+    in_git: bool,
+    projects: Mapping[str, registry.Project] | None,
+) -> Checkout:
+    top = root.resolve()
+    try:
+        known = registry.load(vault) if projects is None else projects
+        children = registry.find_under_root(known, str(top), exclude=slug)
+    except registry.RegistryError:
+        # Resolution and doctor report an unreadable registry; here it only means no
+        # child is known.
+        children = ()
+    return Checkout(
+        root=top,
+        in_git=in_git,
         vault=vault,
         slug=slug,
         local=paths.local_dir(vault, slug),
+        child_roots=children,
     )
+
+
+def child_project(co: Checkout, relpath: str) -> Path | None:
+    """Name the child folder that is its own project and holds, or is, `relpath`.
+
+    A registered child owns its files, and a nested repository could commit a link
+    placed in it, so neither may receive an entry of the project around it. The path is
+    read as written, never through a symlink, so a linked entry is judged where it sits.
+
+    Args:
+        co (Checkout): The checkout the path is relative to.
+        relpath (str): A path relative to the checkout's root.
+
+    Returns:
+        Path | None: The child project's folder under `co.root`, or None when the path
+            belongs to this project or the checkout is a vault stand-in.
+    """
+    if co.root == co.vault:
+        return None
+    parts = Path(relpath).parts
+    for depth in range(1, len(parts) + 1):
+        folder = co.root.joinpath(*parts[:depth])
+        if folder in co.child_roots:
+            return folder
+        # A linked entry's folder is the vault copy, whose contents say nothing here.
+        if folder.is_symlink():
+            return None
+        marker = folder / ".git"
+        if marker.is_symlink() or marker.exists():
+            return folder
+    return None
 
 
 def path_entry(co: Checkout, relpath: str) -> Entry:
@@ -241,7 +375,7 @@ def path_entry(co: Checkout, relpath: str) -> Entry:
 
     Args:
         co (Checkout): The checkout the entry belongs to.
-        relpath (str): The path relative to the work tree's top level.
+        relpath (str): The path relative to the checkout's root.
 
     Returns:
         Entry: The entry, linked at the path and kept at its mirror under `local/`.
@@ -249,7 +383,7 @@ def path_entry(co: Checkout, relpath: str) -> Entry:
     return Entry(
         kind="path",
         name=relpath,
-        link=co.worktree / relpath,
+        link=co.root / relpath,
         target=co.local / localmanifest.vault_relpath(relpath),
     )
 
@@ -261,9 +395,30 @@ def manifest(co: Checkout) -> localmanifest.Manifest:
         co (Checkout): The checkout whose project's `local/` folder holds the list.
 
     Returns:
-        localmanifest.Manifest: The usable paths and any problems in the file.
+        localmanifest.Manifest: The usable paths and any problems in the file. A listed
+            path inside a child project is a problem rather than a usable path, so it is
+            reported and never linked.
     """
-    return localmanifest.read(co.local)
+    found = localmanifest.read(co.local)
+    kept: list[str] = []
+    moved: list[str] = []
+    for relpath in found.paths:
+        folder = child_project(co, relpath)
+        if folder is None:
+            kept.append(relpath)
+        else:
+            link = co.root / relpath
+            # A link placed before the folder became a project is still the vault copy,
+            # so deleting it loses nothing and keeps the child from committing it.
+            remedy = (
+                f"delete the link at {link} and remove the line from entries.toml"
+                if link.is_symlink()
+                else "remove the line from entries.toml"
+            )
+            moved.append(f"{relpath} is inside {folder}, which is its own project; {remedy}")
+    if not moved:
+        return found
+    return localmanifest.Manifest(paths=tuple(kept), problems=(*found.problems, *moved))
 
 
 def declined(co: Checkout) -> localdeclined.Declined:
@@ -302,7 +457,7 @@ def declinable(co: Checkout, raw: str, cwd: Path, present: list[str]) -> str:
         offered = state(item) is State.DIVERGED and identical(item)
         in_vault = item.target.is_symlink() or item.target.exists()
     except OSError as err:
-        msg = f"could not read {raw} in {co.worktree}: {err}"
+        msg = f"could not read {raw} in {co.root}: {err}"
         raise LocalMdError(msg) from err
     # candidates() compares names exactly, so a case-only spelling would silence nothing.
     other = localmanifest.same_but_case(item.name, present)
@@ -351,12 +506,12 @@ def entry(co: Checkout, name: str) -> Entry:
         LocalMdError: When `name` is not a valid entry name.
     """
     if name == paths.LOCAL_MD_FILE:
-        return Entry(kind="local-md", name=name, link=co.worktree / name, target=co.local / name)
+        return Entry(kind="local-md", name=name, link=co.root / name, target=co.local / name)
     if name == SETTINGS_NAME:
         return Entry(
             kind="settings",
             name=name,
-            link=co.worktree / _CHECKOUT_CLAUDE / name,
+            link=co.root / _CHECKOUT_CLAUDE / name,
             target=co.local / _VAULT_CLAUDE / name,
         )
     prefix, sep, child = name.partition("/")
@@ -376,7 +531,7 @@ def entry(co: Checkout, name: str) -> Entry:
     return Entry(
         kind=kind,
         name=name,
-        link=co.worktree / _CHECKOUT_CLAUDE / prefix / child,
+        link=co.root / _CHECKOUT_CLAUDE / prefix / child,
         target=co.local / _VAULT_CLAUDE / prefix / child,
     )
 
@@ -394,7 +549,7 @@ def _lexical(path: Path) -> Path:
 
 
 def _work_tree_path(co: Checkout, raw: str, cwd: Path) -> str:
-    """Turn a typed path into its path from the work tree's top level.
+    """Turn a typed path into its path from the checkout's root.
 
     Raises:
         LocalMdError: When the path is outside the checkout or is the checkout itself.
@@ -403,14 +558,14 @@ def _work_tree_path(co: Checkout, raw: str, cwd: Path) -> str:
     resolved = _lexical(typed)
     # Read lexically first, so a path inside a linked folder is judged where it was typed
     # rather than in the vault. Resolving catches a checkout reached through a symlink.
-    if not resolved.is_relative_to(co.worktree):
+    if not resolved.is_relative_to(co.root):
         resolved = typed.parent.resolve() / typed.name if typed.name else typed.resolve()
         if resolved.name in {"", ".", ".."}:
             resolved = resolved.resolve()
     try:
-        relpath = resolved.relative_to(co.worktree).as_posix()
+        relpath = resolved.relative_to(co.root).as_posix()
     except ValueError:
-        msg = f"{raw} is outside the checkout at {co.worktree}"
+        msg = f"{raw} is outside the checkout at {co.root}"
         raise LocalMdError(msg) from None
     if relpath == ".":
         msg = f"{raw} is the checkout itself"
@@ -435,7 +590,8 @@ def resolve_adopt(co: Checkout, raw: str, cwd: Path) -> Entry:
 
     Raises:
         LocalMdError: When the path is outside the checkout, the checkout itself, the
-            settings file, a path adopt refuses, or overlaps a path already adopted.
+            settings file, a path adopt refuses, inside a child project, or overlaps a path
+            already adopted.
     """
     if localmanifest.is_kind_name(raw):
         return entry(co, raw)
@@ -455,6 +611,10 @@ def resolve_adopt(co: Checkout, raw: str, cwd: Path) -> Entry:
     if reason is not None:
         msg = f"{relpath} cannot be adopted"
         raise LocalMdError(msg, [reason])
+    folder = child_project(co, relpath)
+    if folder is not None:
+        msg = f"{relpath} belongs to the project at {folder}"
+        raise LocalMdError(msg, ["Adopt it from inside that project."])
     listed = manifest(co).paths
     other = localmanifest.same_but_case(relpath, listed)
     if other is not None:
@@ -528,7 +688,7 @@ def _checkout_names(co: Checkout, listed: list[Entry]) -> set[str]:
     """
     found = {
         name
-        for name, (kind, path) in _names_in(co.worktree, _CHECKOUT_CLAUDE).items()
+        for name, (kind, path) in _names_in(co.root, _CHECKOUT_CLAUDE).items()
         if path.is_symlink() or _present(path, kind)
     }
     found.update(
@@ -670,7 +830,7 @@ def identical(item: Entry) -> bool:
 
 
 def _kind_folder(co: Checkout, kind: Kind) -> Path:
-    return co.worktree / _CHECKOUT_CLAUDE / _KIND_DIRS[kind]
+    return co.root / _CHECKOUT_CLAUDE / _KIND_DIRS[kind]
 
 
 def _blocked_folders(co: Checkout, kind: Kind) -> bool:
@@ -689,7 +849,7 @@ def _blocked_folders(co: Checkout, kind: Kind) -> bool:
 
 def _blocked_ancestor(co: Checkout, item: Entry) -> Path | None:
     """Return the first folder above a path entry that is a symlink or not a folder."""
-    current = co.worktree
+    current = co.root
     for part in Path(item.relpath).parts[:-1]:
         current /= part
         if current.is_symlink() or (current.exists() and not current.is_dir()):
@@ -712,7 +872,7 @@ def blocking_folder(co: Checkout, item: Entry) -> Path:
         return _blocked_ancestor(co, item) or item.link.parent
     if item.kind in _KIND_DIRS:
         return _kind_folder(co, item.kind)
-    return co.worktree / _CHECKOUT_CLAUDE
+    return co.root / _CHECKOUT_CLAUDE
 
 
 def blocked(co: Checkout, item: Entry) -> bool:
@@ -731,7 +891,7 @@ def blocked(co: Checkout, item: Entry) -> bool:
     if item.kind == "local-md":
         return False
     if item.kind == "settings":
-        claude = co.worktree / _CHECKOUT_CLAUDE
+        claude = co.root / _CHECKOUT_CLAUDE
         return claude.is_symlink() or (claude.exists() and not claude.is_dir())
     if item.kind == "path":
         return _blocked_ancestor(co, item) is not None
@@ -748,18 +908,21 @@ def tracked_names(co: Checkout, items: list[Entry]) -> set[str]:
     Returns:
         set[str]: The names of entries whose path, or any file under it, git tracks.
             An entry under a symlinked or non-folder `.claude/` path is never reported,
-            since git cannot be asked about it.
+            since git cannot be asked about it. Empty outside git, where nothing is
+            tracked.
 
     Raises:
         LocalMdError: When git cannot list the index.
     """
+    if not co.in_git:
+        return set()
     by_path = {item.relpath: item.name for item in items if not blocked(co, item)}
     if not by_path:
         return set()
     # Literal, so a name holding `*` or `?` matches only itself.
-    done = _git(co.worktree, "--literal-pathspecs", "ls-files", "-z", "--", *by_path)
+    done = _git(co.root, "--literal-pathspecs", "ls-files", "-z", "--", *by_path)
     if done.returncode != 0:
-        msg = f"git ls-files failed in {co.worktree}"
+        msg = f"git ls-files failed in {co.root}"
         raise LocalMdError(msg, [done.stderr.strip()] if done.stderr.strip() else [])
     found: set[str] = set()
     for listed in filter(None, done.stdout.split("\0")):
@@ -777,20 +940,23 @@ def ignored(co: Checkout, item: Entry) -> bool:
         item (Entry): The entry to check.
 
     Returns:
-        bool: True when `git check-ignore` matches the link path.
+        bool: True when `git check-ignore` matches the link path. True outside git,
+            where there is no history to hide a link from.
 
     Raises:
         LocalMdError: When git fails for any reason other than "not ignored", such as
             a directory that is not a repository.
     """
-    done = _git(co.worktree, "check-ignore", "-q", "--", item.relpath)
+    if not co.in_git:
+        return True
+    done = _git(co.root, "check-ignore", "-q", "--", item.relpath)
     if done.returncode not in (0, 1):
-        msg = f"git check-ignore failed in {co.worktree}"
+        msg = f"git check-ignore failed in {co.root}"
         raise LocalMdError(msg, [done.stderr.strip()] if done.stderr.strip() else [])
     return done.returncode == 0
 
 
-def ignored_names(co: Checkout, items: list[Entry]) -> set[str]:
+def ignored_names(co: Checkout, items: list[Entry]) -> set[str] | None:
     """Name the entries whose link path git already ignores, in one git call.
 
     Args:
@@ -798,19 +964,22 @@ def ignored_names(co: Checkout, items: list[Entry]) -> set[str]:
         items (list[Entry]): The entries to check, none behind a blocked `.claude/`.
 
     Returns:
-        set[str]: The names of entries `git check-ignore` matches.
+        set[str] | None: The names of entries `git check-ignore` matches, or None
+            outside git, where ignoring does not apply.
 
     Raises:
         LocalMdError: When git fails for any reason other than "none ignored".
     """
+    if not co.in_git:
+        return None
     by_path = {item.relpath: item.name for item in items}
     if not by_path:
         return set()
     done = _git(
-        co.worktree, "check-ignore", "--stdin", "-z", input_text="".join(f"{p}\0" for p in by_path)
+        co.root, "check-ignore", "--stdin", "-z", input_text="".join(f"{p}\0" for p in by_path)
     )
     if done.returncode not in (0, 1):
-        msg = f"git check-ignore failed in {co.worktree}"
+        msg = f"git check-ignore failed in {co.root}"
         raise LocalMdError(msg, [done.stderr.strip()] if done.stderr.strip() else [])
     return {by_path[path] for path in done.stdout.split("\0") if path in by_path}
 
@@ -844,7 +1013,8 @@ def ensure_ignored(co: Checkout, item: Entry) -> bool:
         item (Entry): The entry to hide.
 
     Returns:
-        bool: True when it wrote an entry, False when git already ignored the path.
+        bool: True when it wrote an entry, False when the path is already hidden,
+            which `ignored` reports for every path outside git.
 
     Raises:
         LocalMdError: When git cannot name its exclude file.
@@ -852,12 +1022,12 @@ def ensure_ignored(co: Checkout, item: Entry) -> bool:
     if ignored(co, item):
         return False
 
-    done = _git(co.worktree, "rev-parse", "--git-path", "info/exclude")
+    done = _git(co.root, "rev-parse", "--git-path", "info/exclude")
     if done.returncode != 0 or not done.stdout.strip():
         msg = "git did not name its exclude file"
         raise LocalMdError(msg, [done.stderr.strip()] if done.stderr.strip() else [])
 
-    exclude = co.worktree / done.stdout.strip()
+    exclude = co.root / done.stdout.strip()
     exclude.parent.mkdir(parents=True, exist_ok=True)
     existing = exclude.read_text(encoding="utf-8", errors="replace") if exclude.exists() else ""
     line = _exclude_line(item)
@@ -1398,7 +1568,7 @@ def _refuse_adopt(co: Checkout, item: Entry, current: State, *, tracked: bool) -
         msg = f"{blocking_folder(co, item)} or its parent is a symlink or not a folder"
         raise LocalMdError(msg, [f"{item.name} cannot be adopted through it."])
     if tracked:
-        msg = f"{item.name} is tracked by git in {co.worktree}"
+        msg = f"{item.name} is tracked by git in {co.root}"
         raise LocalMdError(msg, ["Remove it from the index before adopting it."])
     if target_misshapen(item):
         raise LocalMdError(
@@ -1408,7 +1578,7 @@ def _refuse_adopt(co: Checkout, item: Entry, current: State, *, tracked: bool) -
         msg = f"{item.link} is a symlink to {item.link.resolve()}, not to the vault copy"
         raise LocalMdError(msg)
     if current in {State.NONE, State.NOT_LINKED, State.DANGLING}:
-        msg = f"no {item.name} in {co.worktree}"
+        msg = f"no {item.name} in {co.root}"
         raise LocalMdError(msg)
     _check_shape(item)
     if item.link.is_dir():

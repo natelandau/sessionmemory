@@ -265,20 +265,26 @@ and what every output shows:
 
 The command finds `CLAUDE.local.md`, skills, and rules by their location. Any other file
 or folder becomes an entry only when you adopt it by its path, as
-[Adopting any path](#adopting-any-path) describes. Its name is its path from the top of
-the work tree. In the vault it keeps the same path, with `.claude/` stored as `claude/`.
+[Adopting any path](#adopting-any-path) describes. Its name is its path from the
+project's root. In the vault it keeps the same path, with `.claude/` stored as `claude/`.
+
+The project's root is the top level of the git work tree that holds `--cwd`, which is not
+always the registered root. A registered project folder that is not inside a git work
+tree, such as a workspace folder that holds several repositories, has its registered root
+as its root.
 
 A skill is a folder. A rule is the file or the folder directly inside `.claude/rules/`,
 and a rules folder is linked as one entry. A name that starts with a dot is never an
 entry, and neither is a plain file in `.claude/skills/`. Each entry has its own link, so
 a skill or rule that the project commits can sit in the same folder as your private ones.
 
-Each link is an absolute symlink in the git work tree that holds `--cwd`, which is not
-always the registered root. Claude Code reads a link as it reads a regular file, and an
-edit made through Claude Code changes the vault copy. Git ignores each link through the
-repository's `info/exclude`, never through a committed `.gitignore`. A skill or rule gets
-an anchored line, such as `/.claude/skills/deploy-check`, so a file with the same name
-deeper in the tree stays visible to git.
+Each link is an absolute symlink at the project's root. Claude Code reads a link as it
+reads a regular file, and an edit made through Claude Code changes the vault copy. In a
+git work tree, git ignores each link through the repository's `info/exclude`, never
+through a committed `.gitignore`. A skill or rule gets an anchored line, such as
+`/.claude/skills/deploy-check`, so a file with the same name deeper in the tree stays
+visible to git. Outside git, there is no history to keep a link out of, so the command
+writes no ignore line and no entry counts as tracked.
 
 `settings.local.json` is copied, not linked. Claude Code refuses to write through a
 symlinked settings file. With a link in its place, a permission you approve, a plugin
@@ -286,9 +292,14 @@ installed at local scope, and every other local-scope change fails or is lost. C
 Code itself writes the file during sessions, so either copy can be the newer one. The
 command never copies it in either direction until you choose which copy to keep.
 
-Each sub-command resolves the project from `--cwd`, and refuses an unregistered directory
-and a directory outside git. An entry that git tracks belongs to the project. The
-sub-commands never offer it, adopt it, copy it, or link over it.
+Each sub-command resolves the project from `--cwd`, and refuses an unregistered directory.
+An entry that git tracks belongs to the project. The sub-commands never offer it, adopt it,
+copy it, or link over it.
+
+A folder inside the root that is a git repository or a registered project is its own
+project. No entry of the outer project goes inside it. A `--cwd` inside such a folder
+resolves to that folder's own project, or to an unregistered directory, and never to the
+outer project.
 
 | Sub-command | What it does                                                                  |
 | ----------- | ----------------------------------------------------------------------------- |
@@ -418,12 +429,13 @@ that saves by writing a temporary file and renaming it over the link also leaves
 ```
 
 `kind` is `local-md`, `skill`, `rule`, `path`, or `settings`. A `path` row is a file or
-folder you adopted by its path, and its `name` is that path, such as `.claude/agents`. The settings row has its copy state
-in `state` and `match` set to `null`. `ignored` is `null` when `.claude/` or its
-`skills/` or `rules/` folder is a symlink or not a folder, since git cannot answer for a
-path behind it. `match` is `true` or `false` when both sides are real files or both are
-real folders, and `null` otherwise. Two folders match when they hold the same files with
-the same bytes.
+folder you adopted by its path, and its `name` is that path, such as `.claude/agents`.
+The settings row has its copy state in `state` and `match` set to `null`. `ignored` is
+`null` when `.claude/` or its `skills/` or `rules/` folder is a symlink or not a folder,
+since git cannot answer for a path behind it. `ignored` is also `null` for every entry at
+a root outside git. `match` is `true` or `false` when both sides are real files or both
+are real folders, and `null` otherwise. Two folders match when they hold the same files
+with the same bytes.
 
 ### `sessionmemory local sync`
 
@@ -763,7 +775,11 @@ links the other entries, and exits 1:
 ```
 
 Of two nested lines, such as `.claude/agents` and
-`.claude/agents/reviewer.md`, only the outer one is linked.
+`.claude/agents/reviewer.md`, only the outer one is linked. A line whose path is inside a
+folder that is a git repository or a registered project is not linked either. `sync` names
+it as a line that cannot be linked, because that folder is its own project. If a link
+from an earlier `sync` is still at that path, `sync` tells you to delete it, so that the
+folder's repository cannot commit it.
 
 To stop linking a path, do these steps:
 
@@ -773,7 +789,8 @@ To stop linking a path, do these steps:
 
 `adopt` refuses a path, and names the reason, when the path:
 
-- Is outside the work tree, or is the work tree itself.
+- Is outside the project's root, or is the root itself.
+- Is inside a folder that is a git repository or a registered project, or is that folder.
 - Is in `.git`.
 - Is `.claude`, `.claude/skills`, or `.claude/rules`, or is inside a skill or a rule.
 - Is `.claude/settings.json` or `.claude/settings.local.json`.

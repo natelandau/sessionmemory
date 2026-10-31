@@ -130,8 +130,9 @@ After it registers the project and injects the memory block, the hook runs
 `CLAUDE.local.md`, skill, rule, and adopted path that the vault holds for the project and
 that the checkout does not have yet (see [Local files](concepts.md#local-files)). A new git
 worktree, a fresh clone, and a second machine therefore receive them without any action
-from you. The hook runs in any git work tree, whatever starts the session, so a `/clear`
-in a worktree that you created during a session links that worktree too.
+from you. The hook runs in any registered project, in a git work tree or not, whatever
+starts the session, so a `/clear` in a worktree that you created during a session links
+that worktree too.
 
 If `local/entries.toml` or `local/declined.toml` holds a line that the command cannot
 use, the hook adds a block that names the line and tells the agent to tell you.
@@ -195,7 +196,7 @@ entry name and path. When anything waits on you, the clause ends with its count,
 | Clause              | Meaning                                                                                                                        |
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
 | `local none`        | The vault holds nothing for the project                                                                                        |
-| `local refused`     | The command exited 1 and printed nothing, for example because the directory is not inside git                                  |
+| `local refused`     | The command exited 1 and printed nothing, for example because the directory is not a registered project                        |
 | `local unavailable` | The command could not start, ran out of time, exited with a code other than 0 or 1, or printed no `entries` list               |
 | `local unreadable`  | The `CLAUDE.local.md` link was made, but the hook could not read the vault copy                                                |
 

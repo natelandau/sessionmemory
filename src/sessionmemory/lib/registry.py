@@ -340,3 +340,26 @@ def find_by_path_prefix(projects: Mapping[str, Project], path: str) -> Project |
             best = project
             best_depth = depth
     return best
+
+
+def find_under_root(projects: Mapping[str, Project], root: str, exclude: str) -> tuple[Path, ...]:
+    """Return the roots of other projects strictly inside `root`, each its own project.
+
+    The reverse of `find_by_path_prefix`, with the same rules: both sides are resolved,
+    and a stored root that is not absolute is skipped.
+
+    Args:
+        projects (Mapping[str, Project]): The loaded registry.
+        root (str): An absolute directory.
+        exclude (str): The slug of the project registered at `root`.
+
+    Returns:
+        tuple[Path, ...]: The resolved roots, sorted, none equal to `root`.
+    """
+    top = Path(root).resolve()
+    found = {
+        Path(project.root).resolve()
+        for slug, project in projects.items()
+        if slug != exclude and project.root and Path(project.root).is_absolute()
+    }
+    return tuple(sorted(child for child in found if child != top and child.is_relative_to(top)))

@@ -31,7 +31,7 @@ GIT_TIMEOUT_SECONDS = 10
 
 # The one git failure that is an answer rather than an outage. Every other non-zero exit,
 # such as a `safe.directory` refusal or a held index lock, leaves the question open.
-_NOT_A_REPOSITORY = "not a git repository"
+NOT_A_REPOSITORY = "not a git repository"
 
 
 @dataclass(frozen=True)
@@ -118,7 +118,7 @@ def _git(cwd: Path, *args: str) -> _GitAnswer:
     if completed is None:
         return _GitAnswer(stdout=None, answered=False)
     if completed.returncode != 0:
-        return _GitAnswer(stdout=None, answered=_NOT_A_REPOSITORY in completed.stderr.lower())
+        return _GitAnswer(stdout=None, answered=NOT_A_REPOSITORY in completed.stderr.lower())
     return _GitAnswer(stdout=completed.stdout.strip() or None, answered=True)
 
 

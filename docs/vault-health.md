@@ -275,6 +275,9 @@ Add its checkout path to `entries.toml`, or delete it. A concurrent `local adopt
 in two sessions can drop one path from `entries.toml` and leave its copy behind like
 this. The check also reports an `entries.toml` that is not valid TOML, a `paths` value
 that is not a list of strings, and each line that names a path that `local adopt` refuses.
+A line whose path is inside a folder that is a git repository or a registered project is
+also reported, because that folder is its own project. If a link to the vault copy is
+still at that path, the finding tells you to delete it.
 
 `local/declined.toml` lists the entries that you declined. The check reports a file that
 is not valid TOML, and each line that is not an entry name. At the registered root, it

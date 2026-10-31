@@ -19,7 +19,7 @@ A worktree always resolves to its parent project, because the repository root co
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from sessionmemory.lib import registry
 from sessionmemory.lib.gitinfo import git_context
@@ -27,10 +27,12 @@ from sessionmemory.lib.gitinfo import git_context
 if TYPE_CHECKING:
     from pathlib import Path
 
+MatchKey = Literal["remote", "root", "path"]
+
 
 @dataclass(frozen=True)
 class Resolution:
-    """Which project a working directory belongs to."""
+    """Which project a working directory belongs to, and which key matched it, if any."""
 
     slug: str | None
     registered: bool
@@ -38,6 +40,7 @@ class Resolution:
     repo_root: Path | None
     worktree_root: Path | None
     is_worktree: bool
+    matched_by: MatchKey | None = None
 
 
 def resolve(vault: Path, cwd: Path) -> Resolution:
@@ -54,12 +57,15 @@ def resolve(vault: Path, cwd: Path) -> Resolution:
     projects = registry.load(vault)
 
     found = registry.find_by_remote(projects, context.remotes)
+    matched_by: MatchKey | None = "remote" if found is not None else None
 
     if found is None and context.repo_root is not None:
         found = registry.find_by_root(projects, str(context.repo_root))
+        matched_by = "root" if found is not None else None
 
     if found is None and context.repo_root is None and context.git_answered and not context.is_bare:
         found = registry.find_by_path_prefix(projects, str(cwd.resolve()))
+        matched_by = "path" if found is not None else None
 
     if found is None:
         return Resolution(
@@ -78,4 +84,5 @@ def resolve(vault: Path, cwd: Path) -> Resolution:
         repo_root=context.repo_root,
         worktree_root=context.worktree_root,
         is_worktree=context.is_worktree,
+        matched_by=matched_by,
     )

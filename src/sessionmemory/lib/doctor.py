@@ -36,7 +36,7 @@ from sessionmemory.lib.frontmatter import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
 
     from sessionmemory.lib.embed import Embedder
 
@@ -516,16 +516,20 @@ def _declined_findings(co: localmd.Checkout, *, checked: bool) -> list[Finding]:
     return findings
 
 
-def _project_local_findings(vault: Path, slug: str, root: Path | None) -> list[Finding]:
+def _project_local_findings(
+    vault: Path, slug: str, root: Path | None, projects: Mapping[str, registry.Project]
+) -> list[Finding]:
     """Report one project's local entries, checking the checkout only when `root` exists."""
     findings = []
     legacy = _legacy_finding(vault, slug)
     if legacy is not None:
         findings.append(legacy)
-    # With no registered root nothing below reaches git, so the vault is a harmless stand-in.
-    co = localmd.Checkout(
-        worktree=root or vault, vault=vault, slug=slug, local=paths.local_dir(vault, slug)
-    )
+    if root is not None and root.is_dir():
+        checked = True
+        co = localmd.checkout_at(vault=vault, slug=slug, root=root, projects=projects)
+    else:
+        checked = False
+        co = localmd.vault_stand_in(vault=vault, slug=slug)
     findings.extend(_manifest_findings(co))
     try:
         items = localmd.vault_entries(co)
@@ -544,7 +548,6 @@ def _project_local_findings(vault: Path, slug: str, root: Path | None) -> list[F
     for item in items:
         findings.extend(_import_findings(item))
         findings.extend(_repository_findings(item))
-    checked = root is not None and root.is_dir()
     findings.extend(_declined_findings(co, checked=checked))
     if not checked:
         return findings
@@ -588,7 +591,7 @@ def local_instructions(vault: Path, _embedder: Embedder) -> list[Finding]:
     for slug in paths.iter_project_slugs(vault):
         project = projects.get(slug)
         root = Path(project.root) if project and project.root else None
-        findings.extend(_project_local_findings(vault, slug, root))
+        findings.extend(_project_local_findings(vault, slug, root, projects))
     return findings
 
 

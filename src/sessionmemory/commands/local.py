@@ -69,12 +69,18 @@ def _checkout(cwd: Path | None) -> localmd.Checkout:
     """
     vault = require_vault()
     slug, resolved = require_registered(vault=vault, cwd=cwd)
+    project = resolved.project
+    # Only a match by path, which resolution allows only outside any repository, may root
+    # the checkout at the registered folder.
+    by_path = resolved.matched_by == "path" and project is not None and project.root
+    registered_root = Path(project.root) if by_path else None
     try:
         return localmd.checkout(
             vault=vault,
             slug=slug,
             cwd=_common.target_dir(cwd),
             worktree=resolved.worktree_root,
+            registered_root=registered_root,
         )
     except localmd.LocalMdError as err:
         fail(err.message, details=err.details)
@@ -86,14 +92,14 @@ def _or_fail(co: localmd.Checkout, doing: str) -> Generator[None]:
 
     Args:
         co (localmd.Checkout): The checkout being worked on.
-        doing (str): What failed, as in "could not <doing> the entries of <worktree>".
+        doing (str): What failed, as in "could not <doing> the entries of <root>".
     """
     try:
         yield
     except localmd.LocalMdError as err:
         fail(err.message, details=err.details)
     except OSError as err:
-        fail(f"could not {doing} the entries of {co.worktree}: {err}")
+        fail(f"could not {doing} the entries of {co.root}: {err}")
 
 
 def _migrate(co: localmd.Checkout) -> None:
@@ -161,7 +167,7 @@ def _waiting(co: localmd.Checkout, tracked: set[str]) -> tuple[list[localmd.Entr
     except localmd.LocalMdError as err:
         pp.error(err.message, details=err.details)
     except OSError as err:
-        pp.error(f"could not read the entries of {co.worktree}: {err}")
+        pp.error(f"could not read the entries of {co.root}: {err}")
     return [], False
 
 
@@ -808,7 +814,7 @@ def _declinable(co: localmd.Checkout, raw: str, cwd: Path, present: list[str]) -
     except localmd.LocalMdError as err:
         pp.error(err.message, details=err.details)
     except OSError as err:
-        pp.error(f"could not read {raw} in {co.worktree}: {err}")
+        pp.error(f"could not read {raw} in {co.root}: {err}")
     return None
 
 
@@ -904,7 +910,9 @@ def status_command(cwd: Path | None = CWD_OPTION, as_json: bool = JSON_OPTION) -
         asked = {item.name for item in askable}
 
         def is_ignored(item: localmd.Entry) -> bool | None:
-            return item.name in ignored if item.name in asked else None
+            if ignored is None or item.name not in asked:
+                return None
+            return item.name in ignored
 
         rows = [
             _status_row(

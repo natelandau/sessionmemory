@@ -506,6 +506,28 @@ def test_local_silent_when_linked_and_ignored(tmp_path):
     assert doctor.local_instructions(vault, StubEmbedder()) == []
 
 
+def test_local_checks_a_root_outside_git(tmp_path):
+    """Verify a registered root outside git gets the checkout checks, with no ignore check."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    root = tmp_path / "plain"
+    copy = _local_project(vault, root)
+    shutil.rmtree(root / ".git")
+    linked = tmp_path / "plain" / "CLAUDE.local.md"
+    linked.symlink_to(copy)
+
+    assert doctor.local_instructions(vault, StubEmbedder()) == []
+
+    linked.unlink()
+    linked.write_text("other\n", encoding="utf-8")
+
+    expected = (
+        "CLAUDE.local.md differs from the vault copy; copy the newer one over the vault "
+        "copy, delete the checkout copy, and run local sync"
+    )
+    assert [f.message for f in doctor.local_instructions(vault, StubEmbedder())] == [expected]
+
+
 def test_local_silent_without_vault_copy(tmp_path):
     """Verify a project with no vault copy is not a finding, whatever sits at its root."""
     vault = tmp_path / "vault"
@@ -524,7 +546,7 @@ def test_run_includes_the_local_check():
 
 
 def test_local_silent_when_root_is_not_a_git_repository(tmp_path):
-    """Verify a git failure outside a repository is not read as "not ignored"."""
+    """Verify a link at a root outside git is not reported as unignored."""
     vault = tmp_path / "vault"
     copy = vault / "projects" / "demo" / "local" / "CLAUDE.local.md"
     copy.parent.mkdir(parents=True)

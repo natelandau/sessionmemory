@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 runner = CliRunner()
+NAME = paths.LOCAL_MD_FILE
 
 
 def _git(*args, cwd) -> None:
@@ -846,16 +847,149 @@ def test_unregistered_directory_is_refused(vault, tmp_path):
     assert result.exit_code == 1
 
 
-def test_outside_git_is_refused(workspace, tmp_path):
-    """Verify a registered directory outside a git work tree is refused by the checkout."""
-    plain = tmp_path / "plain"
-    plain.mkdir()
-    assert runner.invoke(app, ["project", "register", "--cwd", str(plain)]).exit_code == 0
+@pytest.fixture
+def plain(workspace, tmp_path) -> Path:
+    """Register a project folder outside git, slugged plain."""
+    root = tmp_path / "plain"
+    root.mkdir()
+    assert runner.invoke(app, ["project", "register", "--cwd", str(root)]).exit_code == 0
+    return root
+
+
+def test_adopt_and_status_in_a_registered_folder_outside_git(workspace, plain):
+    """Verify a folder outside git adopts and reports entries at its registered root."""
+    (plain / NAME).write_text("notes\n")
+    sub = plain / "sub"
+    sub.mkdir()
+
+    adopt = runner.invoke(app, ["local", "adopt", NAME, "--cwd", str(sub)])
+
+    assert adopt.exit_code == 0, adopt.output
+    assert (plain / NAME).is_symlink()
+    status = runner.invoke(app, ["local", "status", "--cwd", str(sub), "--json"])
+    assert status.exit_code == 0, status.output
+    rows = json.loads(status.stdout)["entries"]
+    row = next(r for r in rows if r["name"] == NAME)
+    assert (row["state"], row["tracked"], row["ignored"]) == ("linked", False, None)
+    text = runner.invoke(app, ["local", "status", "--cwd", str(plain)])
+    assert "not ignored" not in text.stdout
+
+
+def test_sync_json_outside_git_links_the_vault_copy(workspace, plain):
+    """Verify sync links a vault copy into a registered folder outside git."""
+    vault, _ = workspace
+    copy = paths.local_dir(vault, "plain") / NAME
+    copy.parent.mkdir(parents=True)
+    copy.write_text("notes\n")
+
+    result = runner.invoke(app, ["local", "sync", "--json", "--cwd", str(plain)])
+
+    assert result.exit_code == 0, result.output
+    rows = json.loads(result.stdout)["entries"]
+    assert [(r["name"], r["status"]) for r in rows] == [(NAME, "created")]
+    assert (plain / NAME).resolve() == copy.resolve()
+
+
+def test_status_in_a_nested_repo_is_not_the_outer_project(workspace, plain):
+    """Verify a cwd in an unregistered repository inside the folder never resolves to it."""
+    inner = plain / "inner"
+    inner.mkdir()
+    _git("init", "-q", ".", cwd=inner)
+
+    result = runner.invoke(app, ["local", "status", "--cwd", str(inner)])
+
+    assert result.exit_code == 1
+    assert "not a registered project" in result.stderr
+
+
+def test_adopt_refuses_a_path_in_a_nested_repo(workspace, plain, monkeypatch):
+    """Verify adopt leaves a file alone when a repository inside the folder owns it."""
+    monkeypatch.chdir(plain)
+    api = plain / "api"
+    api.mkdir()
+    _git("init", "-q", ".", cwd=api)
+    (api / "local.toml").write_text("key = 1\n")
+
+    result = runner.invoke(app, ["local", "adopt", "api/local.toml", "--cwd", str(plain)])
+
+    assert result.exit_code == 1
+    assert "belongs to the project at" in result.stderr
+    assert not (api / "local.toml").is_symlink()
+
+
+def test_adopt_refuses_a_path_in_a_registered_child(workspace, plain, monkeypatch):
+    """Verify adopt refuses a path inside a registered folder within the project."""
+    monkeypatch.chdir(plain)
+    docs = plain / "docs"
+    docs.mkdir()
+    (docs / "a.md").write_text("a\n")
+    assert runner.invoke(app, ["project", "register", "--cwd", str(docs)]).exit_code == 0
+
+    result = runner.invoke(app, ["local", "adopt", "docs/a.md", "--cwd", str(plain)])
+
+    assert result.exit_code == 1
+    assert "belongs to the project at" in result.stderr
+    assert not (docs / "a.md").is_symlink()
+
+
+def test_sync_json_reports_a_listed_path_now_in_a_child_project(workspace, plain, monkeypatch):
+    """Verify sync reports, and does not link, a listed path a later child project holds."""
+    monkeypatch.chdir(plain)
+    tools = plain / "tools"
+    tools.mkdir()
+    (tools / "x.toml").write_text("x = 1\n")
+    assert (
+        runner.invoke(app, ["local", "adopt", "tools/x.toml", "--cwd", str(plain)]).exit_code == 0
+    )
+    (tools / "x.toml").unlink()
+    assert runner.invoke(app, ["project", "register", "--cwd", str(tools)]).exit_code == 0
+
+    result = runner.invoke(app, ["local", "sync", "--json", "--cwd", str(plain)])
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert any("tools/x.toml" in line for line in payload["manifest_problems"])
+    assert "tools/x.toml" not in [row["name"] for row in payload["entries"]]
+    assert not (tools / "x.toml").exists()
+
+
+def test_sync_names_a_link_left_inside_a_later_child_project(workspace, plain, monkeypatch):
+    """Verify sync tells the person to delete a link that a later child repository holds."""
+    monkeypatch.chdir(plain)
+    tools = plain / "tools"
+    tools.mkdir()
+    (tools / "x.toml").write_text("x = 1\n")
+    assert (
+        runner.invoke(app, ["local", "adopt", "tools/x.toml", "--cwd", str(plain)]).exit_code == 0
+    )
+    _git("init", "-q", ".", cwd=tools)
+
+    result = runner.invoke(app, ["local", "sync", "--json", "--cwd", str(plain)])
+
+    problems = json.loads(result.stdout)["manifest_problems"]
+    assert any(f"delete the link at {tools.resolve() / 'x.toml'}" in p for p in problems)
+
+
+def test_status_with_git_dir_set_in_a_plain_folder_is_refused(workspace, plain, monkeypatch):
+    """Verify a GIT_DIR exported by a git hook makes the CLI refuse a plain folder."""
+    _, repo = workspace
+    monkeypatch.setenv("GIT_DIR", str(repo / ".git"))
 
     result = runner.invoke(app, ["local", "status", "--cwd", str(plain)])
 
     assert result.exit_code == 1
     assert "is not inside a git work tree" in result.stderr
+
+
+def test_unregistered_folder_outside_git_is_still_refused(workspace, tmp_path):
+    """Verify a folder outside git that is not registered is refused."""
+    loose = tmp_path / "loose"
+    loose.mkdir()
+
+    result = runner.invoke(app, ["local", "status", "--cwd", str(loose)])
+
+    assert result.exit_code == 1
+    assert "not a registered project" in result.stderr
 
 
 def test_status_reports_a_git_failure(workspace, monkeypatch):

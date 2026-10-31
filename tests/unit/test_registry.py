@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import fcntl
 import os
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import pytest
 
@@ -17,13 +17,11 @@ from sessionmemory.lib.registry import (
     find_by_path_prefix,
     find_by_remote,
     find_by_root,
+    find_under_root,
     load,
     normalize_remote,
     save,
 )
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 def _write_raw_registry(tmp_path, toml_text: str) -> None:
@@ -152,6 +150,20 @@ def test_find_by_path_prefix_matches_a_root_and_its_descendants():
     assert find_by_path_prefix(projects, "/r/gx/a/b/c").slug == "gx"
     assert find_by_path_prefix(projects, "/r/other") is None
     assert find_by_path_prefix(projects, "/r/gx-adjacent") is None
+
+
+def test_find_under_root_lists_other_absolute_roots_beneath_it():
+    """Name the roots strictly inside a root, skipping itself, neighbors, and relative roots."""
+    projects = {
+        "outer": Project(slug="outer", remotes=(), root="/r/outer"),
+        "inner": Project(slug="inner", remotes=(), root="/r/outer/a"),
+        "twin": Project(slug="twin", remotes=(), root="/r/outer"),
+        "adjacent": Project(slug="adjacent", remotes=(), root="/r/outer-x"),
+        "loose": Project(slug="loose", remotes=(), root="outer/b"),
+        "empty": Project(slug="empty", remotes=(), root=""),
+    }
+
+    assert find_under_root(projects, "/r/outer", exclude="outer") == (Path("/r/outer/a"),)
 
 
 def test_find_by_path_prefix_prefers_the_deepest_root():
