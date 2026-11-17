@@ -1,3 +1,9 @@
+## v0.19.0 (2026-11-16)
+
+### Feat
+
+- **backlog**: add a detail block to backlog items (#24)
+
 ## v0.18.0 (2026-10-31)
 
 ### Feat
