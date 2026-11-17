@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from sessionmemory.lib import (
+    backlog,
     changes,
     commits,
     field,
@@ -147,9 +148,6 @@ def dead_projects(vault: Path, _embedder: Embedder) -> list[Finding]:
     ]
 
 
-_TICKED = ("- [x]", "- [X]")
-
-
 def ticked_backlog_lines(vault: Path, _embedder: Embedder) -> list[Finding]:
     """Report a ticked top-level bullet in a backlog.
 
@@ -162,7 +160,7 @@ def ticked_backlog_lines(vault: Path, _embedder: Embedder) -> list[Finding]:
         if not path.is_file():
             continue
         for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-            if line.startswith(_TICKED):
+            if backlog.is_ticked(line):
                 message = f"line {number}: ticked; finished work is deleted, not ticked"
                 findings.append(Finding("backlog", str(path), message))
     return findings

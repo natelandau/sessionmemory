@@ -117,8 +117,8 @@ carries a size, a date, or a topic.
 
 A ticked `- [x]` line is finished work. Delete it: the backlog has no checkbox, and git
 history is the record of what was done. You can also run `/sessionmemory:backlog`, which
-deletes ticked lines before it triages. An indented bullet is a note under an item and is
-not reported.
+deletes ticked lines before it triages, together with their detail. Indented bullets under
+an item are its detail and are not reported.
 
 ### `reference`
 

@@ -32,9 +32,10 @@ the CLI writes is:
 ```
 
 The size, the date, and the topic are optional, and a line without them is still
-an item. The line has no checkbox. A finished item is deleted, and git history is
-the record of it. The kinds are the conventional-commit types and `decide`. Items
-under `## decide` are questions for the user, not work.
+an item. Indented lines directly under an item are its detail: context that belongs
+to the item and is not an item itself. The line has no checkbox. A finished item is
+deleted, and git history is the record of it. The kinds are the conventional-commit
+types and `decide`. Items under `## decide` are questions for the user, not work.
 
 ## Step 2: delete ticked lines
 
@@ -45,7 +46,8 @@ open item. Find them before you dispatch anything:
 grep -nE '^- \[[xX]\]' "$BACKLOG"
 ```
 
-Delete every one with Edit, without asking, and list them in the report.
+Delete every one and its indented detail with Edit, without asking, and list them
+in the report.
 
 ## Step 3: list the open items
 
@@ -57,15 +59,16 @@ If no line is open, report "The backlog has no open items." and stop.
 
 Split the lines by the heading they sit under. The `## decide` items are not sent
 to the reviewers, because a question has no code to validate. List them for the
-user, and ask the user to answer each one. When the user answers, delete the line.
+user, and ask the user to answer each one. When the user answers, delete the line
+and its indented detail.
 If only `## decide` items are open, skip the dispatch and go to the report.
 
 While you triage, look for lines under another heading that start with "Decide
 whether" or are otherwise a question for the user. Offer to move them under
-`## decide`, and move them only when the user says yes.
+`## decide` with their detail, and move them only when the user says yes.
 
-Pass lines to the reviewers verbatim. Each reviewer keys its answers by the line
-text.
+Pass lines to the reviewers verbatim, without their detail. Each reviewer keys its
+answers by the line text and reads the detail from the file.
 
 ## Step 4: dispatch the reviewers
 
@@ -98,10 +101,10 @@ line, keyed by `item`.
 
 Every verdict is an Edit to `backlog.md`. Git history keeps all of them.
 
-- `CLOSE`: delete the line.
-- `REMOVE`: delete the line.
-- `AMEND`: rewrite the description or the size, or move the line under the correct
-  `## <kind>` heading. Keep the date when the line has one.
+- `CLOSE` or `REMOVE`: delete the line and its indented detail.
+- `AMEND`: rewrite the description, the size, or the detail, or move the item with
+  its detail under the correct `## <kind>` heading. Keep the date when the line has
+  one.
 - `KEEP`: leave the line.
 
 If a `CLOSE` or `REMOVE` has low confidence and `--yes` was not passed, ask the

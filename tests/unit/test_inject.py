@@ -146,7 +146,8 @@ def test_guidance_teaches_the_backlog_line_and_the_project_paths():
 
     assert "`- [S] <imperative description> - <YYYY-MM-DD> [#topic]`" in flat
     assert "- [ ]" not in flat
-    assert "Delete a finished line" in flat
+    assert "Delete a finished item with its detail" in flat
+    assert "--detail" in flat
     assert "`## <kind>` heading" in flat
     assert "sessionmemory new backlog --kind <kind> --size <S|M|L>" in flat
     assert "# Backlog" not in flat

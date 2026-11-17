@@ -26,7 +26,8 @@ pruned, so it holds work that has since been done or abandoned.
   under a `## <kind>` heading naming its conventional-commit type, or `## decide` for
   a question to the user. The size, the date, and the topic may be missing. A
   missing part is unknown, not malformed. Read the file yourself for the section
-  each line sits in.
+  each line sits in and for its detail: the indented lines directly under it, which
+  carry the item's context.
 - You run in the project's repo, so you can read code and inspect git history.
 
 ## Verdict - return exactly one per item
@@ -38,7 +39,8 @@ pruned, so it holds work that has since been done or abandoned.
   Cite why. (the caller deletes the line)
 - **AMEND** - still valid, but the line has drifted: it references renamed or
   moved things, it sits under the wrong `## <kind>` heading, a size that is present is
-  clearly off, or the description is stale. Provide the corrected line.
+  clearly off, or the description or its detail is stale. Provide the corrected line
+  and detail.
 - **KEEP** - still valid and accurate as written; the work is genuinely outstanding.
 
 When the evidence is ambiguous, prefer **KEEP** - do not close or remove real work
@@ -54,8 +56,9 @@ else. Each object contains:
 - `verdict` - one of CLOSE / REMOVE / AMEND / KEEP.
 - `evidence` - the commit, `file:line`, test, or fact you checked, tying the
   verdict to current repo state.
-- `proposed_change` - for AMEND, the corrected line text and, when the kind is
-  wrong, the section it belongs under; omit otherwise.
+- `proposed_change` - for AMEND, the corrected line text, the corrected detail when
+  it drifted, and, when the kind is wrong, the section it belongs under; omit
+  otherwise.
 - `confidence` - high / medium / low. The caller uses this to decide which
   verdicts to apply directly versus confirm with the user first.
 

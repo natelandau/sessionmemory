@@ -9,7 +9,7 @@ from sessionmemory.lib import backlog
 TODAY = "2026-09-03"
 
 
-def _add(path, **overrides) -> str:
+def _add(path, **overrides) -> list[str]:
     options = {
         "kind": "feat",
         "size": "S",
@@ -25,7 +25,7 @@ def test_add_item_creates_the_file_with_the_heading_when_missing(tmp_path):
     """Verify a missing file is created with the `# Backlog` heading and the kind section."""
     path = tmp_path / "backlog.md"
 
-    line = _add(path)
+    [line] = _add(path)
 
     assert line == "- [S] cache the model - 2026-09-03 [#index]"
     assert path.read_text(encoding="utf-8") == (
@@ -116,21 +116,21 @@ def test_add_item_leaves_a_file_without_the_backlog_heading_alone(tmp_path):
 
 def test_add_item_omits_the_topic_when_none_is_given(tmp_path):
     """Verify the trailing bracket is dropped rather than rendered empty."""
-    line = _add(tmp_path / "backlog.md", topic=None)
+    [line] = _add(tmp_path / "backlog.md", topic=None)
 
     assert line == "- [S] cache the model - 2026-09-03"
 
 
 def test_add_item_strips_a_leading_hash_from_the_topic(tmp_path):
     """Verify `#index` and `index` write the same tag."""
-    line = _add(tmp_path / "backlog.md", topic=" #index ")
+    [line] = _add(tmp_path / "backlog.md", topic=" #index ")
 
     assert line.endswith("[#index]")
 
 
 def test_add_item_strips_the_description(tmp_path):
     """Verify surrounding whitespace never reaches the line."""
-    line = _add(tmp_path / "backlog.md", description="  trim me  ")
+    [line] = _add(tmp_path / "backlog.md", description="  trim me  ")
 
     assert line == "- [S] trim me - 2026-09-03 [#index]"
 
@@ -241,3 +241,97 @@ def test_format_item_names_the_bracket_in_a_rejected_topic(topic):
     """Verify a bracket in a topic is refused with a message naming brackets."""
     with pytest.raises(backlog.BacklogError, match="bracket"):
         backlog.format_item(kind="feat", size="S", description="d", topic=topic, today="2026-10-13")
+
+
+def test_add_item_writes_detail_indented_under_its_line(tmp_path):
+    """Verify detail lands as indented lines directly below the item and is returned."""
+    path = tmp_path / "backlog.md"
+    block = _add(path, detail="It loads twice per run.\n\nSee lib/embed.py.")
+    assert block[1:] == ["  - It loads twice per run.", "  - See lib/embed.py."]
+    assert path.read_text(encoding="utf-8").endswith("\n".join(block) + "\n")
+
+
+def test_add_item_appends_after_the_previous_items_detail(tmp_path):
+    """Verify a new item goes after the last item's detail block, not inside it."""
+    path = tmp_path / "backlog.md"
+    _add(path, description="first", detail="why the first")
+    _add(path, description="second")
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert lines[-3:] == [
+        f"- [S] first - {TODAY} [#index]",
+        "  - why the first",
+        f"- [S] second - {TODAY} [#index]",
+    ]
+
+
+def test_format_detail_wraps_a_long_line_into_one_bullet():
+    """Verify a long line becomes one bullet whose continuation lines align under its text."""
+    lines = backlog.format_detail("word " * 60)
+    assert len(lines) > 1
+    assert lines[0].startswith(backlog.DETAIL_BULLET)
+    assert all(line.startswith("    ") and line[4] != " " for line in lines[1:])
+    assert all(len(line) <= backlog.DETAIL_WIDTH for line in lines)
+
+
+def test_format_detail_does_not_double_a_bullet_the_caller_wrote():
+    """Verify a line already written as a bullet gets one marker, not two."""
+    assert backlog.format_detail("- first\nsecond") == ["  - first", "  - second"]
+
+
+@pytest.mark.parametrize("detail", [None, "", " \n\n ", "- \n-"])
+def test_format_detail_is_empty_without_text(detail):
+    """Verify no detail, or only whitespace, writes no lines."""
+    assert backlog.format_detail(detail) == []
+
+
+def test_detail_lines_are_not_counted_as_items():
+    """Verify the indented detail the writer produces never counts as an open item."""
+    assert not any(backlog.is_item(line) for line in backlog.format_detail("- looks like a bullet"))
+
+
+def _warnings(**overrides) -> list[str]:
+    options = {"in_use": [], "description": "d", "topic": None, "detail": None}
+    options.update(overrides)
+    return [warning.message for warning in backlog.shape_warnings(**options)]
+
+
+def test_shape_warnings_is_empty_for_a_well_placed_item():
+    """Verify an item at every limit, with a topic already in use, raises no warning."""
+    assert not _warnings(
+        in_use=["web"],
+        topic="#web",
+        description="x" * backlog.LONG_DESCRIPTION,
+        detail="y" * backlog.LONG_DETAIL,
+    )
+
+
+def test_shape_warnings_flags_each_field_past_its_limit():
+    """Verify a new topic, a long description, and a long detail each warn once."""
+    messages = _warnings(
+        in_use=["web"],
+        topic="api",
+        description="x" * (backlog.LONG_DESCRIPTION + 1),
+        detail="y" * (backlog.LONG_DETAIL + 1),
+    )
+    assert messages == [
+        "#api is a new topic in this backlog",
+        (
+            f"the description is {backlog.LONG_DESCRIPTION + 1} characters, "
+            f"longer than {backlog.LONG_DESCRIPTION}"
+        ),
+        f"the detail is {backlog.LONG_DETAIL + 1} characters, longer than {backlog.LONG_DETAIL}",
+    ]
+
+
+def test_shape_warnings_skips_the_topic_check_on_an_untagged_backlog():
+    """Verify the first topic in a backlog that has none is not called new."""
+    assert not _warnings(in_use=[], topic="web")
+
+
+@pytest.mark.parametrize(
+    ("line", "ticked"),
+    [("- [x] done", True), ("- [X] done", True), ("- [ ] open", False), ("  - [x] note", False)],
+)
+def test_is_ticked_matches_only_top_level_ticked_bullets(line, ticked):
+    """Verify only a column-0 ticked bullet counts as ticked."""
+    assert backlog.is_ticked(line) is ticked

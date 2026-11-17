@@ -147,16 +147,21 @@ CLI writes the full shape under a `## <kind>` heading, and it creates the file o
 the heading when either is missing:
 
 ```bash
-"$CLI" new backlog --kind feat --size S --title "cache the model between reindex runs" --topic index --cwd .
+"$CLI" new backlog --kind feat --size S --title "cache the model between reindex runs" --topic index \
+  --detail "reindex loads the model once per field; lib/embed.py builds it fresh each call" --cwd .
 ```
 
 `--kind` is one of feat, fix, refactor, perf, docs, test, build, ci, or decide.
-Put a question for the user to answer under `--kind decide`. The command warns
-when a topic is new or a description is over 200 characters.
+Put a question for the user to answer under `--kind decide`. Keep the title to one
+short sentence. Put the context a later session needs (why, where, what was tried)
+in `--detail`, which the CLI writes as nested bullets under the item, one per line
+of the text. Put the detail in single quotes when it holds a backtick or `$`, or
+the shell runs or expands it. Indented lines are never counted as items. The command warns when a topic is new, a title is too
+long for one line, or the detail is long enough to belong in a spec.
 
-Delete a finished item from `backlog.md` directly. Delete an item that will never
-be done the same way. The line has no checkbox to tick. Git history is the record
-of what was finished.
+Delete a finished item from `backlog.md` directly, together with its indented
+detail lines. Delete an item that will never be done the same way. The line has no
+checkbox to tick. Git history is the record of what was finished.
 
 ## The vault is committed for you
 

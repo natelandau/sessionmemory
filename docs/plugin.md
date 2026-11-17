@@ -311,9 +311,10 @@ is recorded as nothing at all. Then it does four jobs, in order:
    needs belongs in the project's `CLAUDE.md`, and the pass records it as a `docs`
    backlog line rather than a page. A fact already recorded is refined in place, never
    written a second time.
-2. **Deferred work.** Concrete work that was decided and not done becomes one line in
-   `backlog.md`, written through `sessionmemory new backlog`. Work the transcript shows
-   was finished has its line deleted.
+2. **Deferred work.** Concrete work that was decided and not done becomes one item in
+   `backlog.md`, written through `sessionmemory new backlog`, with the context a later
+   session needs as indented detail. Work the transcript shows was finished has its item
+   deleted.
 3. **Specs.** For a spec in `specs/` that the session worked on, the pass keeps three
    frontmatter keys current: `status: shipped` when the work merged, `status: superseded`
    with `superseded_by` when a newer spec replaced it, and a one-sentence `summary` for a
