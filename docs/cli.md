@@ -1054,14 +1054,15 @@ dates it, and puts it under the heading for its kind. It creates the file with i
 `# Backlog` heading when there is none, and adds the kind heading at the end when the
 file lacks it.
 
-| Option    | What it does                                                                                                              |
-| --------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `--kind`  | The heading the item goes under: `feat`, `fix`, `refactor`, `perf`, `docs`, `test`, `build`, `ci`, or `decide`. Required. |
-| `--size`  | Effort: `S`, `M`, or `L`. Required.                                                                                       |
-| `--title` | The imperative description of the work. Required.                                                                         |
-| `--topic` | A topic tag, without the leading hash.                                                                                    |
-| `--cwd`   | Directory to resolve the project from.                                                                                    |
-| `--json`  | Emit JSON instead of prose.                                                                                               |
+| Option     | What it does                                                                                                              |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `--kind`   | The heading the item goes under: `feat`, `fix`, `refactor`, `perf`, `docs`, `test`, `build`, `ci`, or `decide`. Required. |
+| `--size`   | Effort: `S`, `M`, or `L`. Required.                                                                                       |
+| `--title`  | The imperative description of the work. Required.                                                                         |
+| `--topic`  | A topic tag, without the leading hash.                                                                                    |
+| `--detail` | Context written as indented lines under the item: why, where, what was tried.                                             |
+| `--cwd`    | Directory to resolve the project from.                                                                                    |
+| `--json`   | Emit JSON instead of prose.                                                                                               |
 
 `decide` is for a question the user has to answer before work can start, such as a choice
 between two designs. It goes under a `## decide` heading and counts as an open item like
@@ -1077,7 +1078,31 @@ sessionmemory new backlog --kind feat --size M \
 ~/repos/my-vault/projects/invoice-api/backlog.md
 ```
 
-The command prints the line it wrote, then the path. A question for the user:
+The command prints the line it wrote, then the path.
+
+Keep the title to one short sentence. Context that someone needs to start the work goes
+in `--detail`. The command writes each line of the text as a nested bullet under the
+item and wraps it at 88 columns. Blank lines are dropped, and a line that already starts
+with `- ` keeps its one marker. Indented lines are not counted as items, so the detail
+never changes the open count. Put the detail in single quotes when it holds a backtick or
+`$`, so the shell passes it through unchanged:
+
+```bash
+sessionmemory new backlog --kind fix --size S \
+  --title "Round tax per line, not per invoice" --topic tax \
+  --detail "Invoices with many cheap lines are off by a cent against the customer's ledger. Rounding happens once in totals.py; per-line rounding needs each line's tax stored." --cwd .
+```
+
+```
+- [S] Round tax per line, not per invoice - 2026-10-13 [#tax]
+  - Invoices with many cheap lines are off by a cent against the customer's ledger.
+    Rounding happens once in totals.py; per-line rounding needs each line's tax stored.
+~/repos/my-vault/projects/invoice-api/backlog.md
+```
+
+To delete an item, delete its line and its detail bullets.
+
+A question for the user:
 
 ```bash
 sessionmemory new backlog --kind decide --size S \
@@ -1089,7 +1114,7 @@ sessionmemory new backlog --kind decide --size S \
 ~/repos/my-vault/projects/invoice-api/backlog.md
 ```
 
-Two warnings go to stderr, and neither stops the write. A topic that no other line uses
+Three warnings go to stderr, and none stops the write. A topic that no other line uses
 is probably a typo, so the command lists the topics in use:
 
 ```
@@ -1099,22 +1124,33 @@ is probably a typo, so the command lists the topics in use:
 ~/repos/my-vault/projects/invoice-api/backlog.md
 ```
 
-A description over 200 characters is a spec in disguise:
+A description over 120 characters is hard to scan, so the command points at `--detail`:
 
 ```
-! the description is 203 characters, over the 200 limit
-  └─ keep a line to one sentence and put detail in a spec
+! the description is 121 characters, longer than 120
+  └─ keep the line to one short sentence and move context into --detail
 ```
 
-Both warnings print only once the line is written, so an item that is refused prints the
+Detail over 1,500 characters is a design, which belongs in a spec:
+
+```
+! the detail is 1599 characters, longer than 1500
+  └─ a design this size belongs in a spec
+```
+
+All warnings print only once the line is written, so an item that is refused prints the
 error alone.
 
-With `--json`, the payload names the file and the exact line written:
+With `--json`, the payload names the file, the exact line written, and the detail lines
+as written, which is an empty list when there is no detail:
 
 ```json
 {
   "path": "~/repos/my-vault/projects/invoice-api/backlog.md",
-  "line": "- [S] Round tax per line, not per invoice - 2026-10-13"
+  "line": "- [S] Retry webhooks - 2026-10-13",
+  "detail": [
+    "  - A 503 from the receiver drops the event."
+  ]
 }
 ```
 
@@ -1429,15 +1465,17 @@ all for a script.
   - Past sessions, one page each: `sessionmemory search "<words>" --logs`. Search them
     for why something was decided, what happened the last time an area changed, or
     whether a fix was already tried.
-  - Open work: read `backlog.md`. Any top-level bullet is an open item. Under a
+  - Open work: read `backlog.md`. Any top-level bullet is an open item, and the
+    indented lines under it are its detail. Under a
     `## <kind>` heading (feat, fix, refactor, perf, docs, test, build, ci, decide), the
     full shape is sized S, M, or L: `- [S] <imperative description> - <YYYY-MM-DD> [#topic]`.
     Add one with
     `sessionmemory new backlog --kind <kind> --size <S|M|L> --title "..." --topic <topic> --cwd .`,
-    which writes that shape and creates the file or heading when missing. Questions
-    for the user to answer go under `## decide`. Delete a finished line, and one
-    that will never be done, directly; never tick or annotate it. Git history is the
-    record of what was finished.
+    which writes that shape and creates the file or heading when missing. Keep the
+    title to one short sentence and pass context (why, where, what was tried) with
+    `--detail "..."`, in single quotes when it holds a backtick or `$`. Questions for
+    the user to answer go under `## decide`. Delete a finished item with its detail,
+    and one that will never be done, directly; never tick or annotate it. Git history is the record of what was finished.
   - Specs: `specs/` holds one design record per feature, named `<date>-<topic>.md`
     and kept after the work ships. Before designing or changing a feature, search
     them: `sessionmemory search "<words>" --specs` (listing the directory works too), so a

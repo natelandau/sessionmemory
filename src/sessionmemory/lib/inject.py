@@ -145,15 +145,17 @@ all for a script.
   - Past sessions, one page each: `{command} search "<words>" --logs`. Search them
     for why something was decided, what happened the last time an area changed, or
     whether a fix was already tried.
-  - Open work: read `backlog.md`. Any top-level bullet is an open item. Under a
+  - Open work: read `backlog.md`. Any top-level bullet is an open item, and the
+    indented lines under it are its detail. Under a
     `## <kind>` heading (feat, fix, refactor, perf, docs, test, build, ci, decide), the
     full shape is sized S, M, or L: `- [S] <imperative description> - <YYYY-MM-DD> [#topic]`.
     Add one with
     `{command} new backlog --kind <kind> --size <S|M|L> --title "..." --topic <topic> --cwd .`,
-    which writes that shape and creates the file or heading when missing. Questions
-    for the user to answer go under `## decide`. Delete a finished line, and one
-    that will never be done, directly; never tick or annotate it. Git history is the
-    record of what was finished.
+    which writes that shape and creates the file or heading when missing. Keep the
+    title to one short sentence and pass context (why, where, what was tried) with
+    `--detail "..."`, in single quotes when it holds a backtick or `$`. Questions for
+    the user to answer go under `## decide`. Delete a finished item with its detail,
+    and one that will never be done, directly; never tick or annotate it. Git history is the record of what was finished.
   - Specs: `specs/` holds one design record per feature, named `<date>-<topic>.md`
     and kept after the work ships. Before designing or changing a feature, search
     them: `{command} search "<words>" --specs` (listing the directory works too), so a

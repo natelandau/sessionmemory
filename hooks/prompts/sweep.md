@@ -106,22 +106,29 @@ the file, commit, or URL the fact came from wherever there is one.
 
 ### 2. Deferred work
 
-Concrete work that was decided and not done is one line in `backlog.md`, under
+Concrete work that was decided and not done is one item in `backlog.md`, under
 the `## <kind>` section for its commit type. Add it with the CLI, which writes the
 line, the date, and the heading, and creates the file when it is missing:
 
 ```
 {{vault_cli}} new backlog --kind <kind> --size <S|M|L> \
-  --title "<imperative description>" --topic <topic> --cwd {{repo}}
+  --title "<imperative description>" --topic <topic> \
+  --detail "<why, where, and what was tried>" --cwd {{repo}}
 ```
+
+Keep the title to one short sentence. `--detail` is optional; use it for the
+context a later session needs to start the work without this transcript, such as
+the file involved, the reason, or an approach already ruled out. The CLI writes it
+as nested bullets under the item. Single-quote the detail when it holds a backtick
+or `$`, so the shell passes it through unexpanded.
 
 Size is `S`, `M`, or `L`. Kind is one of feat, fix, refactor, perf, docs, test,
 build, ci, decide. A question only the user can answer ("decide whether ...") is
 not work to do: add it with `--kind decide`, which files it under `## decide`,
 and phrase the title as a question. Work the transcript shows was finished has its
-line deleted, and so does an item that will never be done; make both edits
-directly. The line has no checkbox, so never tick or annotate it; git history is
-the record of what was done.
+line and its indented detail deleted, and so does an item that will never be
+done; make both edits directly. The line has no checkbox, so never tick or
+annotate it; git history is the record of what was done.
 
 ### 3. Specs
 

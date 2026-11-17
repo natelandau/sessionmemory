@@ -10,7 +10,7 @@ import pytest
 from typer.testing import CliRunner, Result
 
 from sessionmemory.cli import app
-from sessionmemory.lib import specs
+from sessionmemory.lib import backlog, specs
 from sessionmemory.lib.config import today
 from sessionmemory.lib.frontmatter import parse
 
@@ -359,17 +359,16 @@ def test_new_backlog_writes_a_dated_item_under_its_kind_heading(workspace):
     assert "- [S] cache the model" in result.output
 
 
-def test_new_backlog_json_names_path_and_line(workspace):
+def test_new_backlog_json_names_path_line_and_detail(workspace):
     """Verify the payload carries where the item went and exactly what was written."""
-    result = runner.invoke(
-        app, ["new", "backlog", "--kind", "fix", "--size", "M", "--title", "t", "--json"]
-    )
+    result = _new_backlog("--detail", "context", "--json")
 
     assert result.exit_code == 0, result.output
     payload = json.loads(result.stdout)
-    assert set(payload) == {"path", "line"}
+    assert set(payload) == {"path", "line", "detail"}
     assert payload["path"].endswith("/demo/backlog.md")
-    assert payload["line"] == f"- [M] t - {today()}"
+    assert payload["line"] == f"- [S] t - {today()}"
+    assert payload["detail"] == ["  - context"]
 
 
 def test_new_backlog_rejects_an_unknown_kind_and_names_the_allowed_set(workspace):
@@ -427,21 +426,37 @@ def test_new_backlog_does_not_warn_on_the_first_topic(workspace):
 
 
 def test_new_backlog_warns_about_a_long_description(workspace):
-    """Verify a description over 200 characters warns and still writes the line."""
+    """Verify a description past the limit warns, points at --detail, and still writes."""
     vault, _ = workspace
+    title = "x" * (backlog.LONG_DESCRIPTION + 1)
 
-    result = _new_backlog(title="x" * 201)
+    result = _new_backlog(title=title)
 
     assert result.exit_code == 0, result.output
-    assert "x" * 201 in (vault / "projects" / "demo" / "backlog.md").read_text(encoding="utf-8")
-    assert "200" in result.stderr
+    assert title in (vault / "projects" / "demo" / "backlog.md").read_text(encoding="utf-8")
+    assert f"longer than {backlog.LONG_DESCRIPTION}" in result.stderr
+    assert "--detail" in result.stderr
+
+
+def test_new_backlog_writes_detail_under_the_line_and_prints_path_last(workspace):
+    """Verify --detail lands indented under the item and prose output ends with the path."""
+    vault, _ = workspace
+
+    result = _new_backlog("--detail", "why it matters\nwhere it lives")
+
+    assert result.exit_code == 0, result.output
+    *written, path = result.stdout.strip().splitlines()
+    assert written == [f"- [S] t - {today()}", "  - why it matters", "  - where it lives"]
+    assert path.endswith("/demo/backlog.md")
+    text = (vault / "projects" / "demo" / "backlog.md").read_text(encoding="utf-8")
+    assert text.endswith("\n".join(written) + "\n")
 
 
 def test_new_backlog_json_stays_parseable_when_it_warns(workspace):
     """Verify warnings go to stderr so the --json payload on stdout still parses."""
     assert _new_backlog("--topic", "web").exit_code == 0
 
-    result = _new_backlog("--topic", "other", "--json", title="x" * 201)
+    result = _new_backlog("--topic", "other", "--json", title="x" * (backlog.LONG_DESCRIPTION + 1))
 
     assert result.exit_code == 0, result.output
     assert result.stderr
@@ -470,12 +485,6 @@ def test_new_backlog_does_not_warn_on_a_topic_already_in_use(workspace, topic):
 
     assert result.exit_code == 0, result.output
     assert result.stderr == ""
-
-
-def test_new_backlog_warns_only_past_the_description_limit(workspace):
-    """Verify a 200-character description is silent and a 201-character one warns."""
-    assert _new_backlog(title="x" * 200).stderr == ""
-    assert "201" in _new_backlog(title="y" * 201).stderr
 
 
 def test_new_backlog_prints_bracketed_markup_literally(workspace):

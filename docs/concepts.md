@@ -143,6 +143,7 @@ whether or not it carries a size, a date, or a topic. The full shape, which
 ## feat
 
 - [M] cache the embedding model between reindex runs - 2026-09-02 [#index]
+  - reindex builds the model once per field, which costs seconds on a large vault.
 
 ## decide
 
@@ -156,8 +157,9 @@ a task to begin. `sessionmemory new backlog` writes an item in the full shape, d
 under its heading, and creates the file or the heading when either is missing. There is
 no checkbox: finished work is deleted from the file, the same as work that will never
 happen, and git history is the record of what was done. A session start reports how many
-bullets the file holds, and nothing more. An indented bullet is a note under an item and
-is not counted. A ticked `- [x]` line is not an open item either, and
+bullets the file holds, and nothing more. Indented bullets under an item are its detail,
+the context someone needs to start the work, and are not counted. Delete them with the
+item. A ticked `- [x]` line is not an open item either, and
 `sessionmemory doctor` reports it.
 
 ## Local files

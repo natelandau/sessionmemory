@@ -120,10 +120,14 @@ Apply every verdict. No delete and no edit needs a confidence gate.
   `$BACKLOG` already covers the item. Then add it:
 
   ```bash
-  "$CLI" new backlog --kind <kind> --size <S|M|L> --title "<item>" --topic <topic> --cwd .
+  "$CLI" new backlog --kind <kind> --size <S|M|L> --title "<item>" --topic <topic> \
+    --detail "<context from the page>" --cwd .
   ```
 
-  The command writes the line under the correct `## <kind>` heading. A page whose
+  The command writes the line under the correct `## <kind>` heading, with the
+  detail as nested bullets under it. Carry the page's useful context into
+  `--detail` before the page is deleted, in single quotes when it holds a
+  backtick or `$`. A page whose
   `learning_role` is `workaround` stays. A page whose `learning_role` is
   `superseded` is deleted, the same as any other `DELETE`.
 - CLAUDE.md promotion, from `claude_md_candidate`: recommend only. Report the

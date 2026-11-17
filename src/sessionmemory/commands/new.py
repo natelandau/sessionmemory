@@ -55,6 +55,11 @@ SUPERSEDES = typer.Option(
     None, "--supersedes", help="The spec this one replaces, by name; it is marked superseded."
 )
 TOPIC = typer.Option(None, "--topic", help="A topic tag, without the leading hash.")
+DETAIL = typer.Option(
+    None,
+    "--detail",
+    help="Context written as nested bullets under the item: why, where, what was tried.",
+)
 
 
 def _report(path: Path, title: str, *, as_json: bool, uuid: str | None = None) -> None:
@@ -200,33 +205,13 @@ def new_reference(
     _new_living_document(paths.reference_dir, title, body, body_file, cwd, as_json=as_json)
 
 
-def _warn_about_shape(*, in_use: list[str], title: str, topic: str | None) -> None:
-    """Warn, without blocking the write, about a new topic tag or an overlong description.
-
-    `in_use` is read before the write, since the line just written always carries its own
-    topic.
-    """
-    if topic is not None:
-        tag = topic.strip().removeprefix("#")
-        if tag and in_use and tag not in in_use:
-            pp.warning(
-                f"#{tag} is a new topic in this backlog",
-                details=[f"in use: {', '.join(in_use)}"],
-            )
-    length = len(title.strip())
-    if length > backlog.LONG_DESCRIPTION:
-        pp.warning(
-            f"the description is {length} characters, over the {backlog.LONG_DESCRIPTION} limit",
-            details=["keep a line to one sentence and put detail in a spec"],
-        )
-
-
 @app.command("backlog", help="Add one open item to this project's backlog.md.")
 def new_backlog(
     kind: Kind = KIND,
     size: Size = SIZE,
     title: str = DESCRIPTION,
     topic: str | None = TOPIC,
+    detail: str | None = DETAIL,
     cwd: Path | None = CWD_OPTION,
     *,
     as_json: bool = JSON_OPTION,
@@ -241,13 +226,22 @@ def new_backlog(
     path = paths.backlog_path(vault, slug)
     in_use = backlog.topics(path)
     try:
-        line = backlog.add_item(
-            path, kind=kind.value, size=size.value, description=title, topic=topic, today=today()
+        block = backlog.add_item(
+            path,
+            kind=kind.value,
+            size=size.value,
+            description=title,
+            topic=topic,
+            today=today(),
+            detail=detail,
         )
     except backlog.BacklogError as error:
         fail(str(error))
-    _warn_about_shape(in_use=in_use, title=title, topic=topic)
+    for warning in backlog.shape_warnings(
+        in_use=in_use, description=title, topic=topic, detail=detail
+    ):
+        pp.warning(warning.message, details=[warning.advice])
     if as_json:
-        emit_json({"path": str(path), "line": line})
+        emit_json({"path": str(path), "line": block[0], "detail": block[1:]})
         return
-    emit_value(f"{line}\n{path}")
+    emit_value("\n".join([*block, str(path)]))

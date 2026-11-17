@@ -25,7 +25,8 @@ few high-value quick wins worth doing now.
   under a `## <kind>` heading naming its conventional-commit type, or `## decide` for
   a question to the user. The size, the date, and the topic may be missing. A
   missing part is unknown, not malformed. Read the file yourself for the section
-  each line sits in.
+  each line sits in and for its detail: the indented lines directly under it, which
+  carry the item's context.
 - You run in the project's repo, so you can read code and inspect git history.
 
 ## How to judge

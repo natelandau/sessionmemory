@@ -74,8 +74,9 @@ One folder per project under `projects/`. Inside each:
   indexed. `plans/` is scratch and is never committed: `.gitignore` and the plugin's
   commits both leave it out.
 - `backlog.md` is the list of open items for the project: every top-level bullet is an
-  open item, under any heading or none. A question for the user goes under `## decide`.
-  A finished item is deleted, not ticked.
+  open item, under any heading or none, and the indented lines under it are its detail.
+  A question for the user goes under `## decide`. A finished item is deleted with its
+  detail, not ticked.
 
 The `{MODEL_CODE}.sqlite3` file inside a field is its vector index. It is
 derived from the pages beside it, gitignored, and rebuilt by `sessionmemory reindex`.
