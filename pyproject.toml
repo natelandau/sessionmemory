@@ -1,12 +1,12 @@
 [project]
     authors = [{ name = "Nathaniel Landau", email = "github@natelandau.com" }]
     dependencies = [
-        "fastembed>=0.9.0",
+        "fastembed>=0.9.1",
         "nclutils>=4.0.0",
         "pyyaml>=6.0.3",
         "sqlite-vec>=0.1.9",
         "tomli-w>=1.2.0",
-        "typer>=0.27.3",
+        "typer>=0.29.1",
     ]
     description = "Durable memory for coding agents, one folder of searchable pages per project."
     name = "sessionmemory"
@@ -19,23 +19,23 @@
 
 [dependency-groups]
     dev = [
-        "commitizen>=4.19.2",
-        "coverage>=7.16.2",
+        "commitizen>=4.19.3",
+        "coverage>=7.17.3",
         "duty>=1.10.1",
-        "gate-cache>=0.6.0",
-        "prek>=0.5.5",
+        "gate-cache>=0.7.0",
+        "prek>=0.5.11",
         "pytest-clarity>=1.0.1",
         "pytest-cov>=7.1.0",
         "pytest-devtools>=1.3.0",
-        "pytest-mock>=3.16.0",
+        "pytest-mock>=3.17.0",
         "pytest-xdist>=3.8.0",
-        "pytest>=9.1.1",
+        "pytest>=9.2.0",
         "rich>=15.0.0",
-        "ruff>=0.17.0",
+        "ruff>=0.17.5",
         "shellcheck-py>=0.11.0.1",
-        "ty>=0.0.86",
-        "types-pyyaml>=6.0.12.20260906",
-        "typos>=1.51.1",
+        "ty>=0.0.104",
+        "types-pyyaml>=6.0.12.20261113",
+        "typos>=1.52.2",
         "yamllint>=1.38.0",
 ]
 
