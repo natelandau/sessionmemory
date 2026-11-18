@@ -292,10 +292,11 @@ sessionmemory reindex --cwd ~/repos/invoice-api
 ```
 
 ```
-✓ reindexing
-  ├─ learnings: 1 added, 0 updated, 0 removed, 0 unchanged
-  ├─ logs: 0 added, 0 updated, 0 removed, 0 unchanged
-  └─ specs: 0 added, 0 updated, 0 removed, 3 unchanged
+field      added  updated  removed  unchanged
+learnings      1        0        0          0
+logs           0        0        0          0
+specs          0        0        0          3
+total          1        0        0          3
 ```
 
 Freshness is the sha256 of each file, so a page edited in any editor is re-embedded on the

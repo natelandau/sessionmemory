@@ -125,3 +125,51 @@ def test_reindex_all_includes_specs(workspace):
     result = runner.invoke(app, ["reindex", "--all", "--json"])
 
     assert "specs" in json.loads(result.stdout)["demo"]
+
+
+def test_reindex_prints_a_grid_with_totals(workspace):
+    """Verify reindex reports one row per field and a totals footer."""
+    runner.invoke(app, ["new", "learning", "--title", "A", "--summary", "s"])
+
+    result = runner.invoke(app, ["reindex"])
+
+    assert result.exit_code == 0, result.output
+    lines = [line.split() for line in result.output.splitlines()]
+    assert lines[0] == ["field", "added", "updated", "removed", "unchanged"]
+    assert ["learnings", "1", "0", "0", "0"] in lines
+    assert lines[-1] == ["total", "1", "0", "0", "0"]
+
+
+def test_reindex_all_names_each_project_once(vault, tmp_path):
+    """Verify --all leads each project's group of fields with its slug, shown once."""
+    alpha = _register(tmp_path, "alpha")
+    runner.invoke(app, ["new", "learning", "--title", "A", "--summary", "s", "--cwd", str(alpha)])
+
+    result = runner.invoke(app, ["reindex", "--all"])
+
+    assert result.exit_code == 0, result.output
+    lines = [line.split() for line in result.output.splitlines()]
+    assert lines[0][0] == "project"
+    assert lines[1] == ["alpha", "learnings", "1", "0", "0", "0"]
+    assert lines[2][0] == "logs"
+    assert sum(line[0] == "alpha" for line in lines) == 1
+
+
+def test_reindex_all_reports_an_empty_vault(vault, tmp_path, monkeypatch):
+    """Verify --all on a vault with no fields says so instead of printing an empty grid."""
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(app, ["reindex", "--all"])
+
+    assert result.exit_code == 0, result.output
+    assert result.output.strip() == "no fields to reindex"
+
+
+def test_reindex_all_prints_a_folder_name_holding_markup_verbatim(vault):
+    """Verify a project folder whose name reads as Rich markup is printed, not parsed."""
+    (vault / "projects" / "odd[bold]" / "learnings").mkdir(parents=True)
+
+    result = runner.invoke(app, ["reindex", "--all"])
+
+    assert result.exit_code == 0, result.output
+    assert "odd[bold]" in result.output
