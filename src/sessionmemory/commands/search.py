@@ -27,32 +27,8 @@ INCLUDE_RETIRED = typer.Option(
     "--include-retired",
     help="With --specs, also show superseded and abandoned specs.",
 )
-LIMIT = typer.Option(10, "--limit", "-n", help="Maximum number of results.")
-# Hidden because the defaults were measured against labeled queries; these exist for
-# re-measuring them, not for loosening a search that found nothing.
-MAX_DISTANCE = typer.Option(
-    None,
-    "--max-distance",
-    min=0.0,
-    max=2.0,
-    help=(
-        "Farthest cosine distance that still counts as a hit. "
-        f"Default {fieldindex.DEFAULT_MAX_DISTANCE}, or {fieldindex.SPECS_MAX_DISTANCE} with --specs."
-    ),
-    show_default=False,
-    hidden=True,
-)
-MIN_MARGIN = typer.Option(
-    None,
-    "--min-margin",
-    min=0.0,
-    max=2.0,
-    help=(
-        "How much nearer than the median page searched a hit must sit. 0 turns this off. "
-        f"Default {fieldindex.DEFAULT_MIN_MARGIN}, or {fieldindex.SPECS_MIN_MARGIN} with --specs."
-    ),
-    show_default=False,
-    hidden=True,
+LIMIT = typer.Option(
+    fieldindex.DEFAULT_LIMIT, "--limit", "-n", min=0, help="Maximum number of results."
 )
 READ = typer.Option(False, "--read", help="Print each hit's whole file under its path.")  # noqa: FBT003
 
@@ -73,8 +49,6 @@ def search_command(  # noqa: PLR0913
     specs_flag: bool = SPECS,
     include_retired: bool = INCLUDE_RETIRED,
     limit: int = LIMIT,
-    max_distance: float | None = MAX_DISTANCE,
-    min_margin: float | None = MIN_MARGIN,
     read: bool = READ,
     cwd: Path | None = CWD_OPTION,
     as_json: bool = JSON_OPTION,
@@ -90,14 +64,13 @@ def search_command(  # noqa: PLR0913
     vault = require_vault()
     slug = require_project(vault, cwd)
     field_name = _field_name(specs_flag=specs_flag, logs=logs)
+    field_dir = paths.project_dir(vault, slug) / field_name
     hits = fieldindex.search(
-        paths.project_dir(vault, slug) / field_name,
+        field_dir,
         build_embedder(),
         text,
         limit=limit,
-        max_distance=max_distance,
-        min_margin=min_margin,
-        exclude=specs.is_retired if specs_flag and not include_retired else None,
+        exclude=None if include_retired else fieldindex.default_exclude(field_dir),
     )
 
     if as_json:

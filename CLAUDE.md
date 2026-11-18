@@ -145,10 +145,10 @@ never let it write an index ours reads: its Ollama vectors need not match fastem
   querying, so nothing depends on `reindex` having run.
 - Bump `specs.INPUT_VERSION` whenever `specs.embedding_input` changes what it derives,
   since the hash cannot see that change.
-- Search thresholds (`DEFAULT_MAX_DISTANCE`, `DEFAULT_MIN_MARGIN`, the `SPECS_*` pair,
-  `MIN_BACKGROUND_PAGES`, `FALLBACK_BACKGROUND`) came from labeled queries against real
-  vaults. Change them only by re-measuring, never by reasoning about one query. The
-  vault's specs hold the measurements.
+- Search thresholds (`FIELD_CUTOFFS`, `SPECS_CUTOFFS`, `MIN_BACKGROUND_PAGES`,
+  `FALLBACK_BACKGROUND`) came from labeled queries against real vaults. Change them only
+  by re-measuring with `scripts/search_bench.py`, never by reasoning about one query. The
+  measurements and the labeled queries are kept outside this repository.
 - `DOCUMENT_PREFIX` and `QUERY_PREFIX` stay together in `lib/embed.py` so pages and
   queries are never embedded under different conventions.
 

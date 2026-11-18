@@ -1273,8 +1273,6 @@ agent cannot do with its own tools.
 | `--specs`           | Search specs instead of learnings. Cannot be combined with `--logs`.                                |
 | `--include-retired` | With `--specs`, also return superseded and abandoned specs. Without `--specs` it is an error.       |
 | `--limit`, `-n`     | Maximum number of results. Default 10.                                                              |
-| `--max-distance`    | Farthest cosine distance that still counts as a hit. Default 0.45, or 0.38 with `--specs`.          |
-| `--min-margin`      | How much nearer than the median page searched a hit must sit. Default 0.11, or 0.07 with `--specs`. |
 | `--read`            | Print each hit's whole file under its path.                                                         |
 | `--cwd`             | Directory to resolve the project from.                                                              |
 | `--json`            | Emit JSON instead of prose.                                                                         |
@@ -1331,19 +1329,21 @@ no results: nothing in learnings matches; try --specs for designs and decisions,
 The message names the other two places to look. A `--specs` or `--logs` search that finds
 nothing names only itself, as `no results: no spec matches this query`.
 
-A page counts as a hit when it sits within `--max-distance` of the query and at least
-`--min-margin` nearer than the median page in the field. A field with fewer than 8 pages
-measures against a fixed median of 0.49 instead, which makes its cutoff 0.38.
+A page counts as a hit when it sits within a cosine distance of 0.45 of the query and
+stands out from the rest of the field in one of two ways:
+
+- It sits at least 0.17 nearer than the median page in the field. A field with fewer than
+  8 pages measures against a fixed median of 0.49 instead.
+- It sits above the largest gap between neighbors among the 5 nearest pages, and that gap
+  is at least 0.05.
 
 The margin is relative because a fixed distance does not separate matches from
 non-matches. Phrasing a query as a question lowers every distance at once, and a session
-log, which covers a whole session, sits near every query about its project. Measured on
-120 labeled queries across four real projects, a fixed cutoff of 0.45 returned hits for
-28 of 42 queries that had no answer. The margin returned a hit for 1 of them and missed
-3 of 78 answers. `--min-margin 0` turns the margin off and leaves only `--max-distance`.
-
-`--help` does not list `--max-distance` or `--min-margin`. They exist to measure the
-defaults again, not to loosen a search that found nothing.
+log, which covers a whole session, sits near every query about its project. The gap finds
+the answer in a small field of similar pages, such as the logs of a project with few
+sessions, where every page sits near the median. Measured on 120 labeled queries against
+the learnings and logs of six real projects, these numbers returned a hit for 1 of 42
+queries that had no answer and missed 19 of 78 answers.
 
 Search refreshes the field's index before it queries, so a page written moments ago is
 found without a `sessionmemory reindex` first. The first search on a machine downloads the
@@ -1432,14 +1432,11 @@ With `--json`, a spec hit adds its `status`, which is `draft`, `shipped`, `super
 ]
 ```
 
-Specs have their own defaults, `--max-distance 0.38` and `--min-margin 0.07`, because
-specs spread wide: the median distance from a query to a project's specs measured 0.53 to
-0.56, so the margin below the median alone let unrelated specs through at 0.42 to 0.44,
-and the absolute ceiling had to be tighter. At the learnings defaults, 3 of 10 queries
-with no answer returned a spec. At 0.38 and 0.07, 0 of 10 did and none of 40 queries with
-an answer was missed. Both numbers were measured on 50 queries against one project's 51
-specs, so they are a starting point. An explicit `--max-distance` or `--min-margin`
-overrides either one.
+Specs have their own numbers: a distance of 0.42, a margin of 0.19, and a gap of 0.02
+among the 11 nearest specs. A spec is embedded from its title and headings, not its body,
+and specs spread wider than learnings, so they were measured apart. Measured on 50 queries
+against one project's specs, these numbers returned a spec for 1 of 10 queries with no
+answer and missed 6 of 40 answers.
 
 ## `sessionmemory inject`
 

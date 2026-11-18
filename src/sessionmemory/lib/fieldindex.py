@@ -14,13 +14,15 @@ title and headings, since a spec's body is too long and too uniform to embed who
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 import hashlib
+import itertools
 import json
+import math
 import sqlite3
-import statistics
 import struct
-from dataclasses import dataclass
+from functools import cached_property
 from typing import TYPE_CHECKING, Any
 
 from sessionmemory.lib import field, paths, specs
@@ -31,27 +33,13 @@ if TYPE_CHECKING:
 
     from sessionmemory.lib.embed import Embedder
 
-# The reference implementation's default cutoff for nomic-embed-text-v1.5. On its own it
-# admits most unrelated queries, so it is only a ceiling and the margin below decides.
-DEFAULT_MAX_DISTANCE = 0.45
-
-# Measured with nomic-embed-text-v1.5 on 120 labeled queries across four projects' learnings
-# and logs: a page that answers the query sits at least this much nearer than the field's
-# median page, and the nearest page to an unrelated query does not. The rule is relative
-# because phrasing a query as a question lowers every distance at once, and because a log,
-# which summarizes a whole session, sits near every query about its project.
-DEFAULT_MIN_MARGIN = 0.11
+# How many hits `search` returns unless the caller asks for another number.
+DEFAULT_LIMIT = 10
 
 # A median over fewer pages than this is noise, so a small field measures against the
 # median background seen across the labeled queries instead.
 MIN_BACKGROUND_PAGES = 8
 FALLBACK_BACKGROUND = 0.49
-
-# Measured with nomic-embed-text-v1.5 on 50 labeled keyword queries against 51 specs, where
-# the learnings defaults returned hits for 3 of 10 queries with no answer. Specs are
-# embedded from a derived input rather than the whole page, so they need their own numbers.
-SPECS_MAX_DISTANCE = 0.38
-SPECS_MIN_MARGIN = 0.07
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS pages (
@@ -64,7 +52,7 @@ CREATE TABLE IF NOT EXISTS pages (
 """
 
 
-@dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True)
 class Hit:
     """One search result, nearest first when ordered by `distance`."""
 
@@ -75,7 +63,55 @@ class Hit:
     status: str = ""
 
 
-@dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True)
+class Ranked:
+    """One page of a field with its distance to a query, before any cutoff."""
+
+    filename: str
+    frontmatter: str
+    distance: float
+
+    # Parsed on first use, since a search reads the frontmatter of only the pages it admits.
+    @cached_property
+    def meta(self) -> dict[str, Any]:
+        """Return the page's frontmatter as stored in the index."""
+        return json.loads(self.frontmatter)
+
+
+@dataclasses.dataclass(frozen=True)
+class Cutoffs:
+    """The rule that decides which pages of a ranking are hits. See `FIELD_CUTOFFS`.
+
+    Either test can be turned off on its own by setting it out of reach, a `min_margin` or
+    `min_drop` of 1.0 or more. A `min_margin` of 0 admits every page within `max_distance`.
+    """
+
+    max_distance: float
+    min_margin: float
+    min_drop: float
+    drop_window: int
+
+
+# Measured with nomic-embed-text-v1.5 and `scripts/search_bench.py` on 220 labeled queries
+# across six projects; the measurements are kept outside this repository. A page is a hit
+# when it stands out from its field in either of two ways, since neither alone separates
+# answers from unrelated queries:
+#
+# - The margin: it sits at least `min_margin` nearer than the field's median page. Relative
+#   because phrasing a query as a question lowers every distance at once, and because a log,
+#   which summarizes a whole session, sits near every query about its project.
+# - The drop: it sits above the largest gap between neighbors among the nearest
+#   `drop_window` pages, and that gap is at least `min_drop`. This finds the answer in a
+#   small field of similar pages, where every page sits near the median and no answer can
+#   clear the margin.
+#
+# `max_distance` caps both. Specs are embedded from a derived input rather than the whole
+# page and spread wider, so they were measured apart from the fields.
+FIELD_CUTOFFS = Cutoffs(max_distance=0.45, min_margin=0.17, min_drop=0.05, drop_window=5)
+SPECS_CUTOFFS = Cutoffs(max_distance=0.42, min_margin=0.19, min_drop=0.02, drop_window=11)
+
+
+@dataclasses.dataclass(frozen=True)
 class Refresh:
     """What one refresh changed."""
 
@@ -220,19 +256,29 @@ def refresh(field_dir: Path, embedder: Embedder) -> Refresh:
         conn.close()
 
 
-def default_cutoffs(field_dir: Path) -> tuple[float, float]:
-    """Return the measured `max_distance` and `min_margin` for searching `field_dir`.
+def default_cutoffs(field_dir: Path) -> Cutoffs:
+    """Return the measured cutoffs for searching `field_dir`.
 
     Args:
         field_dir (Path): The directory searched.
 
     Returns:
-        tuple[float, float]: The distance cutoff and the margin, the specs pair for
-            `specs/` and the fields' pair for the rest.
+        Cutoffs: The specs cutoffs for `specs/` and the fields' cutoffs for the rest.
     """
-    if _is_specs(field_dir):
-        return SPECS_MAX_DISTANCE, SPECS_MIN_MARGIN
-    return DEFAULT_MAX_DISTANCE, DEFAULT_MIN_MARGIN
+    return SPECS_CUTOFFS if _is_specs(field_dir) else FIELD_CUTOFFS
+
+
+def default_exclude(field_dir: Path) -> Callable[[dict[str, Any]], bool] | None:
+    """Return the filter a search of `field_dir` applies unless asked to show everything.
+
+    Args:
+        field_dir (Path): The directory searched.
+
+    Returns:
+        Callable[[dict[str, Any]], bool] | None: `specs.is_retired` for `specs/`, which
+            hides superseded and abandoned specs, and None for a field.
+    """
+    return specs.is_retired if _is_specs(field_dir) else None
 
 
 def search(
@@ -241,25 +287,53 @@ def search(
     query: str,
     *,
     limit: int,
-    max_distance: float | None = None,
-    min_margin: float | None = None,
+    cutoffs: Cutoffs | None = None,
     exclude: Callable[[dict[str, Any]], bool] | None = None,
 ) -> list[Hit]:
     """Return the pages that stand out as nearest to `query`, nearest first, refreshing the index first.
 
-    A hit sits within `max_distance` and at least `min_margin` nearer than the field's
-    median page. A cutoff rather than a bare top-k, so a query nothing answers returns
-    nothing instead of the nearest pages dressed up as hits. A `min_margin` of 0 leaves
-    only the absolute cutoff. Either left as None takes the measured default for the
-    directory searched, since specs were measured apart from the fields. `exclude` drops a
-    page by its frontmatter after the median is measured, so a dropped page never uses up
-    `limit`.
+    See `apply_cutoffs` for which pages count as hits. `cutoffs` defaults to the measured
+    ones for `field_dir`.
+    """
+    hits = []
+    for page in apply_cutoffs(
+        rank_pages(field_dir, embedder, query),
+        cutoffs or default_cutoffs(field_dir),
+        limit=limit,
+        exclude=exclude,
+    ):
+        status = page.meta.get("status")
+        path = field_dir / page.filename
+        if _is_specs(field_dir):
+            try:
+                text = path.read_bytes().decode("utf-8", errors="replace")
+            except OSError:
+                # The file went away after the refresh; a hit for it would point at nothing.
+                continue
+            title = specs.parse_spec(text, stem=path.stem).title
+            summary = specs.hit_summary(text)
+        else:
+            title = page.meta.get("title")
+            summary = page.meta.get("summary")
+        hits.append(
+            Hit(
+                path=path,
+                title=title if isinstance(title, str) else "",
+                summary=summary if isinstance(summary, str) else "",
+                distance=page.distance,
+                status=status if isinstance(status, str) else "",
+            )
+        )
+    return hits
+
+
+def rank_pages(field_dir: Path, embedder: Embedder, query: str) -> list[Ranked]:
+    """Return every page of a field with its distance to `query`, nearest first, refreshing the index first.
+
+    No cutoff applies, so `apply_cutoffs` can measure the field's median against every page.
     """
     if not field_dir.is_dir():
         return []
-    default_distance, default_margin = default_cutoffs(field_dir)
-    max_distance = default_distance if max_distance is None else max_distance
-    min_margin = default_margin if min_margin is None else min_margin
     conn = _open(index_path(field_dir, embedder))
     try:
         _refresh(conn, field_dir, embedder)
@@ -270,45 +344,81 @@ def search(
         ).fetchall()
     finally:
         conn.close()
-    ceiling = max_distance
-    if min_margin > 0:
-        distances = [float(row["distance"]) for row in rows]
-        background = (
-            statistics.median(distances)
-            if len(distances) >= MIN_BACKGROUND_PAGES
-            else FALLBACK_BACKGROUND
+    return [
+        Ranked(
+            filename=row["filename"],
+            frontmatter=row["frontmatter"],
+            distance=float(row["distance"]),
         )
-        ceiling = min(ceiling, background - min_margin)
-    hits = []
-    for row in rows:
-        if float(row["distance"]) > ceiling or len(hits) == limit:
-            break
-        meta = json.loads(row["frontmatter"])
-        if exclude is not None and exclude(meta):
-            continue
-        status = meta.get("status")
-        path = field_dir / row["filename"]
-        if _is_specs(field_dir):
-            try:
-                text = path.read_bytes().decode("utf-8", errors="replace")
-            except OSError:
-                # The file went away after the refresh; a hit for it would point at nothing.
-                continue
-            title = specs.parse_spec(text, stem=path.stem).title
-            summary = specs.hit_summary(text)
-        else:
-            title = meta.get("title")
-            summary = meta.get("summary")
-        hits.append(
-            Hit(
-                path=path,
-                title=title if isinstance(title, str) else "",
-                summary=summary if isinstance(summary, str) else "",
-                distance=float(row["distance"]),
-                status=status if isinstance(status, str) else "",
-            )
-        )
-    return hits
+        for row in rows
+    ]
+
+
+def apply_cutoffs(
+    ranking: list[Ranked],
+    cutoffs: Cutoffs,
+    *,
+    limit: int,
+    exclude: Callable[[dict[str, Any]], bool] | None = None,
+) -> list[Ranked]:
+    """Return the pages of a full ranking that count as hits, nearest first.
+
+    A hit stands out by the margin or by the drop (see the module constants), within
+    `max_distance`. A cutoff rather than a bare top-k, so a query nothing answers returns
+    nothing instead of the nearest pages dressed up as hits. A `min_margin` of 0 admits
+    every page within `max_distance`. `exclude` drops a page by its frontmatter after the
+    median is measured and before the drop is, so a dropped page never uses up `limit` and
+    never decides where the break falls.
+
+    Args:
+        ranking (list[Ranked]): Every page of the field, as `rank_pages` returns it.
+        cutoffs (Cutoffs): The rule, usually `default_cutoffs` for the directory ranked.
+        limit (int): The most hits to return.
+        exclude (Callable[[dict[str, Any]], bool] | None): Drops a page by its frontmatter.
+
+    Returns:
+        list[Ranked]: At most `limit` hits.
+    """
+    background = (
+        _median_distance(ranking) if len(ranking) >= MIN_BACKGROUND_PAGES else FALLBACK_BACKGROUND
+    )
+    # A margin of 0 turns the margin off, leaving only `max_distance`.
+    margin_ceiling = background - cutoffs.min_margin if cutoffs.min_margin > 0 else math.inf
+    # The drop is measured over the pages a caller can see, so an excluded page can neither
+    # make the break nor hide one.
+    visible = (page for page in ranking if exclude is None or not exclude(page.meta))
+    nearest = list(itertools.islice(visible, cutoffs.drop_window))
+    above_drop = _above_largest_drop(nearest, min_drop=cutoffs.min_drop)
+    # The ranking is nearest first, so the admitted pages are a leading run.
+    admitted = itertools.takewhile(
+        lambda pair: (
+            pair[1].distance <= cutoffs.max_distance
+            and (pair[1].distance <= margin_ceiling or pair[0] < above_drop)
+        ),
+        enumerate(itertools.chain(nearest, visible)),
+    )
+    return [page for _index, page in itertools.islice(admitted, limit)]
+
+
+def _median_distance(ranking: list[Ranked]) -> float:
+    """Return the median distance of a ranking that is already nearest first, without sorting."""
+    middle = len(ranking) // 2
+    if len(ranking) % 2:
+        return ranking[middle].distance
+    return (ranking[middle - 1].distance + ranking[middle].distance) / 2
+
+
+def _above_largest_drop(nearest: list[Ranked], *, min_drop: float) -> int:
+    """Return how many leading pages sit above the largest gap between neighbors in `nearest`.
+
+    Zero when that gap is under `min_drop`, so a ranking with no clear break admits
+    nothing by the drop.
+    """
+    gaps = [after.distance - before.distance for before, after in itertools.pairwise(nearest)]
+    if not gaps:
+        return 0
+    largest = max(gaps)
+    return gaps.index(largest) + 1 if largest >= min_drop else 0
 
 
 def forget(field_dir: Path, embedder: Embedder, filename: str) -> None:
