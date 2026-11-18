@@ -1646,14 +1646,20 @@ sessionmemory reindex --cwd .
 ```
 
 ```
-✓ reindexing
-  ├─ learnings: 1 added, 0 updated, 0 removed, 0 unchanged
-  ├─ logs: 0 added, 0 updated, 0 removed, 0 unchanged
-  └─ specs: 3 added, 0 updated, 0 removed, 0 unchanged
+field      added  updated  removed  unchanged
+learnings      1        0        0          0
+logs           0        0        0          0
+specs          3        0        0          0
+total          4        0        0          0
 ```
+
+On a terminal, a non-zero count is colored by what happened to the page: green for
+added, yellow for updated, red for removed. Zeros are dimmed.
 
 `sessionmemory search` does the same refresh on every call, so this command is for doing
 that work up front, or for rebuilding an index file you deleted.
+
+With `--json`, each field's counts sit under its name:
 
 ```json
 {
@@ -1689,10 +1695,11 @@ sessionmemory reindex --all
 ```
 
 ```
-✓ reindexing
-  ├─ invoice-api/learnings: 0 added, 0 updated, 0 removed, 1 unchanged
-  ├─ invoice-api/logs: 0 added, 0 updated, 0 removed, 0 unchanged
-  └─ invoice-api/specs: 0 added, 0 updated, 0 removed, 3 unchanged
+project      field      added  updated  removed  unchanged
+invoice-api  learnings      0        0        0          1
+             logs           0        0        0          0
+             specs          0        0        0          3
+total                       0        0        0          4
 ```
 
 A page whose bytes have not changed is skipped, so a run over a healthy vault costs

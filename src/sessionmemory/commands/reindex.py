@@ -7,6 +7,8 @@ from pathlib import Path  # noqa: TC003
 
 import typer
 from nclutils import pp
+from rich.table import Table
+from rich.text import Text
 
 from sessionmemory.commands._common import (
     CWD_OPTION,
@@ -20,6 +22,41 @@ from sessionmemory.commands._common import (
 from sessionmemory.lib import fieldindex, paths
 
 ALL = typer.Option(False, "--all", help="Reindex every project in the vault.")  # noqa: FBT003
+
+COUNT_COLUMNS = ("added", "updated", "removed", "unchanged")
+# A non-zero count takes its column's style; every zero is dimmed so changes stand out.
+NONZERO_STYLES = {"added": "green", "updated": "yellow", "removed": "red", "unchanged": ""}
+
+
+def _count(column: str, value: int) -> Text:
+    return Text(str(value), style=NONZERO_STYLES[column] if value else "dim")
+
+
+def _report(rows: list[tuple[str, str, fieldindex.Refresh]], *, show_project: bool) -> Table:
+    """Lay out each field's counts as a grid, with column totals in the footer.
+
+    Args:
+        rows: One `(project, field, counts)` triple per field, in display order.
+        show_project: Whether to lead with a project column, naming each project once.
+
+    Returns:
+        The table to print.
+    """
+    table = Table(box=None, pad_edge=False, header_style="bold", show_footer=True)
+    if show_project:
+        table.add_column("project", footer="total")
+    table.add_column("field", footer="" if show_project else "total")
+    for column in COUNT_COLUMNS:
+        total = sum(getattr(counts, column) for *_, counts in rows)
+        table.add_column(column, justify="right", footer=_count(column, total))
+
+    previous = None
+    for project, field, counts in rows:
+        cells = [_count(column, getattr(counts, column)) for column in COUNT_COLUMNS]
+        lead = [Text(project if project != previous else "")] if show_project else []
+        table.add_row(*lead, Text(field), *cells)
+        previous = project
+    return table
 
 
 def reindex_command(
@@ -54,11 +91,13 @@ def reindex_command(
         emit_json(payload)
         return
 
-    with pp.step("reindexing") as step:
+    if not fields:
+        pp.info("no fields to reindex")
+        return
+
+    rows = []
+    with pp.console().status("reindexing") as status:
         for slug, name, directory in fields:
-            result = fieldindex.refresh(directory, embedder)
-            label = f"{slug}/{name}" if all_projects else name
-            step.sub(
-                f"{label}: {result.added} added, {result.updated} updated, "
-                f"{result.removed} removed, {result.unchanged} unchanged"
-            )
+            status.update(Text(f"reindexing {slug}/{name}"))
+            rows.append((slug, name, fieldindex.refresh(directory, embedder)))
+    pp.console().print(_report(rows, show_project=all_projects))
