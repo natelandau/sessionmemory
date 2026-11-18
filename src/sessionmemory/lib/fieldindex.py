@@ -76,6 +76,15 @@ class Hit:
 
 
 @dataclass(frozen=True)
+class Ranked:
+    """One page of a field with its distance to a query, before any cutoff."""
+
+    filename: str
+    meta: dict[str, Any]
+    distance: float
+
+
+@dataclass(frozen=True)
 class Refresh:
     """What one refresh changed."""
 
@@ -258,36 +267,16 @@ def search(
     if not field_dir.is_dir():
         return []
     default_distance, default_margin = default_cutoffs(field_dir)
-    max_distance = default_distance if max_distance is None else max_distance
-    min_margin = default_margin if min_margin is None else min_margin
-    conn = _open(index_path(field_dir, embedder))
-    try:
-        _refresh(conn, field_dir, embedder)
-        rows = conn.execute(
-            "SELECT filename, frontmatter, vec_distance_cosine(embedding, ?) AS distance"
-            " FROM pages ORDER BY distance",
-            (_vector_bytes(embedder.encode_query(query)),),
-        ).fetchall()
-    finally:
-        conn.close()
-    ceiling = max_distance
-    if min_margin > 0:
-        distances = [float(row["distance"]) for row in rows]
-        background = (
-            statistics.median(distances)
-            if len(distances) >= MIN_BACKGROUND_PAGES
-            else FALLBACK_BACKGROUND
-        )
-        ceiling = min(ceiling, background - min_margin)
+    admitted = admit(
+        rank(field_dir, embedder, query),
+        max_distance=default_distance if max_distance is None else max_distance,
+        min_margin=default_margin if min_margin is None else min_margin,
+    )
     hits = []
-    for row in rows:
-        if float(row["distance"]) > ceiling or len(hits) == limit:
-            break
-        meta = json.loads(row["frontmatter"])
-        if exclude is not None and exclude(meta):
-            continue
+    for page in select_hits(admitted, limit=limit, exclude=exclude):
+        meta = page.meta
         status = meta.get("status")
-        path = field_dir / row["filename"]
+        path = field_dir / page.filename
         if _is_specs(field_dir):
             try:
                 text = path.read_bytes().decode("utf-8", errors="replace")
@@ -304,11 +293,76 @@ def search(
                 path=path,
                 title=title if isinstance(title, str) else "",
                 summary=summary if isinstance(summary, str) else "",
-                distance=float(row["distance"]),
+                distance=page.distance,
                 status=status if isinstance(status, str) else "",
             )
         )
     return hits
+
+
+def rank(field_dir: Path, embedder: Embedder, query: str) -> list[Ranked]:
+    """Return every page of a field with its distance to `query`, nearest first, refreshing the index first.
+
+    Separate from `admit` so the search benchmark can rank a query once and try many
+    cutoffs against the same ranking.
+    """
+    if not field_dir.is_dir():
+        return []
+    conn = _open(index_path(field_dir, embedder))
+    try:
+        _refresh(conn, field_dir, embedder)
+        rows = conn.execute(
+            "SELECT filename, frontmatter, vec_distance_cosine(embedding, ?) AS distance"
+            " FROM pages ORDER BY distance",
+            (_vector_bytes(embedder.encode_query(query)),),
+        ).fetchall()
+    finally:
+        conn.close()
+    return [
+        Ranked(
+            filename=row["filename"],
+            meta=json.loads(row["frontmatter"]),
+            distance=float(row["distance"]),
+        )
+        for row in rows
+    ]
+
+
+def admit(ranking: list[Ranked], *, max_distance: float, min_margin: float) -> list[Ranked]:
+    """Return the leading pages of a ranking that stand out from the rest of the field.
+
+    The margin is measured against the median distance of the whole ranking, so pass
+    every page of the field, not a trimmed list. See `search` for the rule.
+    """
+    ceiling = max_distance
+    if min_margin > 0:
+        background = (
+            statistics.median(page.distance for page in ranking)
+            if len(ranking) >= MIN_BACKGROUND_PAGES
+            else FALLBACK_BACKGROUND
+        )
+        ceiling = min(ceiling, background - min_margin)
+    admitted = []
+    for page in ranking:
+        if page.distance > ceiling:
+            break
+        admitted.append(page)
+    return admitted
+
+
+def select_hits(
+    admitted: list[Ranked],
+    *,
+    limit: int,
+    exclude: Callable[[dict[str, Any]], bool] | None = None,
+) -> list[Ranked]:
+    """Return the first `limit` admitted pages that `exclude` keeps.
+
+    Exclusion runs after admission so an excluded page still counts toward the field's
+    median, and before the limit so it never uses up a slot.
+    """
+    kept = [page for page in admitted if exclude is None or not exclude(page.meta)]
+    return kept[:limit]
 
 
 def forget(field_dir: Path, embedder: Embedder, filename: str) -> None:
