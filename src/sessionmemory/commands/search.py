@@ -27,7 +27,9 @@ INCLUDE_RETIRED = typer.Option(
     "--include-retired",
     help="With --specs, also show superseded and abandoned specs.",
 )
-LIMIT = typer.Option(fieldindex.DEFAULT_LIMIT, "--limit", "-n", help="Maximum number of results.")
+LIMIT = typer.Option(
+    fieldindex.DEFAULT_LIMIT, "--limit", "-n", min=0, help="Maximum number of results."
+)
 # Hidden because the defaults were measured against labeled queries; these exist for
 # re-measuring them, not for loosening a search that found nothing.
 MAX_DISTANCE = typer.Option(
