@@ -31,9 +31,9 @@ if TYPE_CHECKING:
 
 GH_TIMEOUT_SECONDS = 10
 FETCH_TIMEOUT_SECONDS = 30
-# GitHub's commit-to-pulls listing carries no commit count, so the search below a rebase
-# merge is bounded instead. A copy deeper than this falls back to the merge commit.
-REBASE_SEARCH_DEPTH = 100
+# GitHub's commit-to-pulls listing carries no commit count, so each search for a commit's
+# copy on trunk is bounded instead. A copy deeper than this is not found.
+COPY_SEARCH_DEPTH = 100
 
 _CAT_FILE = "git cat-file --batch-check"
 _HEX = re.compile(r"[0-9a-fA-F]{4,64}")
@@ -56,6 +56,7 @@ class PullAnswer:
 
     state: PullState
     merge_sha: str = ""
+    number: int | None = None
     reason: str = ""
 
 
@@ -124,7 +125,8 @@ class Repository:
             root (Path): The repository's working tree.
         """
         self.root = root
-        self._windows: dict[tuple[str, str], dict[str, list[str]]] = {}
+        self._windows: dict[tuple[str, ...], dict[str, list[str]]] = {}
+        self._trunk_windows: dict[str, tuple[str, ...]] = {}
 
     def _git(
         self,
@@ -250,14 +252,22 @@ class Repository:
         Raises:
             CommitsError: When git fails or times out.
         """
-        refs = [
+        refs = self._trunk_refs()
+        if not refs:
+            return set()
+        return set(self._git_strict("rev-list", *refs).stdout.split())
+
+    def _trunk_refs(self) -> list[str]:
+        """Return whichever of the local trunk and `origin/<trunk>` exist.
+
+        Raises:
+            CommitsError: When git fails or times out.
+        """
+        return [
             ref
             for ref in (f"refs/heads/{self.trunk}", f"refs/remotes/origin/{self.trunk}")
             if self._ref_exists(ref)
         ]
-        if not refs:
-            return set()
-        return set(self._git_strict("rev-list", *refs).stdout.split())
 
     def ref_commits(self) -> set[str]:
         """Return the full shas reachable from any branch, remote-tracking ref, or tag.
@@ -288,12 +298,8 @@ class Repository:
         Raises:
             CommitsError: When git fails or times out.
         """
-        if not off_trunk:
-            known = self._git_strict(
-                "rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}", ok=(0, 1)
-            )
-            if known.returncode != 0 or self._on_trunk(sha):
-                return False
+        if not off_trunk and (not self._is_commit(sha) or self._on_trunk(sha)):
+            return False
         out = self._git_strict(
             "for-each-ref",
             "--contains",
@@ -310,15 +316,22 @@ class Repository:
         }
         return any(ref and ref not in ignored for ref in out.splitlines())
 
+    def _is_commit(self, sha: str) -> bool:
+        """Report whether `sha` names a commit this clone has.
+
+        Raises:
+            CommitsError: When git fails or times out.
+        """
+        done = self._git_strict("rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}", ok=(0, 1))
+        return done.returncode == 0
+
     def _on_trunk(self, sha: str) -> bool:
         """Report whether `sha` is an ancestor of the local trunk or `origin/<trunk>`.
 
         Raises:
             CommitsError: When git fails or times out.
         """
-        for ref in (f"refs/heads/{self.trunk}", f"refs/remotes/origin/{self.trunk}"):
-            if not self._ref_exists(ref):
-                continue
+        for ref in self._trunk_refs():
             done = self._git_strict("merge-base", "--is-ancestor", sha, ref, ok=(0, 1))
             if done.returncode == 0:
                 return True
@@ -348,23 +361,67 @@ class Repository:
         Raises:
             CommitsError: When git fails or times out.
         """
-        own = self._patch_ids("-n", "1", sha)
-        if len(own) != 1:
-            return None
         # Exit 1 means no common ancestor, so there is no shared history to leave out.
         done = self._git_strict("merge-base", sha, merge_sha, ok=(0, 1))
         base = done.stdout.strip() if done.returncode == 0 else ""
-        key = (merge_sha, base)
-        if key not in self._windows:
-            self._windows[key] = self._patch_ids(
+        return self._single_copy(
+            sha,
+            window=(
                 "--first-parent",
                 "--no-merges",
                 "-n",
-                str(REBASE_SEARCH_DEPTH),
+                str(COPY_SEARCH_DEPTH),
                 merge_sha,
                 *([f"^{base}"] if base else []),
-            )
-        matches = self._windows[key].get(next(iter(own)), [])
+            ),
+        )
+
+    def trunk_copy(self, sha: str) -> str | None:
+        """Return the one trunk commit that carries the same patch as `sha`, an off-trunk commit.
+
+        Rewriting trunk, as a reword or rebase does, takes commits off it while copies
+        with the same patches take their place. A rewrite puts its copies just after the
+        point where `sha` and trunk fork, so the search covers the oldest trunk commits
+        after that point.
+
+        Args:
+            sha (str): The full sha of a commit trunk does not contain.
+
+        Returns:
+            str | None: The copy's full sha, or None when this clone lacks `sha`, `sha`
+                has no patch of its own, or no single trunk commit matches.
+
+        Raises:
+            CommitsError: When git fails or times out.
+        """
+        refs = self._trunk_refs()
+        if not refs or not self._is_commit(sha):
+            return None
+        # Exit 1 means no common ancestor, so the whole trunk is after the fork.
+        done = self._git_strict("merge-base", sha, *refs, ok=(0, 1))
+        base = done.stdout.strip() if done.returncode == 0 else ""
+        if base not in self._trunk_windows:
+            oldest = self._git_strict(
+                "rev-list", "--reverse", "--no-merges", *refs, *([f"^{base}"] if base else [])
+            ).stdout.split()[:COPY_SEARCH_DEPTH]
+            self._trunk_windows[base] = ("--no-walk", *oldest) if oldest else ()
+        return self._single_copy(sha, window=self._trunk_windows[base])
+
+    def _single_copy(self, sha: str, *, window: tuple[str, ...]) -> str | None:
+        """Return the one commit in `git log <window>` that carries `sha`'s patch.
+
+        Each window's patch ids are read once per run, since every commit forked from the
+        same point searches the same window.
+
+        Raises:
+            CommitsError: When git fails or times out.
+        """
+        own = self._patch_ids("-n", "1", sha)
+        if len(own) != 1 or not window:
+            return None
+        if window not in self._windows:
+            self._windows[window] = self._patch_ids(*window)
+        matches = self._windows[window].get(next(iter(own)), [])
         return matches[0] if len(matches) == 1 else None
 
     def _patch_ids(self, *revs: str) -> dict[str, list[str]]:
@@ -521,8 +578,11 @@ class Repository:
             base = pull.get("base")
             base_ref = base.get("ref") if isinstance(base, dict) else None
             if pull.get("merged_at") and base_ref == self.trunk:
+                number = pull.get("number")
                 return PullAnswer(
-                    PullState.MERGED, merge_sha=str(pull.get("merge_commit_sha") or "")
+                    PullState.MERGED,
+                    merge_sha=str(pull.get("merge_commit_sha") or ""),
+                    number=number if isinstance(number, int) else None,
                 )
         if any(pull.get("state") == "open" for pull in pulls):
             return PullAnswer(PullState.OPEN)

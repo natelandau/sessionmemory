@@ -88,7 +88,7 @@ def reconcile_command(
                     "dropped": report.dropped,
                     "in_progress": report.in_progress,
                     "unchecked": report.unchecked,
-                    "notes": report.notes,
+                    "notes": list(report.notes),
                 }
                 for report in reports
             ]
@@ -100,7 +100,7 @@ def reconcile_command(
     for report in reports:
         if report.changed:
             pp.info(f"{report.name} {verb}", details=[path.name for path in report.changed])
-        for note in report.notes:
-            pp.warning(f"{report.name}: {note}")
+        for note, logs in report.notes.items():
+            pp.warning(f"{report.name}: {note}", details=logs)
     if dry_run:
         pp.dryrun("no log was rewritten")

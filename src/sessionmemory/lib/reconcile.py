@@ -8,16 +8,20 @@ and decides, one sha at a time:
    - merged into trunk and the merge commit is on trunk: `REPLACE` with the commit's
      own rebased copy when exactly one trunk commit below the merge commit carries the
      same patch, as after a rebase merge, else with the merge commit.
-   - merged but the merge commit is not on trunk yet: `UNCHECKED`.
+   - merged but the merge commit is not on trunk, as after trunk was rewritten:
+     `REPLACE` with the one trunk commit carrying the logged commit's patch, else the
+     one carrying the merge commit's patch, else `UNCHECKED`.
    - open: `IN_PROGRESS`.
    - GitHub could not answer: `UNCHECKED`.
    - no live pull request: go on to rule 3.
-3. A live branch or tag holds the commit: `IN_PROGRESS`.
-4. `git fetch origin` failed, so origin's trunk may hold the commit: `UNCHECKED`.
-5. The clone is shallow, so its history cannot prove the commit gone: `UNCHECKED`.
-6. Origin's fetch refspec is narrowed, as in a single-branch clone, so a branch this
+3. Exactly one trunk commit carries the commit's patch, as after trunk was rewritten:
+   `REPLACE` with that commit.
+4. A live branch or tag holds the commit: `IN_PROGRESS`.
+5. `git fetch origin` failed, so origin's trunk may hold the commit: `UNCHECKED`.
+6. The clone is shallow, so its history cannot prove the commit gone: `UNCHECKED`.
+7. Origin's fetch refspec is narrowed, as in a single-branch clone, so a branch this
    clone never fetches may hold the commit: `UNCHECKED`.
-7. Otherwise the commit is gone: `DROP`.
+8. Otherwise the commit is gone: `DROP`.
 
 The fetch runs only when some logged commit is not on the local trunk, and never when
 there is no origin, so a repeat run needs no network.
@@ -48,7 +52,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from sessionmemory.lib import changes, field, paths
-from sessionmemory.lib.commits import CommitsError, Expansion, PullState, Repository
+from sessionmemory.lib.commits import CommitsError, Expansion, PullAnswer, PullState, Repository
 from sessionmemory.lib.frontmatter import FrontmatterError, parse
 
 if TYPE_CHECKING:
@@ -155,7 +159,8 @@ class Report:
         dropped (int): Lines removed because the commit is gone.
         in_progress (int): Lines left because a branch or open pull request holds them.
         unchecked (int): Lines left because the answer was unavailable.
-        notes (list[str]): Distinct explanations the caller should show.
+        notes (dict[str, list[str]]): Each distinct explanation the caller should show,
+            mapped to the filenames of the logs whose lines it left unchecked.
     """
 
     name: str
@@ -164,7 +169,7 @@ class Report:
     dropped: int = 0
     in_progress: int = 0
     unchecked: int = 0
-    notes: list[str] = dataclass_field(default_factory=list)
+    notes: dict[str, list[str]] = dataclass_field(default_factory=dict)
 
 
 class _Judge:
@@ -200,7 +205,9 @@ class _Judge:
             CommitsError: When git cannot answer.
         """
         if sha in expansion.ambiguous:
-            return Decision(Action.UNCHECKED, reason="short sha is ambiguous")
+            return Decision(
+                Action.UNCHECKED, reason=f"{sha} matches more than one commit; log a longer sha"
+            )
         full = expansion.full.get(sha)
         if full is not None and full in self._trunk:
             return Decision(Action.KEEP)
@@ -228,7 +235,7 @@ class _Judge:
         """Return GitHub's verdict, or None when it has no live pull request."""
         answer = self._repository.pulls(sha, slug=slug)
         if answer.state == PullState.MERGED:
-            return self._landed(answer.merge_sha, full=full)
+            return self._landed(sha, answer=answer, full=full)
         if answer.state == PullState.OPEN:
             return Decision(Action.IN_PROGRESS)
         if answer.state == PullState.UNANSWERED:
@@ -237,8 +244,12 @@ class _Judge:
 
     def _decide_locally(self, full: str | None) -> Decision:
         """Decide from the refs alone, never dropping what this clone cannot vouch for."""
-        if full is not None and self._repository.in_branch(full, off_trunk=True):
-            return Decision(Action.IN_PROGRESS)
+        if full is not None:
+            copy = self._repository.trunk_copy(full)
+            if copy is not None:
+                return self._replace(full, landed=copy)
+            if self._repository.in_branch(full, off_trunk=True):
+                return Decision(Action.IN_PROGRESS)
         if self._fetch_failed:
             return Decision(Action.UNCHECKED, reason=FETCH_FAILED_NOTE)
         if self._shallow:
@@ -247,21 +258,47 @@ class _Judge:
             return Decision(Action.UNCHECKED, reason=NARROWED_NOTE)
         return Decision(Action.DROP)
 
-    def _landed(self, merge_sha: str, *, full: str | None) -> Decision:
+    def _landed(self, sha: str, *, answer: PullAnswer, full: str | None) -> Decision:
         """Return the replacement for a commit whose pull request merged into trunk."""
-        if merge_sha not in self._trunk:
-            return Decision(Action.UNCHECKED, reason="merge commit not on trunk")
-        landed = merge_sha
-        if full is not None:
-            # The copy only refines the merge commit, so a git failure here keeps it.
-            with contextlib.suppress(CommitsError):
-                landed = self._repository.rebased_copy(full, merge_sha) or merge_sha
+        merge_sha = answer.merge_sha
+        if merge_sha in self._trunk:
+            landed = merge_sha
+            if full is not None:
+                # The copy only refines the merge commit, so a git failure here keeps it.
+                with contextlib.suppress(CommitsError):
+                    landed = self._repository.rebased_copy(full, merge_sha) or merge_sha
+            return self._replace(sha, landed=landed)
+        # Trunk was rewritten after the merge. The logged commit's own copy comes first,
+        # so a rebase merge keeps one line per commit, then the merge commit's, as after
+        # a squash merge.
+        for candidate in (full, merge_sha):
+            if candidate and (copy := self._repository.trunk_copy(candidate)):
+                return self._replace(sha, landed=copy)
+        return self._unlanded(sha, answer=answer)
+
+    def _replace(self, sha: str, *, landed: str) -> Decision:
+        """Return the decision to replace `sha` with the trunk commit `landed`."""
         if landed not in self._described:
             self._described[landed] = self._repository.describe(landed)
         line = self._described[landed]
         if line is None:
-            return Decision(Action.UNCHECKED, reason="merge commit could not be described")
+            return Decision(
+                Action.UNCHECKED,
+                reason=f"{sha[:7]}: git could not describe {landed[:7]}, the commit that replaces it",
+            )
         return Decision(Action.REPLACE, replacement=line, merge_sha=landed)
+
+    def _unlanded(self, sha: str, *, answer: PullAnswer) -> Decision:
+        """Explain a merged commit that has no single copy on trunk."""
+        trunk = self._repository.trunk
+        pull = f"PR #{answer.number}" if answer.number is not None else "a pull request"
+        merged_as = f" as {answer.merge_sha[:7]}" if answer.merge_sha else ""
+        reason = (
+            f"{sha[:7]}: GitHub says {pull} merged it{merged_as}, but {trunk} does not contain"
+            f" that commit and no single {trunk} commit has the same changes. If {trunk}"
+            " was rewritten after the merge, edit the line to the commit that replaced it"
+        )
+        return Decision(Action.UNCHECKED, reason=reason)
 
 
 def log_commits(context: Context, *, dry_run: bool) -> Report:
@@ -292,7 +329,7 @@ def log_commits(context: Context, *, dry_run: bool) -> Report:
     repository = Repository(context.root)
     trunk, expansion, fetch_failed = _refresh(repository, logged)
     if fetch_failed:
-        report.notes.append(FETCH_FAILED_NOTE)
+        report.notes[FETCH_FAILED_NOTE] = []
     judge = _Judge(
         repository,
         trunk,
@@ -373,7 +410,7 @@ def _decide_page(
     }
     outcome: dict[str, str | None] = {}
     for line, decision in decisions:
-        _tally(report, decision)
+        _tally(report, decision, log=page.path.name)
         if decision.action == Action.REPLACE:
             outcome[line.sha] = listed.get(decision.merge_sha, decision.replacement)
         elif decision.action == Action.DROP:
@@ -391,8 +428,8 @@ def _needs_fetch(logged: list[str], *, trunk: set[str], expansion: Expansion) ->
     )
 
 
-def _tally(report: Report, decision: Decision) -> None:
-    """Count one line's decision and note why an unchecked one was left."""
+def _tally(report: Report, decision: Decision, *, log: str) -> None:
+    """Count one line's decision and note why, and in which log, an unchecked one was left."""
     match decision.action:
         case Action.REPLACE:
             report.replaced += 1
@@ -402,8 +439,9 @@ def _tally(report: Report, decision: Decision) -> None:
             report.in_progress += 1
         case Action.UNCHECKED:
             report.unchecked += 1
-            if decision.reason not in report.notes:
-                report.notes.append(decision.reason)
+            logs = report.notes.setdefault(decision.reason, [])
+            if log not in logs:
+                logs.append(log)
         case Action.KEEP:
             pass
 

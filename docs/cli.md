@@ -1579,16 +1579,24 @@ For each logged commit, the command decides in this order:
    as after a squash merge, the line becomes the merge commit. An open pull request
    leaves the line. If GitHub cannot answer, the command
    leaves the line and reports it as unchecked.
-3. If a branch or a tag still holds the commit, the command leaves the line, because the
+
+   If the trunk was rewritten after the merge, the merge commit that GitHub reports is
+   not on the trunk. The command then looks for one trunk commit with the same changes
+   as the logged commit, and next for one with the same changes as the merge commit.
+   The line becomes that commit. If no single trunk commit matches, the command leaves
+   the line and reports it as unchecked.
+3. If exactly one trunk commit has the same changes as the logged commit, the line becomes
+   that commit. This occurs when the trunk was rewritten after the commit landed on it.
+4. If a branch or a tag still holds the commit, the command leaves the line, because the
    work is in progress.
-4. If `git fetch origin` failed, the command leaves the line and reports it as unchecked,
+5. If `git fetch origin` failed, the command leaves the line and reports it as unchecked,
    because the trunk on `origin` can hold the commit.
-5. If the repository is a shallow clone, the command leaves the line and reports it as
+6. If the repository is a shallow clone, the command leaves the line and reports it as
    unchecked, because a clone with cut-off history cannot prove the commit is gone.
-6. If `origin` does not fetch every branch, as in a clone made with `--single-branch`,
+7. If `origin` does not fetch every branch, as in a clone made with `--single-branch`,
    the command leaves the line and reports it as unchecked, because a branch the clone
    never fetches can hold the commit.
-7. Otherwise the commit is gone, and the command removes the line.
+8. Otherwise the commit is gone, and the command removes the line.
 
 A short sha that matches more than one commit is left as it is and reported as unchecked.
 When a logged commit is not on the local trunk, the command runs `git fetch origin` before
@@ -1618,7 +1626,9 @@ log-commits would change
 
 On a terminal, a non-zero count is colored: green for replaced, red for dropped, cyan
 for in progress, and yellow for unchecked. Zeros are dimmed. The reason for each
-unchecked line follows the logs as a warning.
+unchecked line follows the logs as a warning, with the logs that hold those lines below
+it. If the reason is about one commit, the warning names that commit and its pull
+request.
 
 The same run without `--dry-run` prints the same counts, says `log-commits changed`
 above the logs, and rewrites them.
