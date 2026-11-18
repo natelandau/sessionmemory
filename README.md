@@ -320,6 +320,33 @@ to the same block, so that each session reads the guidance itself:
   `sessionmemory inject --cwd .` and follow the guidance it prints.
 ```
 
+## Get an agent's help with the vault
+
+An AI agent can do the upkeep of the vault for you: fix what `sessionmemory doctor`
+reports, clean up projects whose repository is gone, and keep the private files in step
+with each checkout. To start, print a prompt and paste it into the agent:
+
+```bash
+sessionmemory --prompt
+```
+
+```
+Help me manage my sessionmemory vault.
+
+1. Run `sessionmemory --skill` and read all of it. It explains how the vault works and how to manage it.
+2. Run `sessionmemory doctor --json`.
+3. Give me a brief overview of the vault's state: its projects, and what doctor found in each.
+4. Ask me what I want help with, and offer a few suggestions based on what you found.
+
+Ask me before you delete, move, or overwrite anything.
+```
+
+`sessionmemory --skill` prints the guide that the agent reads. It explains the layout of
+the vault, the registry, the commands, the fix for each `doctor` finding, and the rules
+the agent obeys. One rule is that the agent asks you before it deletes, moves, or
+overwrites a file. The guide covers the whole vault. If the agent starts in a registered
+project, it asks whether to work on that project or on the whole vault.
+
 ## Documentation
 
 | Page                                     | What it covers                                               |

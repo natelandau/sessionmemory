@@ -13,7 +13,7 @@ import shlex
 import sqlite3
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, get_args
 
 from sessionmemory.lib import (
     backlog,
@@ -41,20 +41,37 @@ if TYPE_CHECKING:
 
     from sessionmemory.lib.embed import Embedder
 
+CheckName = Literal[
+    "filename",
+    "size",
+    "frontmatter",
+    "datetime",
+    "project",
+    "registry",
+    "backlog",
+    "reference",
+    "spec",
+    "commits",
+    "index",
+    "local",
+    "doctor",
+]
+CHECK_NAMES: tuple[CheckName, ...] = get_args(CheckName)
+
 
 @dataclass(frozen=True)
 class Finding:
     """One thing a check found.
 
     Attributes:
-        check (str): The check that found it.
+        check (CheckName): The check that found it.
         path (str): The file or folder concerned, the slug for the `project` check, or
             empty when nothing on disk is named.
         message (str): What is wrong, and the fix when there is one.
         project (str): The slug of the project it concerns, or empty for the vault itself.
     """
 
-    check: str
+    check: CheckName
     path: str
     message: str
     project: str = ""

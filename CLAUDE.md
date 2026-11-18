@@ -207,6 +207,13 @@ default is a documentation change too. Output in `docs/` is pasted from real run
 a scratch vault holding one project, `invoice-api`, with the home directory shortened to
 `~`. Nothing in the docs names a real machine, user, repository, or page.
 
+`lib/agent_skill.md` is what `sessionmemory --skill` prints, and an agent follows it
+verbatim. Before every pull request, squash, rebase, fast-forward, or merge onto `main`,
+an agent reviews the branch's diff against it and updates it for every behavior the diff
+adds, changes, or removes: commands, options, output, `doctor` checks, settings, vault
+layout, and safety rules. `tests/integration/test_cli_agent_guide.py` catches a stale
+name, never a stale meaning.
+
 ## Conventions
 
 - Google-style docstrings, type hints on every signature

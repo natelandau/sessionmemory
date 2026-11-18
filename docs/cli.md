@@ -40,6 +40,8 @@ on a directory is its whole job.
 | `--cwd`, `-C <path>`   | Resolve the project from that directory instead of the shell's.        |
 | `--help`, `-h`         | Print the help for the command and exit.                               |
 | `--version`            | Print the installed version bare and exit. The plugin's hooks read it. |
+| `--skill`              | Print the guide an AI agent reads to manage the vault, and exit.       |
+| `--prompt`             | Print a prompt to paste into an AI agent, and exit.                    |
 | `--body-file <p>`      | Read a markdown body from a file, or from stdin for `-`.               |
 | `--install-completion` | Install tab completion for your shell.                                 |
 
@@ -1790,7 +1792,11 @@ sessionmemory doctor
 1 suggestion
 old-service
   project  root ~/repos/old-service does not exist
+For an AI agent's help, paste the output of: sessionmemory --prompt
 ```
+
+The last line points to [`sessionmemory --prompt`](#sessionmemory---prompt-and---skill).
+It is printed only when there are findings, and never with `--json`.
 
 ```json
 [
@@ -1841,6 +1847,43 @@ Archive:  ~/repos/invoice-api.memoryfield.zip
 ---------                     -------
     30227                     5 files
 ```
+
+## `sessionmemory --prompt` and `--skill`
+
+Get an AI agent's help with the whole vault. Both flags print text and exit. Neither one
+reads the vault, so both work before a vault is configured.
+
+`--prompt` prints a short prompt for you to paste into an agent:
+
+```bash
+sessionmemory --prompt
+```
+
+```
+Help me manage my sessionmemory vault.
+
+1. Run `sessionmemory --skill` and read all of it. It explains how the vault works and how to manage it.
+2. Run `sessionmemory doctor --json`.
+3. Give me a brief overview of the vault's state: its projects, and what doctor found in each.
+4. Ask me what I want help with, and offer a few suggestions based on what you found.
+
+Ask me before you delete, move, or overwrite anything.
+```
+
+`--skill` prints the guide that the prompt tells the agent to read. The guide is markdown
+written for an agent. It covers the vault layout, the registry, the commands that manage
+the vault, the fix for each [`doctor`](vault-health.md) finding, private local files, and
+settings. It also sets rules for the agent:
+
+- Work on the whole vault. In a registered project, ask whether to work on that project
+  only.
+- Never run `sessionmemory init`.
+- Ask before deleting, moving, or overwriting content.
+- Make each fix with the agent's own file tools, since the CLI never repairs.
+- Leave commits to the plugin's hooks, or to you.
+
+The guide does not cover writing memory during a coding session, or the plugin's slash
+commands.
 
 ## Environment variables
 

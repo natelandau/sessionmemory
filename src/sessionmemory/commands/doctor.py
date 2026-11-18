@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 VAULT_GROUP = "(vault)"
+AGENT_HINT = "For an AI agent's help, paste the output of: sessionmemory --prompt"
 
 
 def _print_report(vault: Path, findings: list[doctor.Finding]) -> None:
@@ -62,3 +63,4 @@ def doctor_command(*, as_json: bool = JSON_OPTION) -> None:
         return
     pp.info(f"{len(findings)} suggestion{'s' if len(findings) != 1 else ''}")
     _print_report(vault, findings)
+    pp.info(AGENT_HINT)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import typer
 
 from sessionmemory.commands import delete as delete_commands
@@ -19,6 +21,9 @@ from sessionmemory.commands import reindex as reindex_commands
 from sessionmemory.commands import search as search_commands
 from sessionmemory.commands._common import VersionedGroup, emit_value
 
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
 app = typer.Typer(
     cls=VersionedGroup,
     no_args_is_help=True,
@@ -33,13 +38,36 @@ MAINTENANCE = "Maintenance"
 PLUGIN = "Plugin internals"
 
 
-def _print_version(value: bool) -> None:  # noqa: FBT001
-    """Print the installed version bare and exit, for a caller that compares it."""
-    if value:
-        import importlib.metadata
+def _version() -> str:
+    import importlib.metadata
 
-        emit_value(importlib.metadata.version("sessionmemory"))
-        raise typer.Exit
+    return importlib.metadata.version("sessionmemory")
+
+
+def _agent_skill() -> str:
+    from sessionmemory.lib import agentguide
+
+    return agentguide.skill()
+
+
+def _agent_prompt() -> str:
+    from sessionmemory.lib import agentguide
+
+    return agentguide.PROMPT
+
+
+def _print_and_exit(text: Callable[[], str]) -> Callable[[bool], None]:
+    """Build an eager root option's callback that prints one bare value and exits.
+
+    The value is computed only when the flag is given, so an unused flag costs no import.
+    """
+
+    def callback(value: bool) -> None:  # noqa: FBT001
+        if value:
+            emit_value(text())
+            raise typer.Exit
+
+    return callback
 
 
 @app.callback()
@@ -47,9 +75,23 @@ def _root(
     version: bool = typer.Option(  # noqa: FBT001
         False,  # noqa: FBT003
         "--version",
-        callback=_print_version,
+        callback=_print_and_exit(_version),
         is_eager=True,
         help="Print the version and exit.",
+    ),
+    skill: bool = typer.Option(  # noqa: FBT001
+        False,  # noqa: FBT003
+        "--skill",
+        callback=_print_and_exit(_agent_skill),
+        is_eager=True,
+        help="Print a guide that teaches an AI agent to manage the vault, and exit.",
+    ),
+    prompt: bool = typer.Option(  # noqa: FBT001
+        False,  # noqa: FBT003
+        "--prompt",
+        callback=_print_and_exit(_agent_prompt),
+        is_eager=True,
+        help="Print a prompt to paste into an AI agent for help managing the vault, and exit.",
     ),
 ) -> None:
     """Manage a project's memory in a vault of markdown pages."""

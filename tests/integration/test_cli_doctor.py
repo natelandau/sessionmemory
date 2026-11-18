@@ -9,6 +9,7 @@ import pytest
 from typer.testing import CliRunner
 
 from sessionmemory.cli import app
+from sessionmemory.commands.doctor import AGENT_HINT
 
 runner = CliRunner()
 
@@ -64,6 +65,7 @@ def test_doctor_prose_reports_a_bad_filename(workspace):
     assert lines[heading + 1].split() == ["filename", "learnings/Bad", "Name.md"]
     assert lines[heading + 2] == "not lowercase ascii letters, digits, and hyphens"
     assert str(vault) not in result.output
+    assert AGENT_HINT in " ".join(result.output.split())
 
 
 def test_doctor_json_reports_a_bad_filename(workspace):

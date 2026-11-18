@@ -27,6 +27,7 @@ invoice-api
              index is behind its pages; run: sessionmemory reindex
 old-service
   project    root ~/repos/old-service does not exist
+For an AI agent's help, paste the output of: sessionmemory --prompt
 ```
 
 Findings are grouped under the project they concern, and each one names its check, its
@@ -35,6 +36,9 @@ vault. A path in a checkout is printed whole, since a project can have more than
 checkout. A finding about the vault itself, such as an unreadable registry, is grouped
 under `(vault)`. The home directory is shortened to `~` here; the command prints absolute
 paths.
+
+The last line points to [`sessionmemory --prompt`](cli.md#sessionmemory---prompt-and---skill),
+which prints a prompt that has an AI agent work through the findings with you.
 
 A clean vault says so:
 
@@ -99,6 +103,7 @@ A page's frontmatter carries a bare date or datetime, one written without quotes
 invoice-api
   datetime  learnings/an-undated-page.md
             created, updated: unquoted; quote the value
+For an AI agent's help, paste the output of: sessionmemory --prompt
 ```
 
 Quote the value: `created: '2026-09-02T10:00:00Z'`. The format requires it because a YAML
@@ -115,6 +120,7 @@ A registered project records a repository root that no longer exists.
 1 suggestion
 old-service
   project  root ~/repos/old-service does not exist
+For an AI agent's help, paste the output of: sessionmemory --prompt
 ```
 
 If the repository moved, edit that entry's `root` in `_system/registry.toml`. If the
@@ -136,6 +142,7 @@ carries a size, a date, or a topic.
 invoice-api
   backlog  backlog.md
            line 15: ticked; finished work is deleted, not ticked
+For an AI agent's help, paste the output of: sessionmemory --prompt
 ```
 
 A ticked `- [x]` line is finished work. Delete it: the backlog has no checkbox, and git
@@ -156,6 +163,7 @@ placeholder like `specs/<slug>.md`, and a longer extension like `specs/x.mdx` do
 invoice-api
   reference  specs/2026-10-13-move-pdf-rendering-to-a-worker-queue.md
              line 8: names runbooks/deploy-the-worker.md, which does not exist
+For an AI agent's help, paste the output of: sessionmemory --prompt
 ```
 
 Either the file was renamed or deleted, or it was never written. Correct the mention to
@@ -180,6 +188,7 @@ invoice-api
         superseded_by names this spec
   spec  specs/2026-10-13-send-payment-reminders.md
         frontmatter cannot be parsed; status ignored
+For an AI agent's help, paste the output of: sessionmemory --prompt
 ```
 
 - **`status 'wip' is not one of ...`**: the status is not `draft`, `shipped`,
@@ -212,6 +221,7 @@ those commits:
 invoice-api
   commits  logs/2026-10-20-ubl-export.md
            lists 1 commit no branch contains; run: sessionmemory reconcile
+For an AI agent's help, paste the output of: sessionmemory --prompt
 ```
 
 Run `sessionmemory reconcile --dry-run` to see how many lines it would replace or drop,
@@ -251,6 +261,7 @@ old path:
 invoice-api
   local  CLAUDE.local.md
          CLAUDE.local.md is at its old path; run local sync to move it into local/
+For an AI agent's help, paste the output of: sessionmemory --prompt
 ```
 
 Run `sessionmemory local sync`. It moves the file into `local/`. If `local/` already holds
@@ -261,6 +272,7 @@ a different copy, the finding says so:
 invoice-api
   local  CLAUDE.local.md
          CLAUDE.local.md is at its old path and differs from ~/repos/my-vault/projects/invoice-api/local/CLAUDE.local.md; keep one of them, delete the other, then run local sync
+For an AI agent's help, paste the output of: sessionmemory --prompt
 ```
 
 Keep the copy you want, delete the other one, then run `sessionmemory local sync`.
@@ -274,6 +286,7 @@ are a file among the skills, which must be folders, and a folder at
 invoice-api
   local  local/claude/skills/notes.md
          skills/notes.md in the vault is not a folder; fix or remove it in the vault
+For an AI agent's help, paste the output of: sessionmemory --prompt
 ```
 
 Move the file into a skill folder, or delete it. Until then, `sessionmemory local sync`
@@ -288,6 +301,7 @@ second machine gets an empty folder:
 invoice-api
   local  local/claude/skills/deploy-check/vendor/.git
          skills/deploy-check holds a git repository, which the vault commits as an embedded repository rather than its files; move it out of the vault
+For an AI agent's help, paste the output of: sessionmemory --prompt
 ```
 
 Move the repository out of the vault, and clone it again where you need it.
@@ -301,6 +315,7 @@ vault copy cannot be linked:
 invoice-api
   local  local/claude/review.toml
          .claude/review.toml is listed in entries.toml but the vault holds no copy; remove the line from entries.toml
+For an AI agent's help, paste the output of: sessionmemory --prompt
 ```
 
 Delete the line from `entries.toml`, or adopt the file again from a checkout that still
@@ -314,6 +329,7 @@ highest such path once, not each file inside it:
 invoice-api
   local  local/notes
          notes in the vault is not an entry; adopt it again from a checkout, or add its path to entries.toml
+For an AI agent's help, paste the output of: sessionmemory --prompt
 ```
 
 Add its checkout path to `entries.toml`, or delete it. A concurrent `local adopt`
@@ -333,6 +349,7 @@ also reports a declined entry that the checkout does not hold:
 invoice-api
   local  local/declined.toml
          skills/deploy-check is declined in declined.toml but this checkout has no copy; remove the line if no other checkout has it
+For an AI agent's help, paste the output of: sessionmemory --prompt
 ```
 
 If no other checkout or machine holds the entry, delete the line. The line does no harm
@@ -347,6 +364,7 @@ because Claude Code resolves it from the vault folder:
 invoice-api
   local  local/CLAUDE.local.md
          @./sandbox-notes.md resolves from the vault folder and will not load
+For an AI agent's help, paste the output of: sessionmemory --prompt
 ```
 
 Write the content of the imported file into the file itself, or remove the import. Skills
@@ -363,6 +381,7 @@ alone:
 invoice-api
   local  ~/repos/invoice-api/.claude/skills/release-notes
          skills/release-notes is tracked by git; run git rm --cached .claude/skills/release-notes before adopting it
+For an AI agent's help, paste the output of: sessionmemory --prompt
 ```
 
 If the entry is yours, run the command, commit the removal in the project, then run
@@ -376,6 +395,7 @@ A real file or folder whose content differs from the vault copy is `diverged`:
 invoice-api
   local  ~/repos/invoice-api/.claude/rules/style.md
          rules/style.md differs from the vault copy; copy the newer one over the vault copy, delete the checkout copy, and run local sync
+For an AI agent's help, paste the output of: sessionmemory --prompt
 ```
 
 An editor that saves by renaming a temporary file over the link leaves this state behind.
@@ -389,6 +409,7 @@ A link to nothing is reported whether or not git ignores it:
 invoice-api
   local  ~/repos/invoice-api/.claude/skills/deploy-check
          skills/deploy-check is a dangling symlink; run local sync to replace it
+For an AI agent's help, paste the output of: sessionmemory --prompt
 ```
 
 Run `sessionmemory local sync`, which replaces the link.
@@ -401,6 +422,7 @@ untracked file in the project. The remedy depends on what is there:
 invoice-api
   local  ~/repos/invoice-api/CLAUDE.local.md
          CLAUDE.local.md is not ignored by git; run local sync to add it to info/exclude
+For an AI agent's help, paste the output of: sessionmemory --prompt
 ```
 
 The checkout links to the vault copy. Run `sessionmemory local sync`, which adds the entry
@@ -411,6 +433,7 @@ to the file that `git rev-parse --git-path info/exclude` prints.
 invoice-api
   local  ~/repos/invoice-api/.claude/rules/style.md
          rules/style.md is not ignored by git; run local adopt rules/style.md to replace it with an ignored link
+For an AI agent's help, paste the output of: sessionmemory --prompt
 ```
 
 The checkout holds a real copy with the same content as the vault copy. Run the
@@ -422,6 +445,7 @@ link and adds the ignore line.
 invoice-api
   local  ~/repos/invoice-api/.claude/rules/style.md
          rules/style.md is not ignored by git, and a symlink to ~/repos/notes/style.md rather than the vault copy; remove it, then run local sync
+For an AI agent's help, paste the output of: sessionmemory --prompt
 ```
 
 The checkout holds a link to another file. Remove the link, then run
@@ -438,6 +462,7 @@ choice:
 invoice-api
   local  ~/repos/invoice-api/.claude/settings.local.json
          settings.local.json differs from the vault copy; run local sync to choose which copy to keep
+For an AI agent's help, paste the output of: sessionmemory --prompt
 ```
 
 Run `sessionmemory local sync` and keep one copy. The same remedy applies when only the
