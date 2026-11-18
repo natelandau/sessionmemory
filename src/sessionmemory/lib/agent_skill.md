@@ -124,6 +124,11 @@ for every option.
 
 `delete` asks for no confirmation and has no dry run. Ask the person first, every time.
 
+`reconcile` leaves a line it cannot prove right as it is and counts it as unchecked. Each
+warning gives the reason and lists the logs that hold the line. With `--json`,
+`note_logs` maps each reason in `notes` to those logs. Show the warnings to the person.
+Edit a line only when its warning names the fix, and ask first.
+
 ## Doctor findings and their fixes
 
 `sessionmemory doctor --json` prints a list of findings, each with `check`, `path`,

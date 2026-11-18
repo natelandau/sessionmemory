@@ -9,7 +9,7 @@ import pytest
 
 from sessionmemory.lib import commits
 from sessionmemory.lib.commits import CommitsError, PullAnswer, PullState, Repository
-from tests.unit.gitfixtures import Fixture, commit, rebase_merge, squash_merge
+from tests.unit.gitfixtures import Fixture, commit, rebase_merge, rewrite_trunk, squash_merge
 from tests.unit.gitfixtures import git as _git
 
 
@@ -20,7 +20,15 @@ def _github(fixture: Fixture) -> Repository:
 
 def _pr(*, state="closed", merged_at="2026-01-01T00:00:00Z", base="main", sha="abc") -> str:
     return json.dumps(
-        [{"state": state, "merged_at": merged_at, "merge_commit_sha": sha, "base": {"ref": base}}]
+        [
+            {
+                "number": 7,
+                "state": state,
+                "merged_at": merged_at,
+                "merge_commit_sha": sha,
+                "base": {"ref": base},
+            }
+        ]
     )
 
 
@@ -123,7 +131,7 @@ def test_pulls_merged_into_trunk(repo, fake_gh):
     """Verify a PR merged into trunk gives MERGED with its merge sha."""
     fake_gh(repo.feat, stdout=_pr())
 
-    assert _github(repo).pulls(repo.feat) == PullAnswer(PullState.MERGED, merge_sha="abc")
+    assert _github(repo).pulls(repo.feat) == PullAnswer(PullState.MERGED, merge_sha="abc", number=7)
 
 
 def test_pulls_merged_into_another_branch_is_none(repo, fake_gh):
@@ -435,6 +443,34 @@ def test_rebased_copy_ignores_a_same_patch_commit_from_before_the_fork(repo):
     copy = _git(repo.clone, "rev-parse", "HEAD")
 
     assert Repository(repo.clone).rebased_copy(original, copy) == copy
+
+
+def test_trunk_copy_finds_a_commit_rewritten_on_trunk(repo):
+    """Verify a commit dropped by a trunk rewrite maps to its copy on the new trunk."""
+    original, copy = rewrite_trunk(repo.clone)
+
+    assert Repository(repo.clone).trunk_copy(original) == copy
+
+
+def _orphan_like_base(fixture: Fixture) -> str:
+    """Commit the trunk root's patch on a branch that shares no history with trunk."""
+    _git(fixture.clone, "checkout", "-q", "--orphan", "orphan")
+    _git(fixture.clone, "rm", "-rq", "--cached", ".")
+    sha = commit(fixture.clone, "base")
+    _git(fixture.clone, "checkout", "-q", "-f", "main")
+    return sha
+
+
+@pytest.mark.parametrize("which", ["no copy on trunk", "unknown to the clone", "no shared history"])
+def test_trunk_copy_is_none_without_a_single_match(repo, which):
+    """Verify a commit with no copy after its fork point, or one the clone lacks, gives None."""
+    sha = {
+        "no copy on trunk": lambda: repo.feat,
+        "unknown to the clone": lambda: "0" * 40,
+        "no shared history": lambda: _orphan_like_base(repo),
+    }[which]()
+
+    assert Repository(repo.clone).trunk_copy(sha) is None
 
 
 def test_is_repository_accepts_a_symlinked_root(repo, tmp_path):

@@ -73,3 +73,25 @@ def squash_merge(clone: Path) -> tuple[list[str], str]:
     git(clone, "branch", "-q", "-D", "pr")
     git(clone, "reflog", "expire", "--expire=now", "--all")
     return originals, squash
+
+
+def rewrite_trunk(clone: Path) -> tuple[str, str]:
+    """Push a commit to trunk, then reword the commit below it and force-push.
+
+    Every commit from the reworded one up gets a new sha, as when trunk is rewritten
+    after a pull request merged, leaving the pushed commit an object no ref holds.
+
+    Returns:
+        tuple[str, str]: The pushed commit and its copy on the rewritten trunk.
+    """
+    git(clone, "checkout", "-q", "main")
+    commit(clone, "below")
+    original = commit(clone, "merged")
+    git(clone, "push", "-q", "origin", "main")
+    git(clone, "reset", "-q", "--hard", "HEAD~1")
+    git(clone, "commit", "-q", "--amend", "-m", "below reworded")
+    git(clone, "cherry-pick", original)
+    copy = git(clone, "rev-parse", "HEAD")
+    git(clone, "push", "-q", "--force", "origin", "main")
+    git(clone, "reflog", "expire", "--expire=now", "--all")
+    return original, copy

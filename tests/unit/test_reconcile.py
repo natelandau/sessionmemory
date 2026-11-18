@@ -11,7 +11,7 @@ import pytest
 from sessionmemory.lib import field, paths, reconcile
 from sessionmemory.lib.commits import CommitsError, Expansion
 from sessionmemory.lib.reconcile import Context
-from tests.unit.gitfixtures import commit, git, rebase_merge, squash_merge
+from tests.unit.gitfixtures import commit, git, rebase_merge, rewrite_trunk, squash_merge
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -61,6 +61,7 @@ def _merged(sha: str) -> str:
     return json.dumps(
         [
             {
+                "number": 7,
                 "state": "closed",
                 "merged_at": "2026-01-01T00:00:00Z",
                 "merge_commit_sha": sha,
@@ -148,8 +149,8 @@ def test_gh_failure_leaves_lines_and_reports_unchecked(tmp_path, repo, fake_gh):
     report = reconcile.log_commits(_ctx(tmp_path, repo), dry_run=False)
 
     assert report.unchecked == 1
-    assert len(report.notes) == 1
-    assert "gh failed" in report.notes[0]
+    [note] = report.notes
+    assert "gh failed" in note
     assert path.read_bytes() == before
 
 
@@ -188,7 +189,7 @@ def test_second_run_changes_nothing_and_skips_github(tmp_path, repo, fake_gh, mo
 
     assert (report.replaced, report.dropped, report.in_progress, report.unchecked) == (0, 0, 0, 0)
     assert report.changed == []
-    assert report.notes == []
+    assert report.notes == {}
 
 
 def test_summary_prose_sha_is_kept(tmp_path, repo, fake_gh):
@@ -227,20 +228,47 @@ def test_merge_commit_that_cannot_be_described_is_unchecked(tmp_path, repo, fake
     report = reconcile.log_commits(_ctx(tmp_path, repo), dry_run=False)
 
     assert report.unchecked == 1
-    assert "could not be described" in report.notes[0]
+    [(note, logs)] = report.notes.items()
+    assert repo.gone[:7] in note
+    assert logs == ["one.md"]
     assert path.read_bytes() == before
 
 
-def test_merge_commit_not_on_trunk_is_unchecked(tmp_path, repo, fake_gh):
-    """Verify a merge sha missing from trunk keeps the line."""
+def test_merge_commit_not_on_trunk_without_a_copy_is_unchecked(tmp_path, repo, fake_gh):
+    """Verify a merge sha missing from trunk, with no copy there, keeps the line.
+
+    The note names the logged commit, the pull request, and the merge commit, and lists
+    every log holding the line, so a reader can find and fix it.
+    """
     _github(repo)
     fake_gh(repo.gone, stdout=_merged(repo.feat))
-    _write_log(tmp_path, "one", _body(f"{repo.gone[:7]} gone work"))
+    path = _write_log(tmp_path, "one", _body(f"{repo.gone[:7]} gone work"))
+    _write_log(tmp_path, "two", _body(f"{repo.gone[:7]} gone work"))
+    before = path.read_bytes()
 
     report = reconcile.log_commits(_ctx(tmp_path, repo), dry_run=False)
 
-    assert report.unchecked == 1
-    assert report.notes == ["merge commit not on trunk"]
+    assert report.unchecked == 2
+    [(note, logs)] = report.notes.items()
+    for named in (repo.gone[:7], "#7", repo.feat[:7]):
+        assert named in note
+    assert logs == ["one.md", "two.md"]
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("logged", ["merge commit", "pull request commit"])
+def test_merge_commit_rewritten_off_trunk_is_replaced_by_its_copy(tmp_path, repo, fake_gh, logged):
+    """Verify a line whose merge commit a trunk rewrite replaced becomes the trunk copy."""
+    _github(repo)
+    original, copy = rewrite_trunk(repo.clone)
+    sha = original if logged == "merge commit" else repo.gone
+    fake_gh(sha, stdout=_merged(original))
+    path = _write_log(tmp_path, "one", _body(f"{sha[:7]} work"))
+
+    report = reconcile.log_commits(_ctx(tmp_path, repo), dry_run=False)
+
+    assert report.replaced == 1
+    assert f"{copy[:7]} merged" in field.read_page(path).body
 
 
 def test_git_failure_propagates(tmp_path, repo, monkeypatch):
@@ -285,6 +313,31 @@ def test_two_commits_from_one_squashed_pr_collapse_to_one_line(tmp_path, repo, f
     assert second[:7] not in changes_section
 
 
+def test_commit_rewritten_off_trunk_without_github_is_replaced_by_its_copy(tmp_path, repo):
+    """Verify a rewritten commit no pull request answers for becomes its trunk copy."""
+    original, copy = rewrite_trunk(repo.clone)
+    path = _write_log(tmp_path, "one", _body(f"{original[:7]} merged"))
+
+    report = reconcile.log_commits(_ctx(tmp_path, repo), dry_run=False)
+
+    assert report.replaced == 1
+    assert f"{copy[:7]} merged" in field.read_page(path).body
+
+
+def test_live_branch_commit_with_a_trunk_copy_stays_in_progress(tmp_path, repo):
+    """Verify a commit a live branch still holds is not replaced by a trunk cherry-pick."""
+    commit(repo.clone, "trunk-moves")
+    git(repo.clone, "cherry-pick", repo.feat)
+    git(repo.clone, "push", "-q", "origin", "main")
+    path = _write_log(tmp_path, "one", _body(f"{repo.feat[:7]} feat"))
+    before = path.read_bytes()
+
+    report = reconcile.log_commits(_ctx(tmp_path, repo), dry_run=False)
+
+    assert report.in_progress == 1
+    assert path.read_bytes() == before
+
+
 def test_ambiguous_short_sha_is_left_and_unchecked(tmp_path, repo, monkeypatch):
     """Verify an ambiguous prefix stays in the log rather than being dropped."""
     short = repo.main_head[:7]
@@ -299,7 +352,9 @@ def test_ambiguous_short_sha_is_left_and_unchecked(tmp_path, repo, monkeypatch):
     report = reconcile.log_commits(_ctx(tmp_path, repo), dry_run=False)
 
     assert report.unchecked == 1
-    assert report.notes == ["short sha is ambiguous"]
+    [(note, logs)] = report.notes.items()
+    assert short in note
+    assert logs == ["one.md"]
     assert path.read_bytes() == before
 
 
@@ -313,7 +368,7 @@ def test_failed_fetch_leaves_unknown_and_orphaned_lines_unchecked(tmp_path, repo
 
     assert report.unchecked == 2
     assert report.dropped == 0
-    assert report.notes == [reconcile.FETCH_FAILED_NOTE]
+    assert list(report.notes) == [reconcile.FETCH_FAILED_NOTE]
     assert report.changed == []
     assert path.read_bytes() == before
 
@@ -331,7 +386,7 @@ def test_no_origin_skips_the_fetch_and_its_note(tmp_path, repo, monkeypatch):
     report = reconcile.log_commits(_ctx(tmp_path, repo), dry_run=False)
 
     assert report.dropped == 1
-    assert report.notes == []
+    assert report.notes == {}
     assert "deadbee" not in field.read_page(path).body
 
 
@@ -347,7 +402,7 @@ def test_shallow_clone_leaves_unknown_shas_unchecked(tmp_path, repo):
     report = reconcile.log_commits(Context(vault=tmp_path, slug=SLUG, root=shallow), dry_run=False)
 
     assert report.unchecked == 1
-    assert report.notes == [reconcile.SHALLOW_NOTE]
+    assert list(report.notes) == [reconcile.SHALLOW_NOTE]
     assert path.read_bytes() == before
 
 
@@ -469,7 +524,7 @@ def test_single_branch_clone_leaves_unknown_shas_unchecked(tmp_path, repo):
 
     assert report.dropped == 0
     assert report.unchecked == 1
-    assert report.notes == [reconcile.NARROWED_NOTE]
+    assert list(report.notes) == [reconcile.NARROWED_NOTE]
     assert path.read_bytes() == before
 
 
