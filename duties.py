@@ -124,8 +124,9 @@ def ty(ctx: Context) -> None:
             "ty",
             "check",
             "src/",
+            "scripts/",
             name="ty",
-            paths=("src/", "pyproject.toml", "uv.lock", "duties.py"),
+            paths=("src/", "scripts/", "pyproject.toml", "uv.lock", "duties.py"),
         ),
         title=pyprefix("ty check"),
     )

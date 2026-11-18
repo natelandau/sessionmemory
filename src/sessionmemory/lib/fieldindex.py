@@ -22,6 +22,7 @@ import sqlite3
 import statistics
 import struct
 from dataclasses import dataclass
+from functools import cached_property
 from typing import TYPE_CHECKING, Any
 
 from sessionmemory.lib import field, paths, specs
@@ -84,8 +85,14 @@ class Ranked:
     """One page of a field with its distance to a query, before any cutoff."""
 
     filename: str
-    meta: dict[str, Any]
+    frontmatter: str
     distance: float
+
+    # Parsed on first use, since a search reads the frontmatter of only the pages it admits.
+    @cached_property
+    def meta(self) -> dict[str, Any]:
+        """Return the page's frontmatter as stored in the index."""
+        return json.loads(self.frontmatter)
 
 
 @dataclass(frozen=True)
@@ -273,11 +280,11 @@ def search(
 ) -> list[Hit]:
     """Return the pages that stand out as nearest to `query`, nearest first, refreshing the index first.
 
-    See `cut` for which pages count as hits.
+    See `apply_cutoffs` for which pages count as hits.
     """
     hits = []
-    for page in cut(
-        rank(field_dir, embedder, query),
+    for page in apply_cutoffs(
+        rank_pages(field_dir, embedder, query),
         field_dir,
         limit=limit,
         max_distance=max_distance,
@@ -309,10 +316,10 @@ def search(
     return hits
 
 
-def rank(field_dir: Path, embedder: Embedder, query: str) -> list[Ranked]:
+def rank_pages(field_dir: Path, embedder: Embedder, query: str) -> list[Ranked]:
     """Return every page of a field with its distance to `query`, nearest first, refreshing the index first.
 
-    No cutoff applies, so `cut` can measure the field's median against every page.
+    No cutoff applies, so `apply_cutoffs` can measure the field's median against every page.
     """
     if not field_dir.is_dir():
         return []
@@ -329,14 +336,14 @@ def rank(field_dir: Path, embedder: Embedder, query: str) -> list[Ranked]:
     return [
         Ranked(
             filename=row["filename"],
-            meta=json.loads(row["frontmatter"]),
+            frontmatter=row["frontmatter"],
             distance=float(row["distance"]),
         )
         for row in rows
     ]
 
 
-def cut(
+def apply_cutoffs(
     ranking: list[Ranked],
     field_dir: Path,
     *,
@@ -356,7 +363,7 @@ def cut(
     `limit`.
 
     Args:
-        ranking (list[Ranked]): Every page of the field, as `rank` returns it.
+        ranking (list[Ranked]): Every page of the field, as `rank_pages` returns it.
         field_dir (Path): The directory ranked, which picks the default cutoffs.
         limit (int): The most hits to return.
         max_distance (float | None): The distance cutoff, or None for the default.

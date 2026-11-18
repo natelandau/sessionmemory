@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
-from scripts.search_bench import Case, FixtureError, Score, load_cases, score
+from scripts.search_bench import Case, FixtureError, Ranking, Score, _sweep, load_cases, score
+
+from sessionmemory.lib import fieldindex
 
 
 def _case(answers: tuple[str, ...]) -> Case:
@@ -76,6 +80,11 @@ def test_score_counts_as_the_search_specs_do(results, expected):
             id="unknown-field",
         ),
         pytest.param(
+            'project = "p"\nfield = "logs"\nform = "keywords"\nquery = "q"\nanswers = "a.md"',
+            "list of filenames",
+            id="answers-not-a-list",
+        ),
+        pytest.param(
             'project = "p"\nfield = "logs"\nform = "phrase"\nquery = "q"\nanswers = []',
             "form 'phrase'",
             id="unknown-form",
@@ -99,3 +108,32 @@ def test_load_cases_reads_answers_as_a_set():
         ("specs", frozenset({"a.md", "b.md"})),
         ("logs", frozenset()),
     ]
+
+
+def _ranking(answers: tuple[str, ...], distances: dict[str, float]) -> Ranking:
+    pages = [
+        fieldindex.Ranked(filename=name, frontmatter="{}", distance=distance)
+        for name, distance in sorted(distances.items(), key=lambda item: item[1])
+    ]
+    return Ranking(case=_case(answers), field_dir=Path("learnings"), pages=pages, seconds=0.0)
+
+
+def test_sweep_keeps_only_rules_that_trade_a_false_hit_for_fewer_misses():
+    """Verify the frontier lists each false-hit count only when it buys fewer misses."""
+    # Given an answer at 0.40 and an unanswered query whose nearest page sits at 0.38
+    background = {f"bg{n}.md": 0.9 for n in range(10)}
+    rankings = [
+        _ranking(("a.md",), {"a.md": 0.40, **background}),
+        _ranking((), {"b.md": 0.38, **background}),
+    ]
+
+    # When the grid is swept
+    rows = _sweep(rankings)
+
+    # Then the frontier runs from no false hit with a miss to one false hit with none
+    assert [(row["false_hit"], row["miss"]) for row in rows] == [(0, 1), (1, 0)]
+
+
+def test_sweep_of_no_cases_reports_no_rule():
+    """Verify a group the fixture never names yields no frontier."""
+    assert _sweep([]) == []

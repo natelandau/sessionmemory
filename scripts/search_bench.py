@@ -22,7 +22,7 @@ refreshes the index it reads and a benchmark must never write into the vault. Th
 embedding model always runs, because the test stub's distances measure nothing.
 
 Each query is ranked once. Every rule is then applied to that same ranking through
-`fieldindex.cut`, the step `search` runs, so a sweep costs no extra embedding and
+`fieldindex.apply_cutoffs`, the step `search` runs, so a sweep costs no extra embedding and
 measures the shipped rule.
 """
 
@@ -65,7 +65,7 @@ class Case:
 
 @dataclass(frozen=True)
 class Rule:
-    """One pair of cutoffs for `fieldindex.cut`."""
+    """One pair of cutoffs for `fieldindex.apply_cutoffs`."""
 
     max_distance: float
     min_margin: float
@@ -109,7 +109,7 @@ class Ranking:
         """Return what `search` returns for this case under `rule`, or its defaults, as filenames."""
         return [
             page.filename
-            for page in fieldindex.cut(
+            for page in fieldindex.apply_cutoffs(
                 self.pages,
                 self.field_dir,
                 limit=fieldindex.DEFAULT_LIMIT,
@@ -134,7 +134,8 @@ def load_cases(text: str) -> list[Case]:
         list[Case]: Every case, in file order.
 
     Raises:
-        FixtureError: If a case misses a key or names an unknown field or form.
+        FixtureError: If a case misses a key, lists its answers as anything but filenames,
+            or names an unknown field or form.
     """
     cases = []
     for number, raw in enumerate(tomllib.loads(text).get("case", []), start=1):
@@ -146,6 +147,11 @@ def load_cases(text: str) -> list[Case]:
             raise FixtureError(msg)
         if raw["field"] not in paths.INDEX_DIRS:
             msg = f"case {number} names field {raw['field']!r}; expected one of {paths.INDEX_DIRS}"
+            raise FixtureError(msg)
+        if not isinstance(raw["answers"], list) or not all(
+            isinstance(name, str) for name in raw["answers"]
+        ):
+            msg = f"case {number} ({raw['query']!r}) needs answers as a list of filenames"
             raise FixtureError(msg)
         if raw["form"] not in FORMS:
             msg = f"case {number} names form {raw['form']!r}; expected one of {FORMS}"
@@ -216,7 +222,7 @@ def _rank_all(cases: list[Case], copies: dict[tuple[str, str], Path]) -> list[Ra
     for case in cases:
         field_dir = copies[case.project, case.field]
         started = time.perf_counter()
-        pages = fieldindex.rank(field_dir, embedder, case.query)
+        pages = fieldindex.rank_pages(field_dir, embedder, case.query)
         rankings.append(
             Ranking(
                 case=case,
@@ -259,6 +265,8 @@ def _sweep(rankings: list[Ranking]) -> list[dict[str, object]]:
     wrong hits, and drop it when a rule with fewer false hits misses no more. What is
     left is the whole trade-off between misses and false hits.
     """
+    if not rankings:
+        return []
     best: dict[int, tuple[Rule, Score]] = {}
     for max_distance, min_margin in product(SWEEP_DISTANCES, SWEEP_MARGINS):
         rule = Rule(max_distance=max_distance, min_margin=min_margin)
@@ -336,11 +344,19 @@ def main() -> None:
         defaults = _default_rows(rankings)
         case_rows = _case_rows(rankings)
         # Each group shares one pair of constants: `DEFAULT_*` for the fields, `SPECS_*` for specs.
-        sweeps = {
-            title: _sweep([r for r in rankings if (r.case.field == paths.SPECS_DIR) is for_specs])
-            for title, for_specs in (("Sweep: learnings and logs", False), ("Sweep: specs", True))
+        sweeps = (
+            {
+                title: _sweep(
+                    [r for r in rankings if (r.case.field == paths.SPECS_DIR) is for_specs]
+                )
+                for title, for_specs in (
+                    ("Sweep: learnings and logs", False),
+                    ("Sweep: specs", True),
+                )
+            }
             if arguments.sweep
-        }
+            else {}
+        )
 
     if arguments.json:
         emit_json({"defaults": defaults, "sweeps": sweeps, "cases": case_rows})
