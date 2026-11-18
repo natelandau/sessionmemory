@@ -43,8 +43,9 @@ A clean vault says so:
 ```
 
 `--json` prints the same findings as a list of `check`, `path`, `message`, and
-`project`. `path` is absolute, and `project` is empty for a finding about the vault
-itself:
+`project`. `path` is absolute, except for the `project` check, where it is the project's
+slug, and it is empty for a finding that names no file. `project` is empty for a finding
+about the vault itself:
 
 ```json
 [

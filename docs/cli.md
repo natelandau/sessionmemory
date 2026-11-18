@@ -570,7 +570,7 @@ work:
 `pending.adopt` names each entry that the command can adopt and that you did not
 decline: an untracked entry that is `unadopted`, or `diverged` with identical contents. `pending.settings` is `null` unless
 the settings state is `differs`, `checkout only`, or `vault only`. `reason` and `remedy`
-are set for a `conflict`, and `details` holds the paths that the reason refers to. A `settings` object follows when
+are set for a `conflict`, and `details` holds the same labeled path lines that the warning prints, and is empty when the cause names no path. A `settings` object follows when
 `--keep-settings` ran, with `kept` and the `path` that holds the kept copy. When both
 copies were already the same, nothing is written and `path` names the existing copy.
 `manifest_problems` holds one line for each line of `local/entries.toml` that the command
@@ -595,8 +595,9 @@ Each vault entry gets one link status:
 
 `sync` never replaces a file or folder that holds content, and it never deletes a link to
 nothing that points outside `local/`. Each conflict gets a warning on stderr that names
-the entry, the cause, and the remedy for that cause. An entry whose checkout copy differs
-from the vault copy also gets the path of each copy. Each tracked entry also gets a
+the entry, the cause, and the remedy for that cause. Labeled lines name the paths the cause
+refers to: `checkout:` and `vault:` for a copy in the checkout, `points to:` for a link to
+somewhere else, and `folder:` for a folder in the way. Each tracked entry also gets a
 warning:
 
 ```
