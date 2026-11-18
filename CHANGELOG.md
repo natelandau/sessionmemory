@@ -1,3 +1,12 @@
+## v0.21.0 (2026-11-18)
+
+### Feat
+
+- **reindex**: list only changed projects with --all
+- **search**: retune which pages count as search hits (#30)
+- **reconcile**: follow commits a trunk rewrite replaced (#29)
+- **cli**: add an agent guide and prompt for managing the vault (#28)
+
 ## v0.20.0 (2026-11-17)
 
 ### Feat
