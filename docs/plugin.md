@@ -519,7 +519,7 @@ never write. The skill collects their verdicts and applies the changes itself.
 | ------------------------------ | ------------------------------------------------------------------- |
 | `memory-entry-reviewer`        | Whether a page is correct, at the right altitude, and worth keeping |
 | `redundancy-reviewer`          | Which pages in one field overlap enough to merge                    |
-| `backlog-validity-reviewer`    | Whether a backlog item is done, obsolete, drifted, or still valid   |
+| `backlog-validity-reviewer`    | Whether a backlog item is done, obsolete, drifted, unclear, or still valid |
 | `backlog-opportunity-reviewer` | How much a valid backlog item is worth, by impact against effort    |
 
 `redundancy-reviewer` is the only one with a whole-field view. A flat field accumulates

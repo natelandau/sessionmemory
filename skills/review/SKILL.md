@@ -127,7 +127,9 @@ Apply every verdict. No delete and no edit needs a confidence gate.
   The command writes the line under the correct `## <kind>` heading, with the
   detail as nested bullets under it. Carry the page's useful context into
   `--detail` before the page is deleted, in single quotes when it holds a
-  backtick or `$`. A page whose
+  backtick or `$`. Rewrite the page's title for the user, who knows the product
+  but not the code: say what changes in the product's words, and carry the files
+  and the reason into `--detail`. A page whose
   `learning_role` is `workaround` stays. A page whose `learning_role` is
   `superseded` is deleted, the same as any other `DELETE`.
 - CLAUDE.md promotion, from `claude_md_candidate`: recommend only. Report the

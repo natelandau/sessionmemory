@@ -122,6 +122,32 @@ the file involved, the reason, or an approach already ruled out. The CLI writes 
 as nested bullets under the item. Single-quote the detail when it holds a backtick
 or `$`, so the shell passes it through unexpanded.
 
+Write each item for the user reading it weeks or months from now. That reader
+knows the product but not the code, and never saw this session. An item fails that
+reader in four ways:
+
+- **Session vocabulary.** A name coined in this session, such as a nickname for a
+  bug, a step label from a plan, or a term from a spec, means nothing later. Use
+  the words the product's users and docs use, or describe the thing.
+- **Vagueness.** "Improve error handling in sync" names an area, not a change. Say
+  what is wrong or missing, and what changes.
+- **Code minutiae.** Function names, line numbers, and mechanisms bury the effect.
+  The title says what changes for a person using the product, or for the project
+  when no user sees it. File names and the approach go in the detail.
+- **Missing why.** A bug fix or a user-facing feature needs no justification. When
+  the reason is not self-evident, as with most refactors, tests, and changed
+  defaults, the detail says what goes wrong without the change or what it enables.
+
+| Fails the reader                                 | Holds up                                                   |
+| ------------------------------------------------ | ---------------------------------------------------------- |
+| Fix the stale-hash path in refresh               | Stop search returning pages deleted since the last search |
+| Handle the phase-2 edge case                     | Keep a sweep from adding an item the backlog already has   |
+| Refactor the guard                               | Split the sweep's write checks so each can be tested alone |
+
+Before you run the command, check: from the title and detail alone, with no
+transcript and no code open, could that reader say what the change is and why it
+matters?
+
 Size is `S`, `M`, or `L`. Kind is one of feat, fix, refactor, perf, docs, test,
 build, ci, decide. A question only the user can answer ("decide whether ...") is
 not work to do: add it with `--kind decide`, which files it under `## decide`,
