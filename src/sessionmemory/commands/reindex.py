@@ -14,6 +14,7 @@ from sessionmemory.commands._common import (
     CWD_OPTION,
     JSON_OPTION,
     build_embedder,
+    count_cell,
     emit_json,
     fail,
     require_project,
@@ -23,13 +24,7 @@ from sessionmemory.lib import fieldindex, paths
 
 ALL = typer.Option(False, "--all", help="Reindex every project in the vault.")  # noqa: FBT003
 
-COUNT_COLUMNS = ("added", "updated", "removed", "unchanged")
-# A non-zero count takes its column's style; every zero is dimmed so changes stand out.
-NONZERO_STYLES = {"added": "green", "updated": "yellow", "removed": "red", "unchanged": ""}
-
-
-def _count(column: str, value: int) -> Text:
-    return Text(str(value), style=NONZERO_STYLES[column] if value else "dim")
+COUNT_STYLES = {"added": "green", "updated": "yellow", "removed": "red", "unchanged": ""}
 
 
 def _report(rows: list[tuple[str, str, fieldindex.Refresh]], *, show_project: bool) -> Table:
@@ -46,13 +41,13 @@ def _report(rows: list[tuple[str, str, fieldindex.Refresh]], *, show_project: bo
     if show_project:
         table.add_column("project", footer="total")
     table.add_column("field", footer="" if show_project else "total")
-    for column in COUNT_COLUMNS:
+    for column, style in COUNT_STYLES.items():
         total = sum(getattr(counts, column) for *_, counts in rows)
-        table.add_column(column, justify="right", footer=_count(column, total))
+        table.add_column(column, justify="right", footer=count_cell(total, style))
 
     previous = None
     for project, field, counts in rows:
-        cells = [_count(column, getattr(counts, column)) for column in COUNT_COLUMNS]
+        cells = [count_cell(getattr(counts, c), style) for c, style in COUNT_STYLES.items()]
         lead = [Text(project if project != previous else "")] if show_project else []
         table.add_row(*lead, Text(field), *cells)
         previous = project

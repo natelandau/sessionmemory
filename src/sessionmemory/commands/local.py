@@ -524,12 +524,14 @@ def _report_links(results: list[localmd.LinkResult]) -> None:
         elif result.status == "conflict":
             pp.warning(
                 result.reason or f"{result.entry.name} was not linked",
-                details=[result.remedy] if result.remedy else [],
+                details=[*result.details, *([result.remedy] if result.remedy else [])],
             )
         elif result.status == "tracked":
-            pp.warning(f"{result.entry.link} is tracked by git; the vault copy stays in the vault")
+            pp.warning(
+                f"{result.entry.relpath} is tracked by git; the vault copy stays in the vault"
+            )
         elif result.status == "removed":
-            pp.warning(f"removed {result.entry.link}, whose vault entry is gone")
+            pp.warning(f"removed {result.entry.relpath}, whose vault entry is gone")
 
 
 def _report_pending(waiting: list[localmd.Entry], pending: localmd.SettingsPending | None) -> None:
@@ -585,6 +587,7 @@ def _link_rows(results: list[localmd.LinkResult]) -> list[dict[str, object]]:
             "target": str(result.entry.target),
             "reason": result.reason,
             "remedy": result.remedy,
+            "details": list(result.details),
         }
         for result in results
     ]

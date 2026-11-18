@@ -10,17 +10,31 @@ sessionmemory doctor
 
 ```
 8 suggestions
-  ├─ filename: ~/repos/my-vault/projects/invoice-api/learnings/Bad Name.md: not lowercase ascii letters, digits, and hyphens
-  ├─ size: ~/repos/my-vault/projects/invoice-api/learnings/an-oversized-page.md: 10044 bytes; split it, the limit is 8192
-  ├─ datetime: ~/repos/my-vault/projects/invoice-api/learnings/an-undated-page.md: created, updated: unquoted; quote the value
-  ├─ project: old-service: root ~/repos/old-service does not exist
-  ├─ backlog: ~/repos/my-vault/projects/invoice-api/backlog.md: line 15: ticked; finished work is deleted, not ticked
-  ├─ reference: ~/repos/my-vault/projects/invoice-api/specs/2026-10-13-move-pdf-rendering-to-a-worker-queue.md: line 8: names runbooks/deploy-the-worker.md, which does not exist
-  ├─ spec: ~/repos/my-vault/projects/invoice-api/specs/2026-10-13-export-invoices-as-ubl-2-1-xml.md: status 'wip' is not one of draft, shipped, superseded, abandoned
-  └─ index: ~/repos/my-vault/projects/invoice-api/learnings: index is behind its pages; run: sessionmemory reindex
+invoice-api
+  filename   learnings/Bad Name.md
+             not lowercase ascii letters, digits, and hyphens
+  size       learnings/an-oversized-page.md
+             10044 bytes; split it, the limit is 8192
+  datetime   learnings/an-undated-page.md
+             created, updated: unquoted; quote the value
+  backlog    backlog.md
+             line 15: ticked; finished work is deleted, not ticked
+  reference  specs/2026-10-13-move-pdf-rendering-to-a-worker-queue.md
+             line 8: names runbooks/deploy-the-worker.md, which does not exist
+  spec       specs/2026-10-13-export-invoices-as-ubl-2-1-xml.md
+             status 'wip' is not one of draft, shipped, superseded, abandoned
+  index      learnings
+             index is behind its pages; run: sessionmemory reindex
+old-service
+  project    root ~/repos/old-service does not exist
 ```
 
-The vault path is shortened to `~` here; the command prints absolute paths.
+Findings are grouped under the project they concern, and each one names its check, its
+path, and the message. A path in the vault is relative to the project's folder in the
+vault. A path in a checkout is printed whole, since a project can have more than one
+checkout. A finding about the vault itself, such as an unreadable registry, is grouped
+under `(vault)`. The home directory is shortened to `~` here; the command prints absolute
+paths.
 
 A clean vault says so:
 
@@ -28,14 +42,17 @@ A clean vault says so:
 ✓ nothing to report
 ```
 
-`--json` prints the same findings as a list of `check`, `path`, and `message`:
+`--json` prints the same findings as a list of `check`, `path`, `message`, and
+`project`. `path` is absolute, and `project` is empty for a finding about the vault
+itself:
 
 ```json
 [
   {
     "check": "filename",
     "path": "~/repos/my-vault/projects/invoice-api/learnings/Bad Name.md",
-    "message": "not lowercase ascii letters, digits, and hyphens"
+    "message": "not lowercase ascii letters, digits, and hyphens",
+    "project": "invoice-api"
   }
 ]
 ```
@@ -78,7 +95,9 @@ A page's frontmatter carries a bare date or datetime, one written without quotes
 
 ```
 1 suggestion
-  └─ datetime: ~/repos/my-vault/projects/invoice-api/learnings/an-undated-page.md: created, updated: unquoted; quote the value
+invoice-api
+  datetime  learnings/an-undated-page.md
+            created, updated: unquoted; quote the value
 ```
 
 Quote the value: `created: '2026-09-02T10:00:00Z'`. The format requires it because a YAML
@@ -93,7 +112,8 @@ A registered project records a repository root that no longer exists.
 
 ```
 1 suggestion
-  └─ project: old-service: root ~/repos/old-service does not exist
+old-service
+  project  root ~/repos/old-service does not exist
 ```
 
 If the repository moved, edit that entry's `root` in `_system/registry.toml`. If the
@@ -112,7 +132,9 @@ carries a size, a date, or a topic.
 
 ```
 1 suggestion
-  └─ backlog: ~/repos/my-vault/projects/invoice-api/backlog.md: line 15: ticked; finished work is deleted, not ticked
+invoice-api
+  backlog  backlog.md
+           line 15: ticked; finished work is deleted, not ticked
 ```
 
 A ticked `- [x]` line is finished work. Delete it: the backlog has no checkbox, and git
@@ -130,7 +152,9 @@ placeholder like `specs/<slug>.md`, and a longer extension like `specs/x.mdx` do
 
 ```
 1 suggestion
-  └─ reference: ~/repos/my-vault/projects/invoice-api/specs/2026-10-13-move-pdf-rendering-to-a-worker-queue.md: line 8: names runbooks/deploy-the-worker.md, which does not exist
+invoice-api
+  reference  specs/2026-10-13-move-pdf-rendering-to-a-worker-queue.md
+             line 8: names runbooks/deploy-the-worker.md, which does not exist
 ```
 
 Either the file was renamed or deleted, or it was never written. Correct the mention to
@@ -144,11 +168,17 @@ This run covers a vault holding one spec of each kind and one healthy spec:
 
 ```
 5 suggestions
-  ├─ spec: ~/repos/my-vault/projects/invoice-api/specs/2026-10-13-cache-tax-rates-per-region.md: superseded_by '2026-10-13-no-such-spec.md' names no spec in specs/
-  ├─ spec: ~/repos/my-vault/projects/invoice-api/specs/2026-10-13-export-invoices-as-ubl-2-1-xml.md: status 'wip' is not one of draft, shipped, superseded, abandoned
-  ├─ spec: ~/repos/my-vault/projects/invoice-api/specs/2026-10-13-move-pdf-rendering-to-a-worker-queue.md: superseded without superseded_by
-  ├─ spec: ~/repos/my-vault/projects/invoice-api/specs/2026-10-13-retry-failed-pdf-renders.md: superseded_by names this spec
-  └─ spec: ~/repos/my-vault/projects/invoice-api/specs/2026-10-13-send-payment-reminders.md: frontmatter cannot be parsed; status ignored
+invoice-api
+  spec  specs/2026-10-13-cache-tax-rates-per-region.md
+        superseded_by '2026-10-13-no-such-spec.md' names no spec in specs/
+  spec  specs/2026-10-13-export-invoices-as-ubl-2-1-xml.md
+        status 'wip' is not one of draft, shipped, superseded, abandoned
+  spec  specs/2026-10-13-move-pdf-rendering-to-a-worker-queue.md
+        superseded without superseded_by
+  spec  specs/2026-10-13-retry-failed-pdf-renders.md
+        superseded_by names this spec
+  spec  specs/2026-10-13-send-payment-reminders.md
+        frontmatter cannot be parsed; status ignored
 ```
 
 - **`status 'wip' is not one of ...`**: the status is not `draft`, `shipped`,
@@ -178,7 +208,9 @@ those commits:
 
 ```
 1 suggestion
-  └─ commits: ~/repos/my-vault/projects/invoice-api/logs/2026-10-20-ubl-export.md: lists 1 commit no branch contains; run: sessionmemory reconcile
+invoice-api
+  commits  logs/2026-10-20-ubl-export.md
+           lists 1 commit no branch contains; run: sessionmemory reconcile
 ```
 
 Run `sessionmemory reconcile --dry-run` to see how many lines it would replace or drop,
@@ -215,7 +247,9 @@ old path:
 
 ```
 1 suggestion
-  └─ local: ~/repos/my-vault/projects/invoice-api/CLAUDE.local.md: CLAUDE.local.md is at its old path; run local sync to move it into local/
+invoice-api
+  local  CLAUDE.local.md
+         CLAUDE.local.md is at its old path; run local sync to move it into local/
 ```
 
 Run `sessionmemory local sync`. It moves the file into `local/`. If `local/` already holds
@@ -223,7 +257,9 @@ a different copy, the finding says so:
 
 ```
 1 suggestion
-  └─ local: ~/repos/my-vault/projects/invoice-api/CLAUDE.local.md: CLAUDE.local.md is at its old path and differs from ~/repos/my-vault/projects/invoice-api/local/CLAUDE.local.md; keep one of them, delete the other, then run local sync
+invoice-api
+  local  CLAUDE.local.md
+         CLAUDE.local.md is at its old path and differs from ~/repos/my-vault/projects/invoice-api/local/CLAUDE.local.md; keep one of them, delete the other, then run local sync
 ```
 
 Keep the copy you want, delete the other one, then run `sessionmemory local sync`.
@@ -234,7 +270,9 @@ are a file among the skills, which must be folders, and a folder at
 
 ```
 1 suggestion
-  └─ local: ~/repos/my-vault/projects/invoice-api/local/claude/skills/notes.md: skills/notes.md in the vault is not a folder; fix or remove it in the vault
+invoice-api
+  local  local/claude/skills/notes.md
+         skills/notes.md in the vault is not a folder; fix or remove it in the vault
 ```
 
 Move the file into a skill folder, or delete it. Until then, `sessionmemory local sync`
@@ -246,7 +284,9 @@ second machine gets an empty folder:
 
 ```
 1 suggestion
-  └─ local: ~/repos/my-vault/projects/invoice-api/local/claude/skills/deploy-check/vendor/.git: skills/deploy-check holds a git repository, which the vault commits as an embedded repository rather than its files; move it out of the vault
+invoice-api
+  local  local/claude/skills/deploy-check/vendor/.git
+         skills/deploy-check holds a git repository, which the vault commits as an embedded repository rather than its files; move it out of the vault
 ```
 
 Move the repository out of the vault, and clone it again where you need it.
@@ -257,7 +297,9 @@ vault copy cannot be linked:
 
 ```
 1 suggestion
-  └─ local: ~/repos/my-vault/projects/invoice-api/local/claude/review.toml: .claude/review.toml is listed in entries.toml but the vault holds no copy; remove the line from entries.toml
+invoice-api
+  local  local/claude/review.toml
+         .claude/review.toml is listed in entries.toml but the vault holds no copy; remove the line from entries.toml
 ```
 
 Delete the line from `entries.toml`, or adopt the file again from a checkout that still
@@ -268,7 +310,9 @@ highest such path once, not each file inside it:
 
 ```
 1 suggestion
-  └─ local: ~/repos/my-vault/projects/invoice-api/local/notes: notes in the vault is not an entry; adopt it again from a checkout, or add its path to entries.toml
+invoice-api
+  local  local/notes
+         notes in the vault is not an entry; adopt it again from a checkout, or add its path to entries.toml
 ```
 
 Add its checkout path to `entries.toml`, or delete it. A concurrent `local adopt`
@@ -285,7 +329,9 @@ also reports a declined entry that the checkout does not hold:
 
 ```
 1 suggestion
-  └─ local: ~/repos/my-vault/projects/invoice-api/local/declined.toml: skills/deploy-check is declined in declined.toml but this checkout has no copy; remove the line if no other checkout has it
+invoice-api
+  local  local/declined.toml
+         skills/deploy-check is declined in declined.toml but this checkout has no copy; remove the line if no other checkout has it
 ```
 
 If no other checkout or machine holds the entry, delete the line. The line does no harm
@@ -297,7 +343,9 @@ because Claude Code resolves it from the vault folder:
 
 ```
 1 suggestion
-  └─ local: ~/repos/my-vault/projects/invoice-api/local/CLAUDE.local.md: @./sandbox-notes.md resolves from the vault folder and will not load
+invoice-api
+  local  local/CLAUDE.local.md
+         @./sandbox-notes.md resolves from the vault folder and will not load
 ```
 
 Write the content of the imported file into the file itself, or remove the import. Skills
@@ -311,7 +359,9 @@ alone:
 
 ```
 1 suggestion
-  └─ local: ~/repos/invoice-api/.claude/skills/release-notes: skills/release-notes is tracked by git; run git rm --cached .claude/skills/release-notes before adopting it
+invoice-api
+  local  ~/repos/invoice-api/.claude/skills/release-notes
+         skills/release-notes is tracked by git; run git rm --cached .claude/skills/release-notes before adopting it
 ```
 
 If the entry is yours, run the command, commit the removal in the project, then run
@@ -322,7 +372,9 @@ A real file or folder whose content differs from the vault copy is `diverged`:
 
 ```
 1 suggestion
-  └─ local: ~/repos/invoice-api/.claude/rules/style.md: rules/style.md differs from the vault copy; copy the newer one over the vault copy, delete the checkout copy, and run local sync
+invoice-api
+  local  ~/repos/invoice-api/.claude/rules/style.md
+         rules/style.md differs from the vault copy; copy the newer one over the vault copy, delete the checkout copy, and run local sync
 ```
 
 An editor that saves by renaming a temporary file over the link leaves this state behind.
@@ -333,7 +385,9 @@ A link to nothing is reported whether or not git ignores it:
 
 ```
 1 suggestion
-  └─ local: ~/repos/invoice-api/.claude/skills/deploy-check: skills/deploy-check is a dangling symlink; run local sync to replace it
+invoice-api
+  local  ~/repos/invoice-api/.claude/skills/deploy-check
+         skills/deploy-check is a dangling symlink; run local sync to replace it
 ```
 
 Run `sessionmemory local sync`, which replaces the link.
@@ -343,7 +397,9 @@ untracked file in the project. The remedy depends on what is there:
 
 ```
 1 suggestion
-  └─ local: ~/repos/invoice-api/CLAUDE.local.md: CLAUDE.local.md is not ignored by git; run local sync to add it to info/exclude
+invoice-api
+  local  ~/repos/invoice-api/CLAUDE.local.md
+         CLAUDE.local.md is not ignored by git; run local sync to add it to info/exclude
 ```
 
 The checkout links to the vault copy. Run `sessionmemory local sync`, which adds the entry
@@ -351,7 +407,9 @@ to the file that `git rev-parse --git-path info/exclude` prints.
 
 ```
 1 suggestion
-  └─ local: ~/repos/invoice-api/.claude/rules/style.md: rules/style.md is not ignored by git; run local adopt rules/style.md to replace it with an ignored link
+invoice-api
+  local  ~/repos/invoice-api/.claude/rules/style.md
+         rules/style.md is not ignored by git; run local adopt rules/style.md to replace it with an ignored link
 ```
 
 The checkout holds a real copy with the same content as the vault copy. Run the
@@ -360,7 +418,9 @@ link and adds the ignore line.
 
 ```
 1 suggestion
-  └─ local: ~/repos/invoice-api/.claude/rules/style.md: rules/style.md is not ignored by git, and a symlink to ~/repos/notes/style.md rather than the vault copy; remove it, then run local sync
+invoice-api
+  local  ~/repos/invoice-api/.claude/rules/style.md
+         rules/style.md is not ignored by git, and a symlink to ~/repos/notes/style.md rather than the vault copy; remove it, then run local sync
 ```
 
 The checkout holds a link to another file. Remove the link, then run
@@ -374,7 +434,9 @@ choice:
 
 ```
 1 suggestion
-  └─ local: ~/repos/invoice-api/.claude/settings.local.json: settings.local.json differs from the vault copy; run local sync to choose which copy to keep
+invoice-api
+  local  ~/repos/invoice-api/.claude/settings.local.json
+         settings.local.json differs from the vault copy; run local sync to choose which copy to keep
 ```
 
 Run `sessionmemory local sync` and keep one copy. The same remedy applies when only the

@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, NoReturn
 import typer
 import typer.core
 from nclutils import pp
+from rich.text import Text
 
 # Typer vendors Click, so the `click` package's classes never match its errors.
 from typer._click import core as click_core
@@ -415,3 +416,18 @@ def require_project(vault: Path, cwd: Path | None = None) -> str:
         str: The resolved project slug.
     """
     return require_registered(vault, cwd)[0]
+
+
+def count_cell(value: int, style: str) -> Text:
+    """Render a count for a report table, styled when non-zero and dimmed when zero.
+
+    Dimming every zero lets the counts that changed stand out in a wide grid.
+
+    Args:
+        value: The count.
+        style: The Rich style for a non-zero count.
+
+    Returns:
+        The styled cell.
+    """
+    return Text(str(value), style=style if value else "dim")

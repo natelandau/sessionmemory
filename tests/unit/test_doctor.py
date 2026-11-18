@@ -205,7 +205,10 @@ def test_unquoted_datetimes_reports_a_page_whose_dates_are_bare(tmp_path):
 
     assert findings == [
         doctor.Finding(
-            "datetime", str(directory / "bare.md"), "created, updated: unquoted; quote the value"
+            "datetime",
+            str(directory / "bare.md"),
+            "created, updated: unquoted; quote the value",
+            project="demo",
         )
     ]
 
@@ -1490,3 +1493,32 @@ def test_local_skips_declined_names_without_a_registered_root(tmp_path):
     findings = doctor.local_instructions(vault, StubEmbedder())
 
     assert [f for f in findings if "declined" in f.message] == []
+
+
+def test_short_path_is_relative_to_the_project_folder_in_the_vault_only(tmp_path):
+    """Verify a vault path shortens to the project folder and every other path stays whole."""
+    vault = tmp_path / "vault"
+    page = vault / "projects" / "alpha" / "learnings" / "Bad.md"
+    checkout = tmp_path / "checkout" / ".claude" / "rules" / "x.md"
+
+    def short(check: str, path: str, project: str) -> str:
+        return doctor.short_path(vault, doctor.Finding(check, path, "m", project=project))
+
+    assert short("filename", str(page), "alpha") == "learnings/Bad.md"
+    assert short("local", str(checkout), "alpha") == str(checkout)
+    assert short("project", "gone", "gone") == ""
+    assert short("registry", "", "") == ""
+    assert short("doctor", str(vault), "") == str(vault)
+
+
+def test_run_files_each_finding_under_its_project(tmp_path):
+    """Verify checks stamp a finding with the project it concerns, and none for the vault."""
+    directory = _learnings(tmp_path)
+    (directory / "Bad Name.md").write_text("x")
+    registry.save(
+        tmp_path, {"gone": registry.Project(slug="gone", remotes=(), root=str(tmp_path / "x"))}
+    )
+
+    findings = doctor.run(tmp_path, StubEmbedder())
+
+    assert {(f.check, f.project) for f in findings} >= {("filename", "demo"), ("project", "gone")}

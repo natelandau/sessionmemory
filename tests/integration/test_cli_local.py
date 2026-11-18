@@ -546,6 +546,7 @@ def test_link_json_lists_entries(workspace):
                 "target": str(target),
                 "reason": None,
                 "remedy": None,
+                "details": [],
             },
             {
                 "kind": "skill",
@@ -555,6 +556,7 @@ def test_link_json_lists_entries(workspace):
                 "target": str(skill),
                 "reason": None,
                 "remedy": None,
+                "details": [],
             },
         ],
         "pending": {"adopt": [], "settings": None},
@@ -607,7 +609,9 @@ def test_link_conflict_in_prose_names_the_reason_and_remedy(workspace):
     assert result.exit_code == 1
     assert result.stdout == ""
     flat = " ".join(result.stderr.split())
-    assert "differs from the vault copy" in flat
+    assert "! CLAUDE.local.md differs from the vault copy" in flat
+    assert f"checkout: {repo / 'CLAUDE.local.md'}" in flat
+    assert f"vault: {vault / 'projects'}" in flat
     assert (
         "Copy the newer one over the vault copy, delete the checkout copy, and run local sync."
         in flat
