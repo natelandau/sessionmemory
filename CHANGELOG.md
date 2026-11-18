@@ -1,3 +1,11 @@
+## v0.20.0 (2026-11-17)
+
+### Feat
+
+- **cli**: group doctor findings and tabulate reconcile counts (#27)
+- **reindex**: report counts in a colored grid (#26)
+- **backlog**: write better backlog items (#25)
+
 ## v0.19.0 (2026-11-16)
 
 ### Feat
