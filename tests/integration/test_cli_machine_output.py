@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from sessionmemory.lib import agentguide
 from sessionmemory.lib.bootstrap import initialize
 
 ESCAPE = b"\x1b["
@@ -335,3 +336,27 @@ def test_local_decline_output_is_parseable_in_a_colored_shell(colored_checkout, 
         assert json.loads(result.stdout) == {"declined": ["rules/r.md"]}
     else:
         assert result.stdout.decode().strip() == "rules/r.md"
+
+
+@pytest.mark.parametrize(
+    ("flag", "expected"),
+    [
+        pytest.param("--skill", agentguide.skill(), id="skill"),
+        pytest.param("--prompt", agentguide.PROMPT, id="prompt"),
+    ],
+)
+def test_agent_text_prints_bare_with_no_vault_configured(tmp_path, flag, expected):
+    """Print the agent guide and prompt unstyled, and before any vault is set up.
+
+    A person pastes the prompt into an agent, and the agent reads the guide whole, so an
+    escape sequence corrupts both. Neither needs a vault, since the guide is what an agent
+    reads to find out there is none.
+    """
+    env = {key: value for key, value in os.environ.items() if key != "SESSIONMEMORY_VAULT"}
+    env |= {**COLORED, "HOME": str(tmp_path)}
+
+    result = _run(env, flag)
+
+    assert result.returncode == 0
+    assert ESCAPE not in result.stdout
+    assert result.stdout.decode() == f"{expected}\n"
