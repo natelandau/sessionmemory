@@ -1408,7 +1408,8 @@ def test_link_reason_for_a_differing_copy_says_copy_over_the_vault(co, md):
 
     result = _link(co, md)
 
-    assert result.reason == f"{md.link} differs from the vault copy at {md.target}"
+    assert result.reason == f"{md.relpath} differs from the vault copy"
+    assert result.details == (f"checkout: {md.link}", f"vault:    {md.target}")
     assert result.remedy == (
         "Copy the newer one over the vault copy, delete the checkout copy, and run local sync."
     )
@@ -1435,7 +1436,8 @@ def test_link_reason_for_a_foreign_link_names_its_target(co, md, tmp_path):
 
     result = _link(co, md)
 
-    assert result.reason == f"{md.link} is a symlink to {other.resolve()}, not to the vault copy"
+    assert result.reason == f"{md.relpath} is a symlink to somewhere other than the vault copy"
+    assert result.details == (f"points to: {other.resolve()}",)
     assert result.remedy is not None
     assert "local status" in result.remedy
 
@@ -1451,7 +1453,7 @@ def test_link_reason_for_a_blocked_folder_names_the_folder(co, tmp_path):
 
     assert result.status == "conflict"
     assert result.reason is not None
-    assert str(co.root / ".claude" / "skills") in result.reason
+    assert result.details == (f"folder: {co.root / '.claude' / 'skills'}",)
     assert result.remedy is not None
     assert "adopt" not in result.remedy
 

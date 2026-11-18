@@ -82,18 +82,31 @@ def test_reconcile_dry_run_leaves_the_log(workspace):
     result = runner.invoke(app, ["reconcile", "--dry-run"])
 
     assert result.exit_code == 0, result.output
-    assert "dry run" in result.output
-    assert "1 dropped" in result.output
+    lines = [line.split() for line in result.output.splitlines()]
+    assert ["log-commits", "1", "0", "1", "0", "0"] in lines
+    assert "no log was rewritten" in result.output
     assert log.read_bytes() == before
 
 
-def test_reconcile_prose_without_dry_run_has_no_prefix(workspace):
-    """Verify a real run reports counts and omits the dry run marker."""
+def test_reconcile_prose_reports_counts_and_changed_logs(workspace):
+    """Verify a real run reports counts and the logs it changed, without the dry run marker."""
     result = runner.invoke(app, ["reconcile"])
 
     assert result.exit_code == 0, result.output
-    assert "log-commits: 1 log changed, 0 replaced, 1 dropped" in result.output
-    assert "dry run" not in result.output
+    lines = [line.split() for line in result.output.splitlines()]
+    assert lines[0] == [
+        "reconciler",
+        "logs",
+        "changed",
+        "replaced",
+        "dropped",
+        "in",
+        "progress",
+        "unchecked",
+    ]
+    assert ["log-commits", "1", "0", "1", "0", "0"] in lines
+    assert "log-commits changed" in result.output
+    assert "dry-run" not in result.output
 
 
 def test_reconcile_fails_when_root_is_not_a_repository(workspace, tmp_path):

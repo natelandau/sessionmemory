@@ -543,7 +543,8 @@ work:
       "link": "~/repos/invoice-api-pdf/CLAUDE.local.md",
       "target": "~/repos/my-vault/projects/invoice-api/local/CLAUDE.local.md",
       "reason": null,
-      "remedy": null
+      "remedy": null,
+      "details": []
     }
   ],
   "pending": {
@@ -569,7 +570,7 @@ work:
 `pending.adopt` names each entry that the command can adopt and that you did not
 decline: an untracked entry that is `unadopted`, or `diverged` with identical contents. `pending.settings` is `null` unless
 the settings state is `differs`, `checkout only`, or `vault only`. `reason` and `remedy`
-are set for a `conflict`. A `settings` object follows when
+are set for a `conflict`, and `details` holds the same labeled path lines that the warning prints, and is empty when the cause names no path. A `settings` object follows when
 `--keep-settings` ran, with `kept` and the `path` that holds the kept copy. When both
 copies were already the same, nothing is written and `path` names the existing copy.
 `manifest_problems` holds one line for each line of `local/entries.toml` that the command
@@ -594,15 +595,20 @@ Each vault entry gets one link status:
 
 `sync` never replaces a file or folder that holds content, and it never deletes a link to
 nothing that points outside `local/`. Each conflict gets a warning on stderr that names
-the cause and the remedy for that cause. Each tracked entry also gets a warning:
+the entry, the cause, and the remedy for that cause. Labeled lines name the paths the cause
+refers to: `checkout:` and `vault:` for a copy in the checkout, `points to:` for a link to
+somewhere else, and `folder:` for a folder in the way. Each tracked entry also gets a
+warning:
 
 ```
 ! ~/repos/my-vault/projects/invoice-api/CLAUDE.local.md and ~/repos/my-vault/projects/invoice-api/local/CLAUDE.local.md differ, so CLAUDE.local.md was not moved into local/
   └─ Keep one of them, delete the other, then run local sync.
 ! the vault copy at ~/repos/my-vault/projects/invoice-api/local/claude/skills/notes.md is not a folder
   └─ Fix or remove it in the vault, then run local sync.
-! ~/repos/invoice-api/.claude/skills/release-notes is tracked by git; the vault copy stays in the vault
-! ~/repos/invoice-api/.claude/rules/style.md differs from the vault copy at ~/repos/my-vault/projects/invoice-api/local/claude/rules/style.md
+! .claude/skills/release-notes is tracked by git; the vault copy stays in the vault
+! .claude/rules/style.md differs from the vault copy
+  ├─ checkout: ~/repos/invoice-api/.claude/rules/style.md
+  ├─ vault:    ~/repos/my-vault/projects/invoice-api/local/claude/rules/style.md
   └─ Copy the newer one over the vault copy, delete the checkout copy, and run local sync.
 ```
 
@@ -620,7 +626,7 @@ These are the causes of a conflict, and the remedy that the warning gives for ea
 A removed link is reported the same way:
 
 ```
-! removed ~/repos/invoice-api/.claude/rules/review.md, whose vault entry is gone
+! removed .claude/rules/review.md, whose vault entry is gone
 ```
 
 The command exits 1 when any linked entry is a `conflict`, when a `--keep-settings`, an
@@ -1601,11 +1607,19 @@ sessionmemory reconcile --dry-run --cwd .
 ```
 
 ```
-✓ (dry run) reconciling
-  └─ log-commits: 1 log changed, 0 replaced, 1 dropped, 0 in progress, 0 unchecked
+reconciler   logs changed  replaced  dropped  in progress  unchecked
+log-commits             1         0        1            0          0
+log-commits would change
+  └─ 2026-10-01-09-00.md
+~ [dry-run] no log was rewritten
 ```
 
-The same run without `--dry-run` prints the same counts and rewrites the log.
+On a terminal, a non-zero count is colored: green for replaced, red for dropped, cyan
+for in progress, and yellow for unchecked. Zeros are dimmed. The reason for each
+unchecked line follows the logs as a warning.
+
+The same run without `--dry-run` prints the same counts, says `log-commits changed`
+above the logs, and rewrites them.
 
 ```bash
 sessionmemory reconcile --json --dry-run --cwd .
@@ -1774,7 +1788,8 @@ sessionmemory doctor
 
 ```
 1 suggestion
-  └─ project: old-service: root ~/repos/old-service does not exist
+old-service
+  project  root ~/repos/old-service does not exist
 ```
 
 ```json
@@ -1782,7 +1797,8 @@ sessionmemory doctor
   {
     "check": "project",
     "path": "old-service",
-    "message": "root ~/repos/old-service does not exist"
+    "message": "root ~/repos/old-service does not exist",
+    "project": "old-service"
   }
 ]
 ```

@@ -11,7 +11,7 @@ import hashlib
 import re
 import shlex
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -44,11 +44,20 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class Finding:
-    """One thing a check found."""
+    """One thing a check found.
+
+    Attributes:
+        check (str): The check that found it.
+        path (str): The file or folder concerned, the slug for the `project` check, or
+            empty when nothing on disk is named.
+        message (str): What is wrong, and the fix when there is one.
+        project (str): The slug of the project it concerns, or empty for the vault itself.
+    """
 
     check: str
     path: str
     message: str
+    project: str = ""
 
 
 def nonconformant_names(vault: Path, _embedder: Embedder) -> list[Finding]:
@@ -57,7 +66,12 @@ def nonconformant_names(vault: Path, _embedder: Embedder) -> list[Finding]:
     Such a file is never indexed, so it is never searched, and a spec is never counted.
     """
     return [
-        Finding("filename", str(path), "not lowercase ascii letters, digits, and hyphens")
+        Finding(
+            "filename",
+            str(path),
+            "not lowercase ascii letters, digits, and hyphens",
+            project=directory.parent.name,
+        )
         for directory in paths.iter_index_dirs(vault)
         for path in sorted(directory.glob("*.md"))
         if path.is_file() and not field.is_debris(path.name) and not field.is_page_name(path.name)
@@ -71,6 +85,7 @@ def oversized_pages(vault: Path, _embedder: Embedder) -> list[Finding]:
             "size",
             str(path),
             f"{path.stat().st_size} bytes; split it, the limit is {field.PAGE_LIMIT}",
+            project=directory.parent.name,
         )
         for directory in paths.iter_field_dirs(vault)
         for path in field.iter_pages(directory)
@@ -92,26 +107,31 @@ def malformed_frontmatter(vault: Path, _embedder: Embedder) -> list[Finding]:
     """
     findings = []
     for directory in paths.iter_field_dirs(vault):
+        slug = directory.parent.name
         for path in field.iter_pages(directory):
             raw = path.read_bytes()
             try:
                 text = raw.decode("utf-8")
             except UnicodeDecodeError:
-                findings.append(Finding("frontmatter", str(path), "not valid UTF-8"))
+                findings.append(Finding("frontmatter", str(path), "not valid UTF-8", project=slug))
                 continue
             try:
                 meta, _body = parse(text)
             except MissingFrontmatterError:
                 if path.parent.name == paths.LEARNINGS_DIR:
-                    findings.append(Finding("frontmatter", str(path), "missing title or summary"))
+                    findings.append(
+                        Finding("frontmatter", str(path), "missing title or summary", project=slug)
+                    )
                 continue
             except FrontmatterError as error:
-                findings.append(Finding("frontmatter", str(path), str(error)))
+                findings.append(Finding("frontmatter", str(path), str(error), project=slug))
                 continue
             if path.parent.name == paths.LEARNINGS_DIR and (
                 _blank(meta.get("title")) or _blank(meta.get("summary"))
             ):
-                findings.append(Finding("frontmatter", str(path), "missing title or summary"))
+                findings.append(
+                    Finding("frontmatter", str(path), "missing title or summary", project=slug)
+                )
     return findings
 
 
@@ -124,6 +144,7 @@ def unquoted_datetimes(vault: Path, _embedder: Embedder) -> list[Finding]:
     """
     findings = []
     for directory in paths.iter_field_dirs(vault):
+        slug = directory.parent.name
         for path in field.iter_pages(directory):
             try:
                 keys = unquoted_datetime_keys(path.read_text(encoding="utf-8"))
@@ -131,7 +152,7 @@ def unquoted_datetimes(vault: Path, _embedder: Embedder) -> list[Finding]:
                 continue
             if keys:
                 message = f"{', '.join(keys)}: unquoted; quote the value"
-                findings.append(Finding("datetime", str(path), message))
+                findings.append(Finding("datetime", str(path), message, project=slug))
     return findings
 
 
@@ -142,7 +163,7 @@ def dead_projects(vault: Path, _embedder: Embedder) -> list[Finding]:
     except registry.RegistryError as error:
         return [Finding("registry", "", str(error))]
     return [
-        Finding("project", slug, f"root {project.root} does not exist")
+        Finding("project", slug, f"root {project.root} does not exist", project=slug)
         for slug, project in sorted(projects.items())
         if project.root and not Path(project.root).is_dir()
     ]
@@ -162,7 +183,7 @@ def ticked_backlog_lines(vault: Path, _embedder: Embedder) -> list[Finding]:
         for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
             if backlog.is_ticked(line):
                 message = f"line {number}: ticked; finished work is deleted, not ticked"
-                findings.append(Finding("backlog", str(path), message))
+                findings.append(Finding("backlog", str(path), message, project=slug))
     return findings
 
 
@@ -215,7 +236,7 @@ def dangling_references(vault: Path, _embedder: Embedder) -> list[Finding]:
                         if not target.is_file():
                             mention = match[0].removeprefix(f"{vault}/")
                             message = f"line {number}: names {mention}, which does not exist"
-                            findings.append(Finding("reference", str(path), message))
+                            findings.append(Finding("reference", str(path), message, project=slug))
     return findings
 
 
@@ -238,10 +259,10 @@ def spec_statuses(vault: Path, _embedder: Embedder) -> list[Finding]:
                 continue
             except FrontmatterError:
                 message = "frontmatter cannot be parsed; status ignored"
-                findings.append(Finding("spec", str(path), message))
+                findings.append(Finding("spec", str(path), message, project=slug))
                 continue
             findings.extend(
-                Finding("spec", str(path), problem)
+                Finding("spec", str(path), problem, project=slug)
                 for problem in specs.status_problems(meta, filename=path.name, siblings=siblings)
             )
     return findings
@@ -589,7 +610,10 @@ def local_instructions(vault: Path, _embedder: Embedder) -> list[Finding]:
     for slug in paths.iter_project_slugs(vault):
         project = projects.get(slug)
         root = Path(project.root) if project and project.root else None
-        findings.extend(_project_local_findings(vault, slug, root, projects))
+        findings.extend(
+            replace(finding, project=slug)
+            for finding in _project_local_findings(vault, slug, root, projects)
+        )
     return findings
 
 
@@ -654,6 +678,7 @@ def orphaned_commits(vault: Path, _embedder: Embedder) -> list[Finding]:
                         "commits",
                         str(log),
                         f"lists {count} commit{plural} no branch contains; run: sessionmemory reconcile",
+                        project=slug,
                     )
                 )
     return findings
@@ -690,7 +715,9 @@ def stale_indexes(vault: Path, embedder: Embedder) -> list[Finding]:
     for directory in paths.iter_index_dirs(vault):
         message = _is_stale(directory, embedder)
         if message:
-            findings.append(Finding("index", str(directory), message))
+            findings.append(
+                Finding("index", str(directory), message, project=directory.parent.name)
+            )
     return findings
 
 
@@ -707,6 +734,29 @@ CHECKS: tuple[Callable[[Path, Embedder], list[Finding]], ...] = (
     orphaned_commits,
     stale_indexes,
 )
+
+
+def short_path(vault: Path, finding: Finding) -> str:
+    """Return the finding's path as a report under its project heading shows it.
+
+    A path in the project's vault folder is made relative to that folder. A checkout path
+    stays whole, since a project can have several checkouts and a relative one would read
+    as a vault path. The `project` check names a slug, not a path, so it shows none.
+
+    Args:
+        vault: The vault the finding came from.
+        finding: One finding from `run`.
+
+    Returns:
+        The path to show, or empty when there is none.
+    """
+    if finding.check == "project":
+        return ""
+    if not (finding.project and finding.path):
+        return finding.path
+    path = Path(finding.path)
+    folder = paths.project_dir(vault, finding.project)
+    return path.relative_to(folder).as_posix() if path.is_relative_to(folder) else finding.path
 
 
 def run(vault: Path, embedder: Embedder) -> list[Finding]:

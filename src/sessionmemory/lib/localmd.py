@@ -1099,45 +1099,75 @@ def relative_imports(text: str) -> list[str]:
 
 @dataclass(frozen=True)
 class LinkResult:
-    """The outcome of linking one entry, with why and how to resolve it for a conflict."""
+    """The outcome of linking one entry, with why and how to resolve it for a conflict.
+
+    Attributes:
+        entry (Entry): The entry linked.
+        status (LinkStatus): What happened.
+        state (State): What the checkout held at the link path.
+        reason (str | None): For a conflict, one line naming the entry and the cause.
+        remedy (str | None): For a conflict, the step that resolves that cause.
+        details (tuple[str, ...]): For a conflict, the labeled paths the reason refers to,
+            kept out of it so the reason stays one short line.
+    """
 
     entry: Entry
     status: LinkStatus
     state: State
     reason: str | None = None
     remedy: str | None = None
+    details: tuple[str, ...] = ()
 
 
-def _conflict_reason(co: Checkout, item: Entry, current: State) -> tuple[str, str]:
-    """Name why the entry was not linked and the remedy that fits that cause."""
+def _conflict(item: Entry, current: State, co: Checkout) -> LinkResult:
+    """Build the conflict result naming why the entry was not linked and the fitting remedy."""
     if blocked(co, item):
-        folder = blocking_folder(co, item)
-        return (
-            f"{folder} or its parent is a symlink or not a folder, so {item.name} was not linked",
-            "Replace it with a real folder, then run local sync.",
+        return LinkResult(
+            item,
+            "conflict",
+            current,
+            reason=f"{item.relpath} was not linked; a folder above it is a symlink or not a folder",
+            remedy="Replace it with a real folder, then run local sync.",
+            details=(f"folder: {blocking_folder(co, item)}",),
         )
     if current is State.FOREIGN_LINK:
-        return (
-            f"{item.link} is a symlink to {item.link.resolve()}, not to the vault copy",
-            "Remove it and run local sync to link the vault copy, or run local status to compare.",
+        return LinkResult(
+            item,
+            "conflict",
+            current,
+            reason=f"{item.relpath} is a symlink to somewhere other than the vault copy",
+            remedy="Remove it and run local sync to link the vault copy, or run local status to compare.",
+            details=(f"points to: {item.link.resolve()}",),
         )
     if current is State.DIVERGED:
+        both = (f"checkout: {item.link}", f"vault:    {item.target}")
         try:
             match = contents_match(item)
         except OSError:
             match = None
         if match is True:
-            return (
-                f"{item.link} is a copy identical to the vault copy",
-                f"Run local adopt {shlex.quote(item.name)} to replace it with the link.",
+            return LinkResult(
+                item,
+                "conflict",
+                current,
+                reason=f"{item.relpath} is a copy identical to the vault copy",
+                remedy=f"Run local adopt {shlex.quote(item.name)} to replace it with the link.",
+                details=both,
             )
-        return (
-            f"{item.link} differs from the vault copy at {item.target}",
-            f"{REPLACE_VAULT_COPY[0].upper()}{REPLACE_VAULT_COPY[1:]}.",
+        return LinkResult(
+            item,
+            "conflict",
+            current,
+            reason=f"{item.relpath} differs from the vault copy",
+            remedy=f"{REPLACE_VAULT_COPY[0].upper()}{REPLACE_VAULT_COPY[1:]}.",
+            details=both,
         )
-    return (
-        f"something appeared at {item.link} while it was being linked",
-        "Run local status to see what is there.",
+    return LinkResult(
+        item,
+        "conflict",
+        current,
+        reason=f"something appeared at {item.relpath} while it was being linked",
+        remedy="Run local status to see what is there.",
     )
 
 
@@ -1161,22 +1191,18 @@ def link(co: Checkout, item: Entry, *, tracked: bool) -> LinkResult:
     """
     current = state(item)
 
-    def conflict(now: State) -> LinkResult:
-        reason, remedy = _conflict_reason(co, item, now)
-        return LinkResult(item, "conflict", now, reason=reason, remedy=remedy)
-
     if not _present(item.target, item.kind):
         msg = f"the vault holds no {item.name}"
         raise LocalMdError(msg, [f"Nothing is at {item.target}."])
     if blocked(co, item):
-        return conflict(current)
+        return _conflict(item, current, co)
     if tracked:
         return LinkResult(item, "tracked", current)
     if current is State.LINKED:
         ensure_ignored(co, item)
         return LinkResult(item, "present", current)
     if current in {State.DIVERGED, State.FOREIGN_LINK}:
-        return conflict(current)
+        return _conflict(item, current, co)
 
     # The folder first, so a failure leaves no exclude line; the line before the link,
     # so the link never exists unignored.
@@ -1185,7 +1211,7 @@ def link(co: Checkout, item: Entry, *, tracked: bool) -> LinkResult:
     if current is State.DANGLING:
         localtree.place_link(item.link, item.target)
     elif not localtree.create_link(item.link, item.target):
-        return conflict(state(item))
+        return _conflict(item, state(item), co)
     return LinkResult(item, "created", current)
 
 
@@ -1737,7 +1763,9 @@ def relink(co: Checkout, item: Entry, *, tracked: bool) -> LinkResult:
             item.link.symlink_to(previous)
     except OSError as err:
         msg = f"could not link {item.link}, and could not restore its link to {previous}: {err}"
-        raise LocalMdError(msg, [result.reason] if result.reason else []) from err
+        raise LocalMdError(
+            msg, [*([result.reason] if result.reason else []), *result.details]
+        ) from err
     return result
 
 

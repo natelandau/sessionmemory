@@ -48,7 +48,7 @@ def test_doctor_prose_on_clean_vault_reports_nothing(workspace):
 
 
 def test_doctor_prose_reports_a_bad_filename(workspace):
-    """Verify a finding's prose names the check, path, and message."""
+    """Verify a finding's row names its project, check, path within the project, and message."""
     vault, _ = workspace
 
     directory = vault / "projects" / "demo" / "learnings"
@@ -59,8 +59,11 @@ def test_doctor_prose_reports_a_bad_filename(workspace):
 
     assert result.exit_code == 0, result.output
     assert "1 suggestion" in result.output
-    assert "filename" in result.output
-    assert str(directory / "Bad Name.md") in result.output
+    lines = [line.strip() for line in result.output.splitlines()]
+    heading = lines.index("demo")
+    assert lines[heading + 1].split() == ["filename", "learnings/Bad", "Name.md"]
+    assert lines[heading + 2] == "not lowercase ascii letters, digits, and hyphens"
+    assert str(vault) not in result.output
 
 
 def test_doctor_json_reports_a_bad_filename(workspace):
@@ -77,6 +80,7 @@ def test_doctor_json_reports_a_bad_filename(workspace):
     output = json.loads(result.stdout)
     assert len(output) == 1
     assert output[0]["check"] == "filename"
+    assert output[0]["project"] == "demo"
     assert str(directory / "Bad Name.md") in output[0]["path"]
 
 
