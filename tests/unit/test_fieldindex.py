@@ -447,3 +447,18 @@ def test_apply_cutoffs_admits_pages_that_stand_out_by_margin_or_drop(distances, 
     """Verify which ranked pages count as hits under each part of the rule."""
     hits = fieldindex.apply_cutoffs(_ranking(*distances), cutoffs, limit=10)
     assert [page.filename for page in hits] == expected
+
+
+def test_apply_cutoffs_measures_the_drop_over_pages_the_caller_can_see():
+    """Verify a hidden page at the top neither makes the break nor hides the visible leader's."""
+    # Given a superseded spec far ahead, then a current leader clear of a packed field
+    retired = fieldindex.Ranked(
+        filename="old.md", frontmatter=json.dumps({"status": "superseded"}), distance=0.10
+    )
+    ranking = [retired, *_ranking(0.30, 0.37, 0.375, 0.38, 0.385, 0.39, 0.395, 0.40)]
+
+    # When retired specs are excluded
+    hits = fieldindex.apply_cutoffs(ranking, _RULE, limit=10, exclude=specs.is_retired)
+
+    # Then the current leader comes back on its own gap
+    assert [page.filename for page in hits] == ["p0.md"]

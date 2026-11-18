@@ -21,7 +21,6 @@ import itertools
 import json
 import math
 import sqlite3
-import statistics
 import struct
 from functools import cached_property
 from typing import TYPE_CHECKING, Any
@@ -368,7 +367,8 @@ def apply_cutoffs(
     `max_distance`. A cutoff rather than a bare top-k, so a query nothing answers returns
     nothing instead of the nearest pages dressed up as hits. A `min_margin` of 0 admits
     every page within `max_distance`. `exclude` drops a page by its frontmatter after the
-    median is measured, so a dropped page never uses up `limit`.
+    median is measured and before the drop is, so a dropped page never uses up `limit` and
+    never decides where the break falls.
 
     Args:
         ranking (list[Ranked]): Every page of the field, as `rank_pages` returns it.
@@ -380,33 +380,41 @@ def apply_cutoffs(
         list[Ranked]: At most `limit` hits.
     """
     background = (
-        statistics.median(page.distance for page in ranking)
-        if len(ranking) >= MIN_BACKGROUND_PAGES
-        else FALLBACK_BACKGROUND
+        _median_distance(ranking) if len(ranking) >= MIN_BACKGROUND_PAGES else FALLBACK_BACKGROUND
     )
     # A margin of 0 turns the margin off, leaving only `max_distance`.
     margin_ceiling = background - cutoffs.min_margin if cutoffs.min_margin > 0 else math.inf
-    above_drop = _above_largest_drop(ranking, window=cutoffs.drop_window, min_drop=cutoffs.min_drop)
+    # The drop is measured over the pages a caller can see, so an excluded page can neither
+    # make the break nor hide one.
+    visible = (page for page in ranking if exclude is None or not exclude(page.meta))
+    nearest = list(itertools.islice(visible, cutoffs.drop_window))
+    above_drop = _above_largest_drop(nearest, min_drop=cutoffs.min_drop)
     # The ranking is nearest first, so the admitted pages are a leading run.
     admitted = itertools.takewhile(
         lambda pair: (
             pair[1].distance <= cutoffs.max_distance
             and (pair[1].distance <= margin_ceiling or pair[0] < above_drop)
         ),
-        enumerate(ranking),
+        enumerate(itertools.chain(nearest, visible)),
     )
-    kept = (page for _index, page in admitted if exclude is None or not exclude(page.meta))
-    return list(itertools.islice(kept, limit))
+    return [page for _index, page in itertools.islice(admitted, limit)]
 
 
-def _above_largest_drop(ranking: list[Ranked], *, window: int, min_drop: float) -> int:
-    """Return how many leading pages sit above the largest gap among the nearest `window`.
+def _median_distance(ranking: list[Ranked]) -> float:
+    """Return the median distance of a ranking that is already nearest first, without sorting."""
+    middle = len(ranking) // 2
+    if len(ranking) % 2:
+        return ranking[middle].distance
+    return (ranking[middle - 1].distance + ranking[middle].distance) / 2
+
+
+def _above_largest_drop(nearest: list[Ranked], *, min_drop: float) -> int:
+    """Return how many leading pages sit above the largest gap between neighbors in `nearest`.
 
     Zero when that gap is under `min_drop`, so a ranking with no clear break admits
     nothing by the drop.
     """
-    distances = [page.distance for page in ranking[:window]]
-    gaps = [after - before for before, after in itertools.pairwise(distances)]
+    gaps = [after.distance - before.distance for before, after in itertools.pairwise(nearest)]
     if not gaps:
         return 0
     largest = max(gaps)
