@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 from pathlib import Path  # noqa: TC003
 
 import typer
@@ -31,35 +30,6 @@ INCLUDE_RETIRED = typer.Option(
 LIMIT = typer.Option(
     fieldindex.DEFAULT_LIMIT, "--limit", "-n", min=0, help="Maximum number of results."
 )
-# Hidden because the defaults were measured against labeled queries; these exist for
-# re-measuring them, not for loosening a search that found nothing.
-MAX_DISTANCE = typer.Option(
-    None,
-    "--max-distance",
-    min=0.0,
-    max=2.0,
-    help=(
-        "Farthest cosine distance that still counts as a hit. "
-        f"Default {fieldindex.FIELD_CUTOFFS.max_distance}, "
-        f"or {fieldindex.SPECS_CUTOFFS.max_distance} with --specs."
-    ),
-    show_default=False,
-    hidden=True,
-)
-MIN_MARGIN = typer.Option(
-    None,
-    "--min-margin",
-    min=0.0,
-    max=2.0,
-    help=(
-        "How much nearer than the median page searched a page must sit to clear the margin. "
-        "0 admits every page within --max-distance. "
-        f"Default {fieldindex.FIELD_CUTOFFS.min_margin}, "
-        f"or {fieldindex.SPECS_CUTOFFS.min_margin} with --specs."
-    ),
-    show_default=False,
-    hidden=True,
-)
 READ = typer.Option(False, "--read", help="Print each hit's whole file under its path.")  # noqa: FBT003
 
 _NO_RESULTS = {
@@ -79,8 +49,6 @@ def search_command(  # noqa: PLR0913
     specs_flag: bool = SPECS,
     include_retired: bool = INCLUDE_RETIRED,
     limit: int = LIMIT,
-    max_distance: float | None = MAX_DISTANCE,
-    min_margin: float | None = MIN_MARGIN,
     read: bool = READ,
     cwd: Path | None = CWD_OPTION,
     as_json: bool = JSON_OPTION,
@@ -102,7 +70,6 @@ def search_command(  # noqa: PLR0913
         build_embedder(),
         text,
         limit=limit,
-        cutoffs=_cutoffs(field_dir, max_distance=max_distance, min_margin=min_margin),
         exclude=None if include_retired else fieldindex.default_exclude(field_dir),
     )
 
@@ -123,17 +90,6 @@ def search_command(  # noqa: PLR0913
             f"{hit.path}\n  {_title_line(hit, specs_flag=specs_flag)}\n  {hit.summary}"
             for hit in hits
         )
-    )
-
-
-def _cutoffs(
-    field_dir: Path, *, max_distance: float | None, min_margin: float | None
-) -> fieldindex.Cutoffs:
-    """Return the measured cutoffs for `field_dir` with any hidden override applied."""
-    overrides = {"max_distance": max_distance, "min_margin": min_margin}
-    return dataclasses.replace(
-        fieldindex.default_cutoffs(field_dir),
-        **{name: value for name, value in overrides.items() if value is not None},
     )
 
 

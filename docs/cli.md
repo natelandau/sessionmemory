@@ -1273,8 +1273,6 @@ agent cannot do with its own tools.
 | `--specs`           | Search specs instead of learnings. Cannot be combined with `--logs`.                                |
 | `--include-retired` | With `--specs`, also return superseded and abandoned specs. Without `--specs` it is an error.       |
 | `--limit`, `-n`     | Maximum number of results. Default 10.                                                              |
-| `--max-distance`    | Farthest cosine distance that still counts as a hit. Default 0.45, or 0.42 with `--specs`.          |
-| `--min-margin`      | How much nearer than the median page searched a page must sit to clear the margin. Default 0.17, or 0.19 with `--specs`. |
 | `--read`            | Print each hit's whole file under its path.                                                         |
 | `--cwd`             | Directory to resolve the project from.                                                              |
 | `--json`            | Emit JSON instead of prose.                                                                         |
@@ -1331,11 +1329,11 @@ no results: nothing in learnings matches; try --specs for designs and decisions,
 The message names the other two places to look. A `--specs` or `--logs` search that finds
 nothing names only itself, as `no results: no spec matches this query`.
 
-A page counts as a hit when it sits within `--max-distance` of the query and stands out
-from the rest of the field in one of two ways:
+A page counts as a hit when it sits within a cosine distance of 0.45 of the query and
+stands out from the rest of the field in one of two ways:
 
-- It sits at least `--min-margin` nearer than the median page in the field. A field with
-  fewer than 8 pages measures against a fixed median of 0.49 instead.
+- It sits at least 0.17 nearer than the median page in the field. A field with fewer than
+  8 pages measures against a fixed median of 0.49 instead.
 - It sits above the largest gap between neighbors among the 5 nearest pages, and that gap
   is at least 0.05.
 
@@ -1344,12 +1342,8 @@ non-matches. Phrasing a query as a question lowers every distance at once, and a
 log, which covers a whole session, sits near every query about its project. The gap finds
 the answer in a small field of similar pages, such as the logs of a project with few
 sessions, where every page sits near the median. Measured on 120 labeled queries against
-the learnings and logs of six real projects, the defaults returned a hit for 1 of 42
-queries that had no answer and missed 19 of 78 answers. `--min-margin 0` turns the margin
-off and leaves only `--max-distance`.
-
-`--help` does not list `--max-distance` or `--min-margin`. They exist to measure the
-defaults again, not to loosen a search that found nothing.
+the learnings and logs of six real projects, these numbers returned a hit for 1 of 42
+queries that had no answer and missed 19 of 78 answers.
 
 Search refreshes the field's index before it queries, so a page written moments ago is
 found without a `sessionmemory reindex` first. The first search on a machine downloads the
@@ -1438,12 +1432,11 @@ With `--json`, a spec hit adds its `status`, which is `draft`, `shipped`, `super
 ]
 ```
 
-Specs have their own defaults, `--max-distance 0.42` and `--min-margin 0.19`, and a gap
-of 0.02 among the 11 nearest specs. A spec is embedded from its title and headings, not its
-body, and specs spread wider than learnings, so they were measured apart. Measured on 50
-queries against one project's specs, the defaults returned a spec for 1 of 10 queries with
-no answer and missed 6 of 40 answers. An explicit `--max-distance` or `--min-margin`
-overrides either one.
+Specs have their own numbers: a distance of 0.42, a margin of 0.19, and a gap of 0.02
+among the 11 nearest specs. A spec is embedded from its title and headings, not its body,
+and specs spread wider than learnings, so they were measured apart. Measured on 50 queries
+against one project's specs, these numbers returned a spec for 1 of 10 queries with no
+answer and missed 6 of 40 answers.
 
 ## `sessionmemory inject`
 
