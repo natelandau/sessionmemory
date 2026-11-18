@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import re
-import shlex
 import sys
 import tomllib
 from pathlib import Path
@@ -28,6 +27,14 @@ CI = os.environ.get("CI", "0") in {"1", "true", "yes", ""}
 PROJECT_ROOT = Path(__file__).parent
 PREK_DUTY_HOOKS = ("ruff", "format", "ty", "typos", "yamllint", "shellcheck", "test")
 VERSION = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))["project"]["version"]
+# Everything but prose and CI config, so a docs-only change skips the suite
+TEST_PATHS = (
+    ".",
+    ":(exclude)docs/",
+    ":(exclude)README.md",
+    ":(exclude)CHANGELOG.md",
+    ":(exclude).github/",
+)
 
 
 def strip_ansi(text: str) -> str:
@@ -45,19 +52,23 @@ def strip_ansi(text: str) -> str:
     return ansi_chars.sub("", text).replace("[", r"\[")
 
 
-def gated(*command: str, name: str | None = None) -> list[str]:
-    """Wrap a command in gate-cache so it skips when it already passed on the same tree.
+def gated(*command: str, name: str, paths: tuple[str, ...] = ()) -> list[str]:
+    """Wrap a command in gate-cache so it skips when it already passed on the same content.
 
-    gate-cache turns itself off when `CI` is set, so CI always runs the command.
+    gate-cache turns itself off when `CI` is set, so CI always runs the command. Run
+    `gate-cache --skill` before adding or changing a gate.
 
     Args:
         *command (str): The command and its arguments.
-        name (str | None): A gate name for inputs git does not track. Defaults to the command line.
+        name (str): The gate name, free of spaces. Put an input git does not track after an
+            `@`, as in `test@python3.14`.
+        paths (tuple[str, ...]): Git pathspecs that scope the gate. Defaults to the whole tree.
 
     Returns:
         list[str]: The argv to pass to `ctx.run`.
     """
-    return ["gate-cache", *(["--name", name] if name else []), "--", *command]
+    scope = [arg for path in paths for arg in ("--path", path)]
+    return ["gate-cache", "--name", name, *scope, "--", *command]
 
 
 def pyprefix(title: str) -> str:
@@ -82,14 +93,14 @@ def clean(ctx: Context) -> None:
     ctx.run("rm -rf pip-wheel-metadata")
     ctx.run("find . -type d -name __pycache__ | xargs rm -rf")
     ctx.run("find . -name '.DS_Store' -delete")
-    ctx.run(["gate-cache", "clear"])
+    ctx.run(["gate-cache", "clear", "--yes"])
 
 
 @duty
 def ruff(ctx: Context) -> None:
     """Check the code quality with ruff."""
     ctx.run(
-        gated("ruff", "check", "--config", "pyproject.toml", "--no-fix", *PY_SRC_LIST),
+        gated("ruff", "check", "--config", "pyproject.toml", "--no-fix", *PY_SRC_LIST, name="ruff"),
         title=pyprefix("code quality check"),
     )
 
@@ -98,7 +109,9 @@ def ruff(ctx: Context) -> None:
 def format(ctx: Context) -> None:  # noqa: A001
     """Check the code formatting with ruff."""
     ctx.run(
-        gated("ruff", "format", "--config", "pyproject.toml", "--check", *PY_SRC_LIST),
+        gated(
+            "ruff", "format", "--config", "pyproject.toml", "--check", *PY_SRC_LIST, name="format"
+        ),
         title=pyprefix("code formatting"),
     )
 
@@ -106,20 +119,29 @@ def format(ctx: Context) -> None:  # noqa: A001
 @duty
 def ty(ctx: Context) -> None:
     """Check the code with ty."""
-    ctx.run(gated("ty", "check", "src/"), title=pyprefix("ty check"))
+    ctx.run(
+        gated(
+            "ty",
+            "check",
+            "src/",
+            name="ty",
+            paths=("src/", "pyproject.toml", "uv.lock", "duties.py"),
+        ),
+        title=pyprefix("ty check"),
+    )
 
 
 @duty
 def typos(ctx: Context) -> None:
     """Check the code with typos."""
-    ctx.run(gated("typos", "--config", ".typos.toml"), title=pyprefix("typos check"))
+    ctx.run(gated("typos", "--config", ".typos.toml", name="typos"), title=pyprefix("typos check"))
 
 
 @duty
 def yamllint(ctx: Context) -> None:
     """Check YAML files with yamllint."""
     ctx.run(
-        gated("yamllint", "--strict", "--config-file", ".yamllint.yml", "."),
+        gated("yamllint", "--strict", "--config-file", ".yamllint.yml", ".", name="yamllint"),
         title=pyprefix("yamllint check"),
     )
 
@@ -128,7 +150,14 @@ def yamllint(ctx: Context) -> None:
 def shellcheck(ctx: Context) -> None:
     """Check shell scripts with shellcheck."""
     ctx.run(
-        gated("shellcheck", "--check-sourced", "--severity=warning", *SH_SRC_LIST),
+        gated(
+            "shellcheck",
+            "--check-sourced",
+            "--severity=warning",
+            *SH_SRC_LIST,
+            name="shellcheck",
+            paths=("bin/", "duties.py"),
+        ),
         title=pyprefix("shellcheck"),
     )
 
@@ -138,7 +167,14 @@ def prek(ctx: Context) -> None:
     """Run prek hooks."""
     # Skip the hooks that call a lint duty, since `lint` runs those duties itself
     ctx.run(
-        gated("env", f"PREK_SKIP={','.join(PREK_DUTY_HOOKS)}", "prek", "run", "--all-files"),
+        gated(
+            "env",
+            f"PREK_SKIP={','.join(PREK_DUTY_HOOKS)}",
+            "prek",
+            "run",
+            "--all-files",
+            name="prek",
+        ),
         title=pyprefix("prek hooks"),
     )
 
@@ -160,21 +196,22 @@ def update(ctx: Context) -> None:
 @duty()
 def test(ctx: Context, *cli_args: str) -> None:
     """Test package and generate coverage reports."""
-    # The interpreter is not in the tree, so name it to keep one version's pass from skipping another's
+    command = (
+        "pytest",
+        "tests/",
+        "-c",
+        "pyproject.toml",
+        "--cov",
+        "--cov-config=pyproject.toml",
+        "--cov-report=xml",
+        "--cov-report=term",
+        *cli_args,
+    )
+    # A filtered run must never skip the full suite, so only the bare suite is gated. The
+    # interpreter is not in the tree, so the key keeps one version's pass from skipping another's.
     python = f"python{sys.version_info.major}.{sys.version_info.minor}"
     ctx.run(
-        gated(
-            "pytest",
-            "tests/",
-            "-c",
-            "pyproject.toml",
-            "--cov",
-            "--cov-config=pyproject.toml",
-            "--cov-report=xml",
-            "--cov-report=term",
-            *cli_args,
-            name=shlex.join(["pytest", python, *cli_args]),
-        ),
+        list(command) if cli_args else gated(*command, name=f"test@{python}", paths=TEST_PATHS),
         title=pyprefix("Running tests - this may take a while"),
         capture=CI,
     )

@@ -358,14 +358,14 @@ wheels = [
 
 [[package]]
 name = "gate-cache"
-version = "0.8.0"
+version = "0.9.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "platformdirs" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/9e/30/a0323e65a7569c9b71aeb5ec4fe8c09c3cf0fcd3afe591824151f591eb3a/gate_cache-0.8.0.tar.gz", hash = "sha256:81ca76a193331bab09b021d848574e1b63491f2bc13831b3705fcd6c82164b6b", size = 301949, upload-time = "2026-11-18T00:48:54.783Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/72/ab/95b8c5f0437030d7f2642fb0d79ecee8b0ab14d34233c7edfbbef14c6e95/gate_cache-0.9.0.tar.gz", hash = "sha256:98ff103a7a289d164dee199f1867b7242399383df07e0119149eb34fda972aa7", size = 326423, upload-time = "2026-11-18T15:55:41.742Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/2b/f8/ba3412de319fef4b4b958d63f2e7f3d74b1213011b31bff643abad58e74e/gate_cache-0.8.0-py3-none-any.whl", hash = "sha256:8cdccde959fe43a78e6c511fa5baa8fb36d25d7d21ab3be1c2829cf785b7f72a", size = 312044, upload-time = "2026-11-18T00:48:53.778Z" },
+    { url = "https://files.pythonhosted.org/packages/cb/18/15a193821b397326e44ebcb415013760484b2a297230f8436d5a097b6cb2/gate_cache-0.9.0-py3-none-any.whl", hash = "sha256:120ba7888f7ec0caf9a279075d42c0c5c525e8ae726cc53d69e4bd8b49bebf1a", size = 335377, upload-time = "2026-11-18T15:55:40.422Z" },
 ]
 
 [[package]]
@@ -1209,7 +1209,7 @@ dev = [
     { name = "commitizen", specifier = ">=4.19.3" },
     { name = "coverage", specifier = ">=7.17.3" },
     { name = "duty", specifier = ">=1.10.1" },
-    { name = "gate-cache", specifier = ">=0.8.0" },
+    { name = "gate-cache", specifier = ">=0.9.0" },
     { name = "prek", specifier = ">=0.5.11" },
     { name = "pytest", specifier = ">=9.2.0" },
     { name = "pytest-clarity", specifier = ">=1.0.1" },

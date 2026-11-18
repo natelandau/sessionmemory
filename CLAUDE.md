@@ -36,12 +36,18 @@ uv run duty lint         # All linters (ruff, ty, typos, yamllint, shellcheck, p
 uv run duty test         # Tests with coverage
 ```
 
-Every check duty runs through `gated()`, which wraps it in `gate-cache`. A check that
-already passed on the same git tree prints `already passed ... skipping` and exits 0;
-that is a pass. `GATE_CACHE_DISABLE=1` forces a real run. A new check needs a duty that
-calls `gated()`, a local prek hook running `uv run duty <name>`, and its hook id in
-`PREK_DUTY_HOOKS`. An input git does not track goes in the gate name, as the test duty
-does with the Python version.
+Run checks only through these duties, never the tools directly: a direct run neither
+reads nor records gate-cache passes. Every check duty runs through `gated()`, which wraps
+it in `gate-cache`. A check that already passed on the same content prints
+`already passed ... skipping` and exits 0. That is a pass. `GATE_CACHE_DISABLE=1` forces
+a real run.
+
+Run `gate-cache --skill` before adding or changing a gate. A new check needs a duty that
+calls `gated()` with a `name` free of spaces, a local prek hook running
+`uv run duty <name>`, and its hook id in `PREK_DUTY_HOOKS`. An input git does not track
+goes in the name after an `@`, as in the test duty's `test@python3.14`. A gate with
+`paths` skips when nothing under them changed, so a duty that starts reading a new file
+adds it to its `paths` in the same change.
 
 ## Code Layout
 

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -11,6 +13,9 @@ from sessionmemory.lib import commits
 from sessionmemory.lib.commits import CommitsError, PullAnswer, PullState, Repository
 from tests.unit.gitfixtures import Fixture, commit, rebase_merge, rewrite_trunk, squash_merge
 from tests.unit.gitfixtures import git as _git
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def _github(fixture: Fixture) -> Repository:
@@ -32,16 +37,24 @@ def _pr(*, state="closed", merged_at="2026-01-01T00:00:00Z", base="main", sha="a
     )
 
 
-def _ambiguous_prefix(fixture: Fixture) -> str:
-    """Commit until two objects share a 4-character prefix, and return that prefix."""
-    seen: dict[str, str] = {}
-    for sha in _git(fixture.clone, "rev-list", "--all").split():
-        seen[sha[:4]] = sha
-    for index in range(2000):
-        sha = commit(fixture.clone, f"amb{index}")
-        if sha[:4] in seen and seen[sha[:4]] != sha:
-            return sha[:4]
-        seen[sha[:4]] = sha
+def _ambiguous_prefix(fixture: Fixture, scratch: Path) -> str:
+    """Store two blobs that share a 4-character prefix, and return that prefix.
+
+    Hashing the candidates in-process and writing only the colliding pair keeps the
+    birthday search (about 300 tries) from costing one git subprocess per try.
+    """
+    seen: dict[str, bytes] = {}
+    for index in range(20_000):
+        content = f"amb{index}".encode()
+        prefix = hashlib.sha1(b"blob %d\0%b" % (len(content), content)).hexdigest()[:4]  # noqa: S324
+        if prefix in seen:
+            first, second = scratch / "first", scratch / "second"
+            first.write_bytes(seen[prefix])
+            second.write_bytes(content)
+            written = _git(fixture.clone, "hash-object", "-w", str(first), str(second)).split()
+            assert {sha[:4] for sha in written} == {prefix}
+            return prefix
+        seen[prefix] = content
     pytest.fail("no ambiguous prefix found")
 
 
@@ -58,9 +71,9 @@ def test_expand_returns_none_for_unknown_shas(repo):
     assert expansion.ambiguous == frozenset()
 
 
-def test_expand_reports_an_ambiguous_prefix_apart_from_an_unknown_one(repo):
+def test_expand_reports_an_ambiguous_prefix_apart_from_an_unknown_one(repo, tmp_path):
     """Verify a prefix shared by two objects is ambiguous, not missing."""
-    prefix = _ambiguous_prefix(repo)
+    prefix = _ambiguous_prefix(repo, tmp_path)
 
     expansion = Repository(repo.clone).expand([prefix, "deadbee"])
 

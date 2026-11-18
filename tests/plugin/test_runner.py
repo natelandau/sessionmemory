@@ -510,7 +510,7 @@ def test_run_timeout_reports_writes_from_partial_output(monkeypatch, encode: boo
     assert result.changed_files == ["/elsewhere/escaped.md"]
 
 
-@pytest.mark.parametrize("output", [None, b"", ""])
+@pytest.mark.parametrize("output", [None, b"", ""], ids=["none", "bytes", "str"])
 def test_run_timeout_without_output_reports_no_writes(monkeypatch, output) -> None:
     """Verify a timed-out run with no captured output reports no changed files."""
     # Given a run that timed out before printing anything
