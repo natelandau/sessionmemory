@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import itertools
 import json
 import sqlite3
 import statistics
@@ -30,6 +31,9 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from sessionmemory.lib.embed import Embedder
+
+# How many hits `search` returns unless the caller asks for another number.
+DEFAULT_LIMIT = 10
 
 # The reference implementation's default cutoff for nomic-embed-text-v1.5. On its own it
 # admits most unrelated queries, so it is only a ceiling and the margin below decides.
@@ -244,6 +248,19 @@ def default_cutoffs(field_dir: Path) -> tuple[float, float]:
     return DEFAULT_MAX_DISTANCE, DEFAULT_MIN_MARGIN
 
 
+def default_exclude(field_dir: Path) -> Callable[[dict[str, Any]], bool] | None:
+    """Return the filter a search of `field_dir` applies unless asked to show everything.
+
+    Args:
+        field_dir (Path): The directory searched.
+
+    Returns:
+        Callable[[dict[str, Any]], bool] | None: `specs.is_retired` for `specs/`, which
+            hides superseded and abandoned specs, and None for a field.
+    """
+    return specs.is_retired if _is_specs(field_dir) else None
+
+
 def search(
     field_dir: Path,
     embedder: Embedder,
@@ -256,26 +273,18 @@ def search(
 ) -> list[Hit]:
     """Return the pages that stand out as nearest to `query`, nearest first, refreshing the index first.
 
-    A hit sits within `max_distance` and at least `min_margin` nearer than the field's
-    median page. A cutoff rather than a bare top-k, so a query nothing answers returns
-    nothing instead of the nearest pages dressed up as hits. A `min_margin` of 0 leaves
-    only the absolute cutoff. Either left as None takes the measured default for the
-    directory searched, since specs were measured apart from the fields. `exclude` drops a
-    page by its frontmatter after the median is measured, so a dropped page never uses up
-    `limit`.
+    See `cut` for which pages count as hits.
     """
-    if not field_dir.is_dir():
-        return []
-    default_distance, default_margin = default_cutoffs(field_dir)
-    admitted = admit(
-        rank(field_dir, embedder, query),
-        max_distance=default_distance if max_distance is None else max_distance,
-        min_margin=default_margin if min_margin is None else min_margin,
-    )
     hits = []
-    for page in select_hits(admitted, limit=limit, exclude=exclude):
-        meta = page.meta
-        status = meta.get("status")
+    for page in cut(
+        rank(field_dir, embedder, query),
+        field_dir,
+        limit=limit,
+        max_distance=max_distance,
+        min_margin=min_margin,
+        exclude=exclude,
+    ):
+        status = page.meta.get("status")
         path = field_dir / page.filename
         if _is_specs(field_dir):
             try:
@@ -286,8 +295,8 @@ def search(
             title = specs.parse_spec(text, stem=path.stem).title
             summary = specs.hit_summary(text)
         else:
-            title = meta.get("title")
-            summary = meta.get("summary")
+            title = page.meta.get("title")
+            summary = page.meta.get("summary")
         hits.append(
             Hit(
                 path=path,
@@ -303,8 +312,7 @@ def search(
 def rank(field_dir: Path, embedder: Embedder, query: str) -> list[Ranked]:
     """Return every page of a field with its distance to `query`, nearest first, refreshing the index first.
 
-    Separate from `admit` so the search benchmark can rank a query once and try many
-    cutoffs against the same ranking.
+    No cutoff applies, so `cut` can measure the field's median against every page.
     """
     if not field_dir.is_dir():
         return []
@@ -328,12 +336,39 @@ def rank(field_dir: Path, embedder: Embedder, query: str) -> list[Ranked]:
     ]
 
 
-def admit(ranking: list[Ranked], *, max_distance: float, min_margin: float) -> list[Ranked]:
-    """Return the leading pages of a ranking that stand out from the rest of the field.
+def cut(
+    ranking: list[Ranked],
+    field_dir: Path,
+    *,
+    limit: int,
+    max_distance: float | None = None,
+    min_margin: float | None = None,
+    exclude: Callable[[dict[str, Any]], bool] | None = None,
+) -> list[Ranked]:
+    """Return the pages of a full ranking that count as hits, nearest first.
 
-    The margin is measured against the median distance of the whole ranking, so pass
-    every page of the field, not a trimmed list. See `search` for the rule.
+    A hit sits within `max_distance` and at least `min_margin` nearer than the field's
+    median page. A cutoff rather than a bare top-k, so a query nothing answers returns
+    nothing instead of the nearest pages dressed up as hits. A `min_margin` of 0 leaves
+    only the absolute cutoff. Either left as None takes the measured default for
+    `field_dir`, since specs were measured apart from the fields. `exclude` drops a page
+    by its frontmatter after the median is measured, so a dropped page never uses up
+    `limit`.
+
+    Args:
+        ranking (list[Ranked]): Every page of the field, as `rank` returns it.
+        field_dir (Path): The directory ranked, which picks the default cutoffs.
+        limit (int): The most hits to return.
+        max_distance (float | None): The distance cutoff, or None for the default.
+        min_margin (float | None): The margin below the median, or None for the default.
+        exclude (Callable[[dict[str, Any]], bool] | None): Drops a page by its frontmatter.
+
+    Returns:
+        list[Ranked]: At most `limit` hits.
     """
+    default_distance, default_margin = default_cutoffs(field_dir)
+    max_distance = default_distance if max_distance is None else max_distance
+    min_margin = default_margin if min_margin is None else min_margin
     ceiling = max_distance
     if min_margin > 0:
         background = (
@@ -342,27 +377,9 @@ def admit(ranking: list[Ranked], *, max_distance: float, min_margin: float) -> l
             else FALLBACK_BACKGROUND
         )
         ceiling = min(ceiling, background - min_margin)
-    admitted = []
-    for page in ranking:
-        if page.distance > ceiling:
-            break
-        admitted.append(page)
-    return admitted
-
-
-def select_hits(
-    admitted: list[Ranked],
-    *,
-    limit: int,
-    exclude: Callable[[dict[str, Any]], bool] | None = None,
-) -> list[Ranked]:
-    """Return the first `limit` admitted pages that `exclude` keeps.
-
-    Exclusion runs after admission so an excluded page still counts toward the field's
-    median, and before the limit so it never uses up a slot.
-    """
-    kept = [page for page in admitted if exclude is None or not exclude(page.meta)]
-    return kept[:limit]
+    admitted = itertools.takewhile(lambda page: page.distance <= ceiling, ranking)
+    kept = (page for page in admitted if exclude is None or not exclude(page.meta))
+    return list(itertools.islice(kept, limit))
 
 
 def forget(field_dir: Path, embedder: Embedder, filename: str) -> None:

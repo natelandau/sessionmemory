@@ -27,7 +27,7 @@ INCLUDE_RETIRED = typer.Option(
     "--include-retired",
     help="With --specs, also show superseded and abandoned specs.",
 )
-LIMIT = typer.Option(10, "--limit", "-n", help="Maximum number of results.")
+LIMIT = typer.Option(fieldindex.DEFAULT_LIMIT, "--limit", "-n", help="Maximum number of results.")
 # Hidden because the defaults were measured against labeled queries; these exist for
 # re-measuring them, not for loosening a search that found nothing.
 MAX_DISTANCE = typer.Option(
@@ -90,14 +90,15 @@ def search_command(  # noqa: PLR0913
     vault = require_vault()
     slug = require_project(vault, cwd)
     field_name = _field_name(specs_flag=specs_flag, logs=logs)
+    field_dir = paths.project_dir(vault, slug) / field_name
     hits = fieldindex.search(
-        paths.project_dir(vault, slug) / field_name,
+        field_dir,
         build_embedder(),
         text,
         limit=limit,
         max_distance=max_distance,
         min_margin=min_margin,
-        exclude=specs.is_retired if specs_flag and not include_retired else None,
+        exclude=None if include_retired else fieldindex.default_exclude(field_dir),
     )
 
     if as_json:

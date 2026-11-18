@@ -21,8 +21,9 @@ Every field the fixture names is copied to a temporary directory first, since a 
 refreshes the index it reads and a benchmark must never write into the vault. The real
 embedding model always runs, because the test stub's distances measure nothing.
 
-Each query is ranked once. Every rule is then applied to that same ranking, so a sweep
-of the cutoffs costs no extra embedding.
+Each query is ranked once. Every rule is then applied to that same ranking through
+`fieldindex.cut`, the step `search` runs, so a sweep costs no extra embedding and
+measures the shipped rule.
 """
 
 from __future__ import annotations
@@ -33,23 +34,17 @@ import statistics
 import tempfile
 import time
 import tomllib
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from itertools import product
 from pathlib import Path
-from typing import Literal
 
 from nclutils import pp
 from rich.table import Table
 
 from sessionmemory.commands._common import emit_json
-from sessionmemory.lib import config, embed, fieldindex, paths, specs
+from sessionmemory.lib import config, embed, fieldindex, paths
 
-Field = Literal["learnings", "logs", "specs"]
-FIELDS: tuple[Field, ...] = ("learnings", "logs", "specs")
 FORMS = ("keywords", "question", "identifier")
-
-# The CLI's default --limit, so "wrong" counts what a caller would actually see.
-LIMIT = 10
 
 # The grid the earlier measurements swept: margins 0.05 to 0.20, distances 0.35 to 0.55.
 SWEEP_MARGINS = tuple(round(0.05 + step * 0.01, 2) for step in range(16))
@@ -62,7 +57,7 @@ class Case:
 
     set: str
     project: str
-    field: Field
+    field: str
     form: str
     query: str
     answers: frozenset[str]
@@ -70,7 +65,7 @@ class Case:
 
 @dataclass(frozen=True)
 class Rule:
-    """One pair of cutoffs for `fieldindex.admit`."""
+    """One pair of cutoffs for `fieldindex.cut`."""
 
     max_distance: float
     min_margin: float
@@ -98,6 +93,33 @@ class Score:
     first: int
 
 
+COUNTS = [count.name for count in fields(Score)]
+
+
+@dataclass(frozen=True)
+class Ranking:
+    """One case ranked once against its copied field."""
+
+    case: Case
+    field_dir: Path
+    pages: list[fieldindex.Ranked]
+    seconds: float
+
+    def hits(self, rule: Rule | None = None) -> list[str]:
+        """Return what `search` returns for this case under `rule`, or its defaults, as filenames."""
+        return [
+            page.filename
+            for page in fieldindex.cut(
+                self.pages,
+                self.field_dir,
+                limit=fieldindex.DEFAULT_LIMIT,
+                max_distance=None if rule is None else rule.max_distance,
+                min_margin=None if rule is None else rule.min_margin,
+                exclude=fieldindex.default_exclude(self.field_dir),
+            )
+        ]
+
+
 class FixtureError(ValueError):
     """A fixture case that cannot be scored."""
 
@@ -122,8 +144,8 @@ def load_cases(text: str) -> list[Case]:
         if missing:
             msg = f"case {number} ({raw.get('query', '?')!r}) lacks {', '.join(missing)}"
             raise FixtureError(msg)
-        if raw["field"] not in FIELDS:
-            msg = f"case {number} names field {raw['field']!r}; expected one of {FIELDS}"
+        if raw["field"] not in paths.INDEX_DIRS:
+            msg = f"case {number} names field {raw['field']!r}; expected one of {paths.INDEX_DIRS}"
             raise FixtureError(msg)
         if raw["form"] not in FORMS:
             msg = f"case {number} names form {raw['form']!r}; expected one of {FORMS}"
@@ -162,21 +184,6 @@ def score(results: list[tuple[Case, list[str]]]) -> Score:
     )
 
 
-def apply_rule(case: Case, ranking: list[fieldindex.Ranked], rule: Rule) -> list[str]:
-    """Return what `search` would return for `case` under `rule`, as filenames."""
-    admitted = fieldindex.admit(ranking, max_distance=rule.max_distance, min_margin=rule.min_margin)
-    exclude = specs.is_retired if case.field == "specs" else None
-    return [
-        page.filename for page in fieldindex.select_hits(admitted, limit=LIMIT, exclude=exclude)
-    ]
-
-
-def default_rule(field: Field) -> Rule:
-    """Return the cutoffs `search` uses for `field` today."""
-    max_distance, min_margin = fieldindex.default_cutoffs(Path(field))
-    return Rule(max_distance=max_distance, min_margin=min_margin)
-
-
 def _copy_fields(vault: Path, cases: list[Case], into: Path) -> dict[tuple[str, str], Path]:
     copies = {}
     for project, field in sorted({(case.project, case.field) for case in cases}):
@@ -184,7 +191,7 @@ def _copy_fields(vault: Path, cases: list[Case], into: Path) -> dict[tuple[str, 
         if not source.is_dir():
             msg = f"{project}/{field} is not a directory in {vault}"
             raise FixtureError(msg)
-        # The copy keeps the field's directory name, since `specs` selects the specs rules.
+        # The copy keeps the directory's name, since `fieldindex` picks the specs rules by it.
         target = into / project / field
         shutil.copytree(source, target)
         copies[project, field] = target
@@ -193,89 +200,73 @@ def _copy_fields(vault: Path, cases: list[Case], into: Path) -> dict[tuple[str, 
 
 def _check_answers(cases: list[Case], copies: dict[tuple[str, str], Path]) -> None:
     for case in cases:
-        absent = sorted(
-            name for name in case.answers if not (copies[case.project, case.field] / name).is_file()
-        )
+        field_dir = copies[case.project, case.field]
+        absent = sorted(name for name in case.answers if not (field_dir / name).is_file())
         if absent:
             msg = f"{case.query!r}: {case.project}/{case.field} has no {', '.join(absent)}"
             raise FixtureError(msg)
 
 
-def _rank_all(
-    cases: list[Case], copies: dict[tuple[str, str], Path]
-) -> tuple[list[list[fieldindex.Ranked]], list[float]]:
+def _rank_all(cases: list[Case], copies: dict[tuple[str, str], Path]) -> list[Ranking]:
     embedder = embed.default_embedder()
     # Refresh every copy before timing, so no query pays for embedding the pages.
-    for directory in copies.values():
-        fieldindex.refresh(directory, embedder)
-    rankings, seconds = [], []
+    for field_dir in copies.values():
+        fieldindex.refresh(field_dir, embedder)
+    rankings = []
     for case in cases:
+        field_dir = copies[case.project, case.field]
         started = time.perf_counter()
-        rankings.append(fieldindex.rank(copies[case.project, case.field], embedder, case.query))
-        seconds.append(time.perf_counter() - started)
-    return rankings, seconds
-
-
-def _group_key(case: Case) -> tuple[str, str, str]:
-    return (case.set, case.field, case.form)
-
-
-def _rows(results: list[tuple[Case, list[str]]], seconds: list[float]) -> list[dict[str, object]]:
-    groups: dict[tuple[str, str, str], list[int]] = {}
-    for index, (case, _hits) in enumerate(results):
-        groups.setdefault(_group_key(case), []).append(index)
-    rows = []
-    for key in sorted(groups):
-        members = groups[key]
-        counts = score([results[index] for index in members])
-        rows.append(
-            {
-                "set": key[0],
-                "field": key[1],
-                "form": key[2],
-                **asdict(counts),
-                "median_ms": round(
-                    statistics.median(seconds[index] for index in members) * 1000, 1
-                ),
-            }
+        pages = fieldindex.rank(field_dir, embedder, case.query)
+        rankings.append(
+            Ranking(
+                case=case,
+                field_dir=field_dir,
+                pages=pages,
+                seconds=time.perf_counter() - started,
+            )
         )
-    total = score(results)
-    rows.append(
-        {
-            "set": "all",
-            "field": "",
-            "form": "",
-            **asdict(total),
-            "median_ms": round(statistics.median(seconds) * 1000, 1),
-        }
-    )
-    return rows
+    return rankings
 
 
-def _sweep(
-    cases: list[Case], rankings: list[list[fieldindex.Ranked]], *, specs_only: bool
-) -> list[dict[str, object]]:
+def _row(label: tuple[str, str, str], rankings: list[Ranking]) -> dict[str, object]:
+    counts = score([(ranking.case, ranking.hits()) for ranking in rankings])
+    median_ms = statistics.median(ranking.seconds for ranking in rankings) * 1000
+    return {
+        "set": label[0],
+        "field": label[1],
+        "form": label[2],
+        **asdict(counts),
+        "median_ms": round(median_ms, 1),
+    }
+
+
+def _default_rows(rankings: list[Ranking]) -> list[dict[str, object]]:
+    """Score the default cutoffs per set, field, and form, then over every case."""
+    groups: dict[tuple[str, str, str], list[Ranking]] = {}
+    for ranking in rankings:
+        case = ranking.case
+        groups.setdefault((case.set, case.field, case.form), []).append(ranking)
+    return [
+        *(_row(label, groups[label]) for label in sorted(groups)),
+        _row(("all", "", ""), rankings),
+    ]
+
+
+def _sweep(rankings: list[Ranking]) -> list[dict[str, object]]:
     """Score the cutoff grid on one constant group, the fields or specs, and keep its frontier.
 
     For each false-hit count, keep the rule with the fewest misses, then the fewest
     wrong hits, and drop it when a rule with fewer false hits misses no more. What is
     left is the whole trade-off between misses and false hits.
     """
-    chosen = [
-        (case, ranking)
-        for case, ranking in zip(cases, rankings, strict=True)
-        if (case.field == "specs") is specs_only
-    ]
-    if not chosen:
-        return []
     best: dict[int, tuple[Rule, Score]] = {}
     for max_distance, min_margin in product(SWEEP_DISTANCES, SWEEP_MARGINS):
         rule = Rule(max_distance=max_distance, min_margin=min_margin)
-        counts = score([(case, apply_rule(case, ranking, rule)) for case, ranking in chosen])
+        counts = score([(ranking.case, ranking.hits(rule)) for ranking in rankings])
         held = best.get(counts.false_hit)
         if held is None or (counts.miss, counts.wrong) < (held[1].miss, held[1].wrong):
             best[counts.false_hit] = (rule, counts)
-    rows = []
+    rows: list[dict[str, object]] = []
     fewest_misses = None
     for false_hits in sorted(best):
         rule, counts = best[false_hits]
@@ -286,27 +277,26 @@ def _sweep(
     return rows
 
 
-def _case_rows(
-    cases: list[Case], rankings: list[list[fieldindex.Ranked]], results: list[list[str]]
-) -> list[dict[str, object]]:
-    """Describe each case under the default rule, for finding why a query missed."""
-    rows: list[dict[str, object]] = []
-    for case, ranking, returned in zip(cases, rankings, results, strict=True):
-        positions = [index for index, page in enumerate(ranking) if page.filename in case.answers]
-        nearest = ranking[positions[0]] if positions else None
+def _case_rows(rankings: list[Ranking]) -> list[dict[str, object]]:
+    """Describe each case under the default cutoffs, for finding why a query missed."""
+    rows = []
+    for ranking in rankings:
+        case, pages = ranking.case, ranking.pages
+        first_answer = next(
+            (rank for rank, page in enumerate(pages, start=1) if page.filename in case.answers),
+            None,
+        )
         rows.append(
             {
-                "set": case.set,
-                "project": case.project,
-                "field": case.field,
-                "form": case.form,
-                "query": case.query,
+                **asdict(case),
                 "answers": sorted(case.answers),
-                "returned": returned,
-                "answer_rank": positions[0] + 1 if positions else None,
-                "answer_distance": round(nearest.distance, 3) if nearest else None,
-                "median_distance": round(statistics.median(page.distance for page in ranking), 3)
-                if ranking
+                "returned": ranking.hits(),
+                "answer_rank": first_answer,
+                "answer_distance": round(pages[first_answer - 1].distance, 3)
+                if first_answer
+                else None,
+                "median_distance": round(statistics.median(page.distance for page in pages), 3)
+                if pages
                 else None,
             }
         )
@@ -341,34 +331,25 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="search-bench-") as scratch:
         copies = _copy_fields(config.vault_root(), cases, Path(scratch))
         _check_answers(cases, copies)
-        rankings, seconds = _rank_all(cases, copies)
+        rankings = _rank_all(cases, copies)
 
-    results = [
-        (case, apply_rule(case, ranking, default_rule(case.field)))
-        for case, ranking in zip(cases, rankings, strict=True)
-    ]
-    defaults = _rows(results, seconds)
-    sweeps: dict[str, list[dict[str, object]]] = {}
-    if arguments.sweep:
-        sweeps["sweep_fields"] = _sweep(cases, rankings, specs_only=False)
-        sweeps["sweep_specs"] = _sweep(cases, rankings, specs_only=True)
+        defaults = _default_rows(rankings)
+        case_rows = _case_rows(rankings)
+        # Each group shares one pair of constants: `DEFAULT_*` for the fields, `SPECS_*` for specs.
+        sweeps = {
+            title: _sweep([r for r in rankings if (r.case.field == paths.SPECS_DIR) is for_specs])
+            for title, for_specs in (("Sweep: learnings and logs", False), ("Sweep: specs", True))
+            if arguments.sweep
+        }
 
     if arguments.json:
-        emit_json(
-            {
-                "defaults": defaults,
-                **sweeps,
-                "cases": _case_rows(cases, rankings, [hits for _case, hits in results]),
-            }
-        )
+        emit_json({"defaults": defaults, "sweeps": sweeps, "cases": case_rows})
         return
-    counts = ["answered", "unanswered", "miss", "false_hit", "wrong", "first"]
-    pp.console().print(_table("Defaults", defaults, ["set", "field", "form", *counts, "median_ms"]))
-    titles = {"sweep_fields": "Sweep: learnings and logs", "sweep_specs": "Sweep: specs"}
-    for key, rows in sweeps.items():
+    pp.console().print(_table("Defaults", defaults, ["set", "field", "form", *COUNTS, "median_ms"]))
+    for title, rows in sweeps.items():
         if rows:
             pp.console().print()
-            pp.console().print(_table(titles[key], rows, ["rule", *counts]))
+            pp.console().print(_table(title, rows, ["rule", *COUNTS]))
 
 
 if __name__ == "__main__":
