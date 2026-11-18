@@ -1585,10 +1585,12 @@ For each logged commit, the command decides in this order:
    as the logged commit, and next for one with the same changes as the merge commit.
    The line becomes that commit. If no single trunk commit matches, the command leaves
    the line and reports it as unchecked.
-3. If exactly one trunk commit has the same changes as the logged commit, the line becomes
-   that commit. This occurs when the trunk was rewritten after the commit landed on it.
-4. If a branch or a tag still holds the commit, the command leaves the line, because the
+3. If a branch or a tag still holds the commit, the command leaves the line, because the
    work is in progress.
+4. If exactly one trunk commit has the same changes as the logged commit, the line becomes
+   that commit. This occurs when the trunk was rewritten after the commit landed on it.
+   The search covers the first 100 trunk commits after the point where the commit and
+   the trunk split.
 5. If `git fetch origin` failed, the command leaves the line and reports it as unchecked,
    because the trunk on `origin` can hold the commit.
 6. If the repository is a shallow clone, the command leaves the line and reports it as
@@ -1627,8 +1629,8 @@ log-commits would change
 On a terminal, a non-zero count is colored: green for replaced, red for dropped, cyan
 for in progress, and yellow for unchecked. Zeros are dimmed. The reason for each
 unchecked line follows the logs as a warning, with the logs that hold those lines below
-it. If the reason is about one commit, the warning names that commit and its pull
-request.
+it. If the reason is about one commit, the warning names that commit, and its pull
+request when GitHub reported one.
 
 The same run without `--dry-run` prints the same counts, says `log-commits changed`
 above the logs, and rewrites them.
@@ -1648,13 +1650,15 @@ sessionmemory reconcile --json --dry-run --cwd .
     "dropped": 1,
     "in_progress": 0,
     "unchecked": 0,
-    "notes": []
+    "notes": [],
+    "note_logs": {}
   }
 ]
 ```
 
 `changed` lists the logs whose commit list changes, also on a dry run. `notes` holds the
-reason for each unchecked line.
+reason for each unchecked line. `note_logs` maps each reason in `notes` to the filenames
+of the logs that hold its lines.
 
 ## `sessionmemory reindex`
 

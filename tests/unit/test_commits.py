@@ -452,10 +452,23 @@ def test_trunk_copy_finds_a_commit_rewritten_on_trunk(repo):
     assert Repository(repo.clone).trunk_copy(original) == copy
 
 
-@pytest.mark.parametrize("which", ["no copy on trunk", "unknown to the clone"])
+def _orphan_like_base(fixture: Fixture) -> str:
+    """Commit the trunk root's patch on a branch that shares no history with trunk."""
+    _git(fixture.clone, "checkout", "-q", "--orphan", "orphan")
+    _git(fixture.clone, "rm", "-rq", "--cached", ".")
+    sha = commit(fixture.clone, "base")
+    _git(fixture.clone, "checkout", "-q", "-f", "main")
+    return sha
+
+
+@pytest.mark.parametrize("which", ["no copy on trunk", "unknown to the clone", "no shared history"])
 def test_trunk_copy_is_none_without_a_single_match(repo, which):
-    """Verify a commit with no copy on trunk, or one the clone lacks, gives None."""
-    sha = repo.feat if which == "no copy on trunk" else "0" * 40
+    """Verify a commit with no copy after its fork point, or one the clone lacks, gives None."""
+    sha = {
+        "no copy on trunk": lambda: repo.feat,
+        "unknown to the clone": lambda: "0" * 40,
+        "no shared history": lambda: _orphan_like_base(repo),
+    }[which]()
 
     assert Repository(repo.clone).trunk_copy(sha) is None
 

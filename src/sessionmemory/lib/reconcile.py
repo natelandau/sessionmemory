@@ -14,9 +14,9 @@ and decides, one sha at a time:
    - open: `IN_PROGRESS`.
    - GitHub could not answer: `UNCHECKED`.
    - no live pull request: go on to rule 3.
-3. Exactly one trunk commit carries the commit's patch, as after trunk was rewritten:
+3. A live branch or tag holds the commit: `IN_PROGRESS`.
+4. Exactly one trunk commit carries the commit's patch, as after trunk was rewritten:
    `REPLACE` with that commit.
-4. A live branch or tag holds the commit: `IN_PROGRESS`.
 5. `git fetch origin` failed, so origin's trunk may hold the commit: `UNCHECKED`.
 6. The clone is shallow, so its history cannot prove the commit gone: `UNCHECKED`.
 7. Origin's fetch refspec is narrowed, as in a single-branch clone, so a branch this
@@ -245,11 +245,11 @@ class _Judge:
     def _decide_locally(self, full: str | None) -> Decision:
         """Decide from the refs alone, never dropping what this clone cannot vouch for."""
         if full is not None:
+            if self._repository.in_branch(full, off_trunk=True):
+                return Decision(Action.IN_PROGRESS)
             copy = self._repository.trunk_copy(full)
             if copy is not None:
                 return self._replace(full, landed=copy)
-            if self._repository.in_branch(full, off_trunk=True):
-                return Decision(Action.IN_PROGRESS)
         if self._fetch_failed:
             return Decision(Action.UNCHECKED, reason=FETCH_FAILED_NOTE)
         if self._shallow:

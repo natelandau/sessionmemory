@@ -89,6 +89,7 @@ def reconcile_command(
                     "in_progress": report.in_progress,
                     "unchecked": report.unchecked,
                     "notes": list(report.notes),
+                    "note_logs": report.notes,
                 }
                 for report in reports
             ]

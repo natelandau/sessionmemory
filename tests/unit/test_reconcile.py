@@ -324,6 +324,20 @@ def test_commit_rewritten_off_trunk_without_github_is_replaced_by_its_copy(tmp_p
     assert f"{copy[:7]} merged" in field.read_page(path).body
 
 
+def test_live_branch_commit_with_a_trunk_copy_stays_in_progress(tmp_path, repo):
+    """Verify a commit a live branch still holds is not replaced by a trunk cherry-pick."""
+    commit(repo.clone, "trunk-moves")
+    git(repo.clone, "cherry-pick", repo.feat)
+    git(repo.clone, "push", "-q", "origin", "main")
+    path = _write_log(tmp_path, "one", _body(f"{repo.feat[:7]} feat"))
+    before = path.read_bytes()
+
+    report = reconcile.log_commits(_ctx(tmp_path, repo), dry_run=False)
+
+    assert report.in_progress == 1
+    assert path.read_bytes() == before
+
+
 def test_ambiguous_short_sha_is_left_and_unchecked(tmp_path, repo, monkeypatch):
     """Verify an ambiguous prefix stays in the log rather than being dropped."""
     short = repo.main_head[:7]

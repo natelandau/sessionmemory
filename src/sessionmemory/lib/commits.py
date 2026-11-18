@@ -389,7 +389,8 @@ class Repository:
 
         Returns:
             str | None: The copy's full sha, or None when this clone lacks `sha`, `sha`
-                has no patch of its own, or no single trunk commit matches.
+                shares no history with trunk, `sha` has no patch of its own, or no single
+                trunk commit matches.
 
         Raises:
             CommitsError: When git fails or times out.
@@ -397,12 +398,15 @@ class Repository:
         refs = self._trunk_refs()
         if not refs or not self._is_commit(sha):
             return None
-        # Exit 1 means no common ancestor, so the whole trunk is after the fork.
+        # Exit 1 means no common ancestor, as for an orphan branch: no fork point to
+        # search from.
         done = self._git_strict("merge-base", sha, *refs, ok=(0, 1))
-        base = done.stdout.strip() if done.returncode == 0 else ""
+        if done.returncode != 0:
+            return None
+        base = done.stdout.strip()
         if base not in self._trunk_windows:
             oldest = self._git_strict(
-                "rev-list", "--reverse", "--no-merges", *refs, *([f"^{base}"] if base else [])
+                "rev-list", "--reverse", "--no-merges", *refs, f"^{base}"
             ).stdout.split()[:COPY_SEARCH_DEPTH]
             self._trunk_windows[base] = ("--no-walk", *oldest) if oldest else ()
         return self._single_copy(sha, window=self._trunk_windows[base])

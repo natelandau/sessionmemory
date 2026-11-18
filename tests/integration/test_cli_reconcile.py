@@ -69,6 +69,7 @@ def test_reconcile_json_reports_and_drops_an_orphan(workspace):
             "in_progress": 0,
             "unchecked": 0,
             "notes": [],
+            "note_logs": {},
         }
     ]
     assert ORPHAN not in log.read_text(encoding="utf-8")
