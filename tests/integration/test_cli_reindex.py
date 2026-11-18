@@ -167,9 +167,40 @@ def test_reindex_all_reports_an_empty_vault(vault, tmp_path, monkeypatch):
 
 def test_reindex_all_prints_a_folder_name_holding_markup_verbatim(vault):
     """Verify a project folder whose name reads as Rich markup is printed, not parsed."""
-    (vault / "projects" / "odd[bold]" / "learnings").mkdir(parents=True)
+    field = vault / "projects" / "odd[bold]" / "learnings"
+    field.mkdir(parents=True)
+    (field / "kept.md").write_text("---\ntitle: kept\nsummary: s\n---\nx\n", encoding="utf-8")
 
     result = runner.invoke(app, ["reindex", "--all"])
 
     assert result.exit_code == 0, result.output
     assert "odd[bold]" in result.output
+
+
+def test_reindex_all_lists_only_changed_projects(vault, tmp_path):
+    """Verify --all hides projects with nothing to refresh and counts them instead."""
+    alpha = _register(tmp_path, "alpha")
+    _register(tmp_path, "beta")
+    _register(tmp_path, "gamma")
+    runner.invoke(app, ["reindex", "--all"])
+    runner.invoke(app, ["new", "learning", "--title", "A", "--summary", "s", "--cwd", str(alpha)])
+
+    result = runner.invoke(app, ["reindex", "--all"])
+
+    assert result.exit_code == 0, result.output
+    lines = [line.split() for line in result.output.splitlines()]
+    assert ["alpha", "learnings", "1", "0", "0", "0"] in lines
+    assert not any(line and line[0] in {"beta", "gamma"} for line in lines)
+    assert lines[-1] == ["2", "projects", "already", "up", "to", "date"]
+
+
+def test_reindex_all_skips_the_grid_when_nothing_changed(vault, tmp_path):
+    """Verify --all on an up-to-date vault prints only the up-to-date count."""
+    _register(tmp_path, "alpha")
+    _register(tmp_path, "beta")
+    runner.invoke(app, ["reindex", "--all"])
+
+    result = runner.invoke(app, ["reindex", "--all"])
+
+    assert result.exit_code == 0, result.output
+    assert result.output.strip().splitlines() == ["all 2 projects already up to date"]

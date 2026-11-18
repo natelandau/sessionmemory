@@ -1723,10 +1723,18 @@ sessionmemory reindex --all
 
 ```
 project      field      added  updated  removed  unchanged
-invoice-api  learnings      0        0        0          1
+invoice-api  learnings      1        0        0          0
              logs           0        0        0          0
-             specs          0        0        0          3
-total                       0        0        0          4
+             specs          3        0        0          0
+total                       4        0        0          0
+```
+
+The grid lists only the projects where a page was added, updated, or removed, and the
+total row sums those projects. A line under the grid counts the other projects. If no
+project changed, the grid does not show:
+
+```
+1 project already up to date
 ```
 
 A page whose bytes have not changed is skipped, so a run over a healthy vault costs

@@ -27,6 +27,11 @@ ALL = typer.Option(False, "--all", help="Reindex every project in the vault.")  
 COUNT_STYLES = {"added": "green", "updated": "yellow", "removed": "red", "unchanged": ""}
 
 
+def _changed(counts: fieldindex.Refresh) -> bool:
+    """Return whether a refresh added, updated, or removed any page."""
+    return bool(counts.added or counts.updated or counts.removed)
+
+
 def _report(rows: list[tuple[str, str, fieldindex.Refresh]], *, show_project: bool) -> Table:
     """Lay out each field's counts as a grid, with column totals in the footer.
 
@@ -52,6 +57,25 @@ def _report(rows: list[tuple[str, str, fieldindex.Refresh]], *, show_project: bo
         table.add_row(*lead, Text(field), *cells)
         previous = project
     return table
+
+
+def _print_vault_report(rows: list[tuple[str, str, fieldindex.Refresh]]) -> None:
+    """Print the grid for the projects a refresh changed, then count the rest.
+
+    A large vault's full grid outgrows the terminal, so a project with nothing to refresh
+    is only counted.
+
+    Args:
+        rows: One `(project, field, counts)` triple per field, in display order.
+    """
+    changed = {slug for slug, _, counts in rows if _changed(counts)}
+    current = len({slug for slug, *_ in rows} - changed)
+    if changed:
+        pp.console().print(_report([r for r in rows if r[0] in changed], show_project=True))
+    if current:
+        noun = "project" if current == 1 else "projects"
+        prefix = "all " if not changed and current > 1 else ""
+        pp.info(f"{prefix}{current} {noun} already up to date", style="default")
 
 
 def reindex_command(
@@ -95,4 +119,7 @@ def reindex_command(
         for slug, name, directory in fields:
             status.update(Text(f"reindexing {slug}/{name}"))
             rows.append((slug, name, fieldindex.refresh(directory, embedder)))
-    pp.console().print(_report(rows, show_project=all_projects))
+    if all_projects:
+        _print_vault_report(rows)
+    else:
+        pp.console().print(_report(rows, show_project=False))
