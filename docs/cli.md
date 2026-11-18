@@ -1274,7 +1274,7 @@ agent cannot do with its own tools.
 | `--include-retired` | With `--specs`, also return superseded and abandoned specs. Without `--specs` it is an error.       |
 | `--limit`, `-n`     | Maximum number of results. Default 10.                                                              |
 | `--max-distance`    | Farthest cosine distance that still counts as a hit. Default 0.45, or 0.42 with `--specs`.          |
-| `--min-margin`      | How much nearer than the median page searched a hit must sit. Default 0.17, or 0.19 with `--specs`. |
+| `--min-margin`      | How much nearer than the median page searched a page must sit to clear the margin. Default 0.17, or 0.19 with `--specs`. |
 | `--read`            | Print each hit's whole file under its path.                                                         |
 | `--cwd`             | Directory to resolve the project from.                                                              |
 | `--json`            | Emit JSON instead of prose.                                                                         |

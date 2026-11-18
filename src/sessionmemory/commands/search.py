@@ -52,7 +52,8 @@ MIN_MARGIN = typer.Option(
     min=0.0,
     max=2.0,
     help=(
-        "How much nearer than the median page searched a hit must sit. 0 turns this off. "
+        "How much nearer than the median page searched a page must sit to clear the margin. "
+        "0 admits every page within --max-distance. "
         f"Default {fieldindex.FIELD_CUTOFFS.min_margin}, "
         f"or {fieldindex.SPECS_CUTOFFS.min_margin} with --specs."
     ),

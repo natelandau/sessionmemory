@@ -148,7 +148,7 @@ never let it write an index ours reads: its Ollama vectors need not match fastem
 - Search thresholds (`FIELD_CUTOFFS`, `SPECS_CUTOFFS`, `MIN_BACKGROUND_PAGES`,
   `FALLBACK_BACKGROUND`) came from labeled queries against real vaults. Change them only
   by re-measuring with `scripts/search_bench.py`, never by reasoning about one query. The
-  measurements and the labeled queries are kept in the vault, outside this repository.
+  measurements and the labeled queries are kept outside this repository.
 - `DOCUMENT_PREFIX` and `QUERY_PREFIX` stay together in `lib/embed.py` so pages and
   queries are never embedded under different conventions.
 
