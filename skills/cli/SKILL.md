@@ -153,7 +153,10 @@ the heading when either is missing:
 
 `--kind` is one of feat, fix, refactor, perf, docs, test, build, ci, or decide.
 Put a question for the user to answer under `--kind decide`. Keep the title to one
-short sentence. Put the context a later session needs (why, where, what was tried)
+short sentence. Write the item for the user reading it weeks later, who knows the
+product but not the code and never saw this session: say what changes in the
+product's words, not this session's terms or the code's names, and put files and
+approach in the detail, with the reason when it is not obvious. Put the context a later session needs (why, where, what was tried)
 in `--detail`, which the CLI writes as nested bullets under the item, one per line
 of the text. Put the detail in single quotes when it holds a backtick or `$`, or
 the shell runs or expands it. Indented lines are never counted as items. The command warns when a topic is new, a title is too

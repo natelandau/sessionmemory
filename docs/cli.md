@@ -1058,7 +1058,7 @@ file lacks it.
 | ---------- | ------------------------------------------------------------------------------------------------------------------------- |
 | `--kind`   | The heading the item goes under: `feat`, `fix`, `refactor`, `perf`, `docs`, `test`, `build`, `ci`, or `decide`. Required. |
 | `--size`   | Effort: `S`, `M`, or `L`. Required.                                                                                       |
-| `--title`  | The imperative description of the work. Required.                                                                         |
+| `--title`  | The imperative description of the work, in the product's words. Required.                                                 |
 | `--topic`  | A topic tag, without the leading hash.                                                                                    |
 | `--detail` | Context written as indented lines under the item: why, where, what was tried.                                             |
 | `--cwd`    | Directory to resolve the project from.                                                                                    |
@@ -1080,8 +1080,10 @@ sessionmemory new backlog --kind feat --size M \
 
 The command prints the line it wrote, then the path.
 
-Keep the title to one short sentence. Context that someone needs to start the work goes
-in `--detail`. The command writes each line of the text as a nested bullet under the
+Keep the title to one short sentence. Write it for a reader who knows the product but not
+the code: say what changes, not which function changes. Context that someone needs to
+start the work goes in `--detail`, with the files, the approach, and the reason when it is
+not obvious. The command writes each line of the text as a nested bullet under the
 item and wraps it at 88 columns. Blank lines are dropped, and a line that already starts
 with `- ` keeps its one marker. Indented lines are not counted as items, so the detail
 never changes the open count. Put the detail in single quotes when it holds a backtick or
@@ -1124,10 +1126,10 @@ is probably a typo, so the command lists the topics in use:
 ~/repos/my-vault/projects/invoice-api/backlog.md
 ```
 
-A description over 120 characters is hard to scan, so the command points at `--detail`:
+A description over 150 characters is hard to scan, so the command points at `--detail`:
 
 ```
-! the description is 121 characters, longer than 120
+! the description is 151 characters, longer than 150
   └─ keep the line to one short sentence and move context into --detail
 ```
 
@@ -1473,7 +1475,11 @@ all for a script.
     `sessionmemory new backlog --kind <kind> --size <S|M|L> --title "..." --topic <topic> --cwd .`,
     which writes that shape and creates the file or heading when missing. Keep the
     title to one short sentence and pass context (why, where, what was tried) with
-    `--detail "..."`, in single quotes when it holds a backtick or `$`. Questions for
+    `--detail "..."`, in single quotes when it holds a backtick or `$`. Write the item
+    for the user reading it weeks later, who knows the product but not the code and
+    never saw this session: say what changes in the product's words, not this
+    session's terms or the code's names, and put files and approach in the detail,
+    with the reason when it is not obvious. Questions for
     the user to answer go under `## decide`. Delete a finished item with its detail,
     and one that will never be done, directly; never tick or annotate it. Git history is the record of what was finished.
   - Specs: `specs/` holds one design record per feature, named `<date>-<topic>.md`

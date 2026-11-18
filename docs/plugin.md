@@ -313,8 +313,10 @@ is recorded as nothing at all. Then it does four jobs, in order:
    written a second time.
 2. **Deferred work.** Concrete work that was decided and not done becomes one item in
    `backlog.md`, written through `sessionmemory new backlog`, with the context a later
-   session needs as indented detail. Work the transcript shows was finished has its item
-   deleted.
+   session needs as indented detail. The pass writes each item for a reader who knows the
+   product but not the code: the title says what changes in the product's words, and the
+   detail holds the files, the approach, and the reason when it is not obvious. Work the
+   transcript shows was finished has its item deleted.
 3. **Specs.** For a spec in `specs/` that the session worked on, the pass keeps three
    frontmatter keys current: `status: shipped` when the work merged, `status: superseded`
    with `superseded_by` when a newer spec replaced it, and a one-sentence `summary` for a
@@ -496,8 +498,10 @@ when you ask for them. [Sweeping by hand](#sweeping-by-hand) describes `sweep`.
 handles `backlog.md`. Neither touches the other's files, except that `review` adds a
 backlog line for a page that turns out to be deferred work. For the logs, `review` runs
 [`sessionmemory reconcile`](cli.md#sessionmemory-reconcile), which rewrites only the
-`## Changes` section of a log. `backlog` stops to ask before closing or removing an
-item a reviewer judged with low confidence. Pass `--yes`, as in
+`## Changes` section of a log. `backlog` rewrites an item that a reader without the
+original session cannot follow. It stops to ask before it closes, removes, or rewrites an
+item that a reviewer judged with low confidence. When a reviewer cannot tell what an item
+means, `backlog` asks you to explain the item or delete it. Pass `--yes`, as in
 `/sessionmemory:backlog --yes`, to apply those too and read them in the report
 instead. Nothing else waits on you: every page edit and delete is applied outright,
 since the vault is a git repository and a wrong one is reverted from its history.
@@ -515,12 +519,12 @@ receives it and deletes it. Run it before a `/compact` or a `/clear`.
 `review` and `backlog` dispatch read-only reviewer subagents, which judge and
 never write. The skill collects their verdicts and applies the changes itself.
 
-| Agent                          | What it judges                                                      |
-| ------------------------------ | ------------------------------------------------------------------- |
-| `memory-entry-reviewer`        | Whether a page is correct, at the right altitude, and worth keeping |
-| `redundancy-reviewer`          | Which pages in one field overlap enough to merge                    |
-| `backlog-validity-reviewer`    | Whether a backlog item is done, obsolete, drifted, or still valid   |
-| `backlog-opportunity-reviewer` | How much a valid backlog item is worth, by impact against effort    |
+| Agent                          | What it judges                                                             |
+| ------------------------------ | -------------------------------------------------------------------------- |
+| `memory-entry-reviewer`        | Whether a page is correct, at the right altitude, and worth keeping        |
+| `redundancy-reviewer`          | Which pages in one field overlap enough to merge                           |
+| `backlog-validity-reviewer`    | Whether a backlog item is done, obsolete, drifted, unclear, or still valid |
+| `backlog-opportunity-reviewer` | How much a valid backlog item is worth, by impact against effort           |
 
 `redundancy-reviewer` is the only one with a whole-field view. A flat field accumulates
 near-duplicates, and nothing else in the system consolidates them.

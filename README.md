@@ -225,7 +225,11 @@ all for a script.
     `sessionmemory new backlog --kind <kind> --size <S|M|L> --title "..." --topic <topic> --cwd .`,
     which writes that shape and creates the file or heading when missing. Keep the
     title to one short sentence and pass context (why, where, what was tried) with
-    `--detail "..."`, in single quotes when it holds a backtick or `$`. Questions for
+    `--detail "..."`, in single quotes when it holds a backtick or `$`. Write the item
+    for the user reading it weeks later, who knows the product but not the code and
+    never saw this session: say what changes in the product's words, not this
+    session's terms or the code's names, and put files and approach in the detail,
+    with the reason when it is not obvious. Questions for
     the user to answer go under `## decide`. Delete a finished item with its detail,
     and one that will never be done, directly; never tick or annotate it. Git history is the record of what was finished.
   - Specs: `specs/` holds one design record per feature, named `<date>-<topic>.md`

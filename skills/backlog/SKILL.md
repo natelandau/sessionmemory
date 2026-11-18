@@ -82,12 +82,14 @@ Dispatch `backlog-validity-reviewer` with the path of `backlog.md` and one batch
 of open lines, leaving out the `## decide` items. It returns one verdict per line,
 keyed by `item`, with cited `evidence` and a `confidence`:
 
-| Verdict  | Meaning                                                                      |
-| -------- | ---------------------------------------------------------------------------- |
-| `CLOSE`  | The work is done.                                                            |
-| `REMOVE` | The item is obsolete.                                                        |
-| `AMEND`  | The item is real, but the line has drifted. `proposed_change` holds the fix. |
-| `KEEP`   | The item is real and accurate as written.                                    |
+| Verdict  | Meaning                                                                                    |
+| -------- | ------------------------------------------------------------------------------------------ |
+| `CLOSE`  | The work is done.                                                                          |
+| `REMOVE` | The item is obsolete.                                                                      |
+| `AMEND`  | The item is real, but the line has drifted or is unclear. `proposed_change` holds the fix. |
+| `KEEP`   | The item is real and accurate as written.                                                  |
+
+A `KEEP` can carry `unclear`: the reviewer could not work out what the item means.
 
 `KEEP` and `AMEND` items are open.
 
@@ -107,8 +109,12 @@ Every verdict is an Edit to `backlog.md`. Git history keeps all of them.
   one.
 - `KEEP`: leave the line.
 
-If a `CLOSE` or `REMOVE` has low confidence and `--yes` was not passed, ask the
-user before you apply it.
+If a `CLOSE`, `REMOVE`, or `AMEND` has low confidence and `--yes` was not passed,
+ask the user before you apply it. A low-confidence rewrite can change what the item
+means.
+
+For a `KEEP` with `unclear`, show the user the line, its detail, and what is
+unclear. Ask the user to say what the item means, then rewrite it, or to delete it.
 
 This skill never adds an item and never edits the learnings field.
 
@@ -116,7 +122,8 @@ This skill never adds an item and never edits the learnings field.
 
 1. Changes applied. Give the counts in one line. Then list each closed and removed
    line with its evidence, and mark each one that `--yes` applied on low
-   confidence. Then list each ticked line you deleted.
+   confidence. Then list each amended line, old and new. Then list each ticked
+   line you deleted.
 2. Open backlog at a glance. Give the count, then a table of the open lines by kind
    and size, where a line with no size counts as unsized.
 3. Questions for the user. List each `## decide` item, and the user's answer if
