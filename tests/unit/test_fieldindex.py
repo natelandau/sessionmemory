@@ -219,14 +219,6 @@ def test_search_default_cutoff_is_the_measured_one(tmp_path):
     _page(tmp_path, "Far")
 
     assert fieldindex.search(tmp_path, StubEmbedder(), "unrelated", limit=5) == []
-    assert fieldindex.DEFAULT_MAX_DISTANCE == 0.45
-    assert fieldindex.DEFAULT_MIN_MARGIN == 0.11
-
-
-def test_search_specs_cutoff_is_the_one_measured_on_specs():
-    """Verify the spec cutoff constants hold the values measured on real specs."""
-    assert fieldindex.SPECS_MAX_DISTANCE == 0.38
-    assert fieldindex.SPECS_MIN_MARGIN == 0.07
 
 
 def _field_of(directory: Path, count: int) -> str:
@@ -246,16 +238,6 @@ def test_search_margin_keeps_the_page_that_stands_out_of_a_large_field(tmp_path)
 
     # Then only the page that stands out comes back
     assert [hit.path.name for hit in hits] == ["page-0.md"]
-
-
-@pytest.mark.parametrize("count", [1, fieldindex.MIN_BACKGROUND_PAGES])
-def test_search_margin_returns_nothing_when_no_page_stands_out(tmp_path, count):
-    """Verify an unrelated query returns nothing from a small or a large field, whatever the ceiling."""
-    _field_of(tmp_path, count)
-
-    assert (
-        fieldindex.search(tmp_path, StubEmbedder(), "unrelated", limit=10, max_distance=2.0) == []
-    )
 
 
 def test_search_margin_in_a_small_field_measures_against_the_fallback_background(tmp_path):
@@ -291,9 +273,9 @@ def test_refresh_embeds_a_spec_by_its_derived_input(tmp_path, monkeypatch):
 @pytest.mark.parametrize(
     ("name", "expected"),
     [
-        ("specs", (fieldindex.SPECS_MAX_DISTANCE, fieldindex.SPECS_MIN_MARGIN)),
-        ("learnings", (fieldindex.DEFAULT_MAX_DISTANCE, fieldindex.DEFAULT_MIN_MARGIN)),
-        ("logs", (fieldindex.DEFAULT_MAX_DISTANCE, fieldindex.DEFAULT_MIN_MARGIN)),
+        ("specs", fieldindex.SPECS_CUTOFFS),
+        ("learnings", fieldindex.FIELD_CUTOFFS),
+        ("logs", fieldindex.FIELD_CUTOFFS),
     ],
 )
 def test_default_cutoffs_follow_the_directory(tmp_path, name, expected):
@@ -431,3 +413,85 @@ def test_refresh_leaves_a_field_index_version_alone(tmp_path):
 
     assert (result.added, result.unchanged) == (0, 1)
     assert _user_version(index) == 0
+
+
+def _ranking(*distances: float) -> list[fieldindex.Ranked]:
+    return [
+        fieldindex.Ranked(filename=f"p{index}.md", frontmatter="{}", distance=distance)
+        for index, distance in enumerate(distances)
+    ]
+
+
+_NO_DROP = 1.0
+_TAIL = (0.60, 0.61, 0.62, 0.63, 0.64, 0.65, 0.66, 0.67)
+
+
+@pytest.mark.parametrize(
+    ("distances", "cutoffs", "expected"),
+    [
+        pytest.param(
+            (0.20, *_TAIL),
+            fieldindex.Cutoffs(max_distance=1.0, min_margin=0.17, min_drop=_NO_DROP, drop_window=5),
+            ["p0.md"],
+            id="margin-admits-a-page-far-below-the-median",
+        ),
+        pytest.param(
+            (0.50, 0.51, 0.52, 0.53, 0.54, 0.55, 0.56, 0.57, 0.58),
+            fieldindex.Cutoffs(max_distance=1.0, min_margin=0.17, min_drop=0.05, drop_window=5),
+            [],
+            id="nothing-stands-out",
+        ),
+        pytest.param(
+            (0.30, 0.37, 0.375, 0.38, 0.385, 0.39, 0.395, 0.40),
+            fieldindex.Cutoffs(max_distance=1.0, min_margin=0.17, min_drop=0.05, drop_window=5),
+            ["p0.md"],
+            id="drop-admits-the-answer-in-a-dense-field-the-margin-misses",
+        ),
+        pytest.param(
+            (0.30, 0.31, 0.40, 0.41, 0.42, 0.43, 0.44, 0.45),
+            fieldindex.Cutoffs(max_distance=1.0, min_margin=0.17, min_drop=0.05, drop_window=5),
+            ["p0.md", "p1.md"],
+            id="drop-keeps-a-cluster-above-the-break",
+        ),
+        pytest.param(
+            (0.30, 0.37, 0.375, 0.38, 0.385, 0.39, 0.395, 0.40),
+            fieldindex.Cutoffs(max_distance=0.25, min_margin=0.17, min_drop=0.05, drop_window=5),
+            [],
+            id="max-distance-caps-the-drop",
+        ),
+        pytest.param(
+            (0.30, 0.34, 0.375, 0.38, 0.385, 0.39, 0.395, 0.40),
+            fieldindex.Cutoffs(max_distance=1.0, min_margin=0.17, min_drop=0.05, drop_window=5),
+            [],
+            id="a-drop-under-the-minimum-admits-nothing",
+        ),
+        pytest.param(
+            (0.30, 0.31, 0.32, 0.33, 0.34, 0.50, 0.51, 0.52),
+            fieldindex.Cutoffs(max_distance=1.0, min_margin=0.17, min_drop=0.05, drop_window=5),
+            [],
+            id="a-drop-past-the-window-admits-nothing",
+        ),
+        pytest.param(
+            (0.20, 0.60),
+            fieldindex.Cutoffs(max_distance=1.0, min_margin=0.17, min_drop=_NO_DROP, drop_window=5),
+            ["p0.md"],
+            id="small-field-measures-the-margin-against-the-fallback",
+        ),
+        pytest.param(
+            (0.90,),
+            fieldindex.Cutoffs(max_distance=1.0, min_margin=0.17, min_drop=0.0, drop_window=5),
+            [],
+            id="a-single-far-page-has-no-drop",
+        ),
+        pytest.param(
+            (0.50, 0.60, 0.70),
+            fieldindex.Cutoffs(max_distance=0.65, min_margin=0.0, min_drop=_NO_DROP, drop_window=5),
+            ["p0.md", "p1.md"],
+            id="margin-zero-leaves-only-max-distance",
+        ),
+    ],
+)
+def test_apply_cutoffs_admits_pages_that_stand_out_by_margin_or_drop(distances, cutoffs, expected):
+    """Verify which ranked pages count as hits under each part of the rule."""
+    hits = fieldindex.apply_cutoffs(_ranking(*distances), cutoffs, limit=10)
+    assert [page.filename for page in hits] == expected

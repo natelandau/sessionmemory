@@ -46,9 +46,10 @@ from sessionmemory.lib import config, embed, fieldindex, paths
 
 FORMS = ("keywords", "question", "identifier")
 
-# The grid the earlier measurements swept: margins 0.05 to 0.20, distances 0.35 to 0.55.
-SWEEP_MARGINS = tuple(round(0.05 + step * 0.01, 2) for step in range(16))
-SWEEP_DISTANCES = tuple(round(0.35 + step * 0.01, 2) for step in range(21))
+SWEEP_DISTANCES = tuple(round(0.35 + step * 0.01, 2) for step in range(16))
+SWEEP_MARGINS = tuple(round(0.11 + step * 0.02, 2) for step in range(6))
+SWEEP_DROPS = tuple(round(0.02 + step * 0.01, 2) for step in range(7))
+SWEEP_WINDOWS = (5, 11)
 
 
 @dataclass(frozen=True)
@@ -61,19 +62,6 @@ class Case:
     form: str
     query: str
     answers: frozenset[str]
-
-
-@dataclass(frozen=True)
-class Rule:
-    """One pair of cutoffs for `fieldindex.apply_cutoffs`."""
-
-    max_distance: float
-    min_margin: float
-
-    @property
-    def label(self) -> str:
-        """Name the rule the way the spec tables do."""
-        return f"margin >= {self.min_margin:.2f}, distance <= {self.max_distance:.2f}"
 
 
 @dataclass(frozen=True)
@@ -105,16 +93,14 @@ class Ranking:
     pages: list[fieldindex.Ranked]
     seconds: float
 
-    def hits(self, rule: Rule | None = None) -> list[str]:
-        """Return what `search` returns for this case under `rule`, or its defaults, as filenames."""
+    def hits(self, cutoffs: fieldindex.Cutoffs | None = None) -> list[str]:
+        """Return what `search` returns for this case under `cutoffs`, or its defaults, as filenames."""
         return [
             page.filename
             for page in fieldindex.apply_cutoffs(
                 self.pages,
-                self.field_dir,
+                cutoffs or fieldindex.default_cutoffs(self.field_dir),
                 limit=fieldindex.DEFAULT_LIMIT,
-                max_distance=None if rule is None else rule.max_distance,
-                min_margin=None if rule is None else rule.min_margin,
                 exclude=fieldindex.default_exclude(self.field_dir),
             )
         ]
@@ -267,9 +253,16 @@ def _sweep(rankings: list[Ranking]) -> list[dict[str, object]]:
     """
     if not rankings:
         return []
-    best: dict[int, tuple[Rule, Score]] = {}
-    for max_distance, min_margin in product(SWEEP_DISTANCES, SWEEP_MARGINS):
-        rule = Rule(max_distance=max_distance, min_margin=min_margin)
+    best: dict[int, tuple[fieldindex.Cutoffs, Score]] = {}
+    for max_distance, min_margin, min_drop, drop_window in product(
+        SWEEP_DISTANCES, SWEEP_MARGINS, SWEEP_DROPS, SWEEP_WINDOWS
+    ):
+        rule = fieldindex.Cutoffs(
+            max_distance=max_distance,
+            min_margin=min_margin,
+            min_drop=min_drop,
+            drop_window=drop_window,
+        )
         counts = score([(ranking.case, ranking.hits(rule)) for ranking in rankings])
         held = best.get(counts.false_hit)
         if held is None or (counts.miss, counts.wrong) < (held[1].miss, held[1].wrong):
@@ -281,8 +274,15 @@ def _sweep(rankings: list[Ranking]) -> list[dict[str, object]]:
         if fewest_misses is not None and counts.miss >= fewest_misses:
             continue
         fewest_misses = counts.miss
-        rows.append({"rule": rule.label, **asdict(counts)})
+        rows.append({"rule": _label(rule), **asdict(counts)})
     return rows
+
+
+def _label(cutoffs: fieldindex.Cutoffs) -> str:
+    return (
+        f"distance <= {cutoffs.max_distance:.2f}, margin >= {cutoffs.min_margin:.2f}"
+        f" or drop >= {cutoffs.min_drop:.2f} in top {cutoffs.drop_window}"
+    )
 
 
 def _case_rows(rankings: list[Ranking]) -> list[dict[str, object]]:

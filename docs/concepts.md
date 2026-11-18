@@ -347,18 +347,17 @@ and it is accepted as one.
 
 Automatic prompt-time retrieval is deferred rather than rejected. A hook that embedded
 each prompt and injected the nearest pages would remove the agent's decision entirely. The
-threshold such a hook needs is already measured and applied: `sessionmemory search`
-returns only pages within a cosine distance of 0.45 that also sit at least 0.11 nearer to
-the query than the median page in their field, the margin an unrelated query's nearest
-page does not reach. A field with fewer than 8 pages measures against a fixed median of
-0.49 instead. `--json` prints each hit's distance.
+threshold such a hook needs is already measured and applied. `sessionmemory search`
+returns a page only when it sits within a cosine distance of 0.45 of the query and stands
+out from the rest of its field in one of two ways. It sits at least 0.17 nearer to the
+query than the median page in its field, or it sits above the largest gap between
+neighbors among the 5 nearest pages, and that gap is at least 0.05. A field with fewer
+than 8 pages measures against a fixed median of 0.49 instead. `--json` prints each hit's
+distance.
 
-Specs have their own cutoff, 0.38 and 0.07. Specs spread wide: the median distance from a
-query to a project's specs measured 0.53 to 0.56, so the margin alone let unrelated specs
-through at 0.42 to 0.44, and the absolute ceiling had to be tighter. At the learnings
-cutoff, 3 of 10 queries with no answer returned a spec. The two numbers were measured on
-50 queries against one project's specs, and they are the cutoff that missed none of the 40
-answered queries and returned a spec for none of the 10 unanswered ones.
+Specs have their own numbers: a ceiling of 0.42, a margin of 0.19, and a gap of 0.02
+among the 11 nearest specs. A spec is embedded from its title and headings, not its body,
+and specs spread wider than learnings, so they were measured apart.
 
 ## The memoryfield format
 
