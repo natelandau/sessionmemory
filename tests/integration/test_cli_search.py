@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import subprocess
 from pathlib import Path
@@ -296,8 +297,9 @@ def test_search_default_cutoff_follows_the_field(workspace, mocker, flags, direc
     runner.invoke(app, ["search", "q", *flags])
 
     assert search.call_args.args[0].name == directory
-    assert search.call_args.kwargs["max_distance"] is None
-    assert search.call_args.kwargs["min_margin"] is None
+    assert search.call_args.kwargs["cutoffs"] == fieldindex.default_cutoffs(
+        search.call_args.args[0]
+    )
 
 
 def test_search_specs_honors_an_explicit_cutoff(workspace, mocker):
@@ -306,8 +308,9 @@ def test_search_specs_honors_an_explicit_cutoff(workspace, mocker):
 
     runner.invoke(app, ["search", "q", "--specs", "--max-distance", "0.5", "--min-margin", "0"])
 
-    assert search.call_args.kwargs["max_distance"] == 0.5
-    assert search.call_args.kwargs["min_margin"] == 0
+    assert search.call_args.kwargs["cutoffs"] == dataclasses.replace(
+        fieldindex.SPECS_CUTOFFS, max_distance=0.5, min_margin=0
+    )
 
 
 def test_search_joins_an_unquoted_query(workspace, mocker):

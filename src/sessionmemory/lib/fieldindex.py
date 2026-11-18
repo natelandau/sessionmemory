@@ -37,36 +37,10 @@ if TYPE_CHECKING:
 # How many hits `search` returns unless the caller asks for another number.
 DEFAULT_LIMIT = 10
 
-# The cutoffs below were measured with nomic-embed-text-v1.5 on 220 labeled queries across
-# six projects (spec 2026-11-18-search-benchmark-and-keyword-matching.md in the vault), with
-# `scripts/search_bench.py`. A page is a hit when it stands out from its field in either of
-# two ways, since neither alone separates answers from unrelated queries:
-#
-# - The margin: it sits at least `min_margin` nearer than the field's median page. Relative
-#   because phrasing a query as a question lowers every distance at once, and because a log,
-#   which summarizes a whole session, sits near every query about its project.
-# - The drop: it sits above the largest gap between neighbors among the nearest
-#   `drop_window` pages, and that gap is at least `min_drop`. This finds the answer in a
-#   small field of similar pages, where every page sits near the median and no answer can
-#   clear the margin.
-#
-# `max_distance` caps both.
-DEFAULT_MAX_DISTANCE = 0.45
-DEFAULT_MIN_MARGIN = 0.17
-DEFAULT_MIN_DROP = 0.05
-DEFAULT_DROP_WINDOW = 5
-
 # A median over fewer pages than this is noise, so a small field measures against the
 # median background seen across the labeled queries instead.
 MIN_BACKGROUND_PAGES = 8
 FALLBACK_BACKGROUND = 0.49
-
-# Specs are embedded from a derived input rather than the whole page and spread wider, so
-# they were measured apart from the fields.
-SPECS_MAX_DISTANCE = 0.42
-SPECS_MIN_MARGIN = 0.19
-SPECS_MIN_DROP = 0.02
-SPECS_DROP_WINDOW = 11
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS pages (
@@ -107,7 +81,11 @@ class Ranked:
 
 @dataclasses.dataclass(frozen=True)
 class Cutoffs:
-    """The rule that decides which pages of a ranking are hits. See the module constants."""
+    """The rule that decides which pages of a ranking are hits. See `FIELD_CUTOFFS`.
+
+    Either test can be turned off on its own by setting it out of reach, a `min_margin` or
+    `min_drop` of 1.0 or more. A `min_margin` of 0 admits every page within `max_distance`.
+    """
 
     max_distance: float
     min_margin: float
@@ -115,18 +93,23 @@ class Cutoffs:
     drop_window: int
 
 
-FIELD_CUTOFFS = Cutoffs(
-    max_distance=DEFAULT_MAX_DISTANCE,
-    min_margin=DEFAULT_MIN_MARGIN,
-    min_drop=DEFAULT_MIN_DROP,
-    drop_window=DEFAULT_DROP_WINDOW,
-)
-SPECS_CUTOFFS = Cutoffs(
-    max_distance=SPECS_MAX_DISTANCE,
-    min_margin=SPECS_MIN_MARGIN,
-    min_drop=SPECS_MIN_DROP,
-    drop_window=SPECS_DROP_WINDOW,
-)
+# Measured with nomic-embed-text-v1.5 and `scripts/search_bench.py` on 220 labeled queries
+# across six projects; the measurements are kept outside this repository. A page is a hit
+# when it stands out from its field in either of two ways, since neither alone separates
+# answers from unrelated queries:
+#
+# - The margin: it sits at least `min_margin` nearer than the field's median page. Relative
+#   because phrasing a query as a question lowers every distance at once, and because a log,
+#   which summarizes a whole session, sits near every query about its project.
+# - The drop: it sits above the largest gap between neighbors among the nearest
+#   `drop_window` pages, and that gap is at least `min_drop`. This finds the answer in a
+#   small field of similar pages, where every page sits near the median and no answer can
+#   clear the margin.
+#
+# `max_distance` caps both. Specs are embedded from a derived input rather than the whole
+# page and spread wider, so they were measured apart from the fields.
+FIELD_CUTOFFS = Cutoffs(max_distance=0.45, min_margin=0.17, min_drop=0.05, drop_window=5)
+SPECS_CUTOFFS = Cutoffs(max_distance=0.42, min_margin=0.19, min_drop=0.02, drop_window=11)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -305,24 +288,18 @@ def search(
     query: str,
     *,
     limit: int,
-    max_distance: float | None = None,
-    min_margin: float | None = None,
+    cutoffs: Cutoffs | None = None,
     exclude: Callable[[dict[str, Any]], bool] | None = None,
 ) -> list[Hit]:
     """Return the pages that stand out as nearest to `query`, nearest first, refreshing the index first.
 
-    See `apply_cutoffs` for which pages count as hits. `max_distance` and `min_margin`
-    override the measured defaults for `field_dir` when given.
+    See `apply_cutoffs` for which pages count as hits. `cutoffs` defaults to the measured
+    ones for `field_dir`.
     """
-    cutoffs = default_cutoffs(field_dir)
-    if max_distance is not None:
-        cutoffs = dataclasses.replace(cutoffs, max_distance=max_distance)
-    if min_margin is not None:
-        cutoffs = dataclasses.replace(cutoffs, min_margin=min_margin)
     hits = []
     for page in apply_cutoffs(
         rank_pages(field_dir, embedder, query),
-        cutoffs,
+        cutoffs or default_cutoffs(field_dir),
         limit=limit,
         exclude=exclude,
     ):
@@ -410,13 +387,15 @@ def apply_cutoffs(
     # A margin of 0 turns the margin off, leaving only `max_distance`.
     margin_ceiling = background - cutoffs.min_margin if cutoffs.min_margin > 0 else math.inf
     above_drop = _above_largest_drop(ranking, window=cutoffs.drop_window, min_drop=cutoffs.min_drop)
-    admitted = (
-        page
-        for index, page in enumerate(ranking)
-        if page.distance <= cutoffs.max_distance
-        and (page.distance <= margin_ceiling or index < above_drop)
+    # The ranking is nearest first, so the admitted pages are a leading run.
+    admitted = itertools.takewhile(
+        lambda pair: (
+            pair[1].distance <= cutoffs.max_distance
+            and (pair[1].distance <= margin_ceiling or pair[0] < above_drop)
+        ),
+        enumerate(ranking),
     )
-    kept = (page for page in admitted if exclude is None or not exclude(page.meta))
+    kept = (page for _index, page in admitted if exclude is None or not exclude(page.meta))
     return list(itertools.islice(kept, limit))
 
 

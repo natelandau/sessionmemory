@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path  # noqa: TC003
 
 import typer
@@ -39,7 +40,8 @@ MAX_DISTANCE = typer.Option(
     max=2.0,
     help=(
         "Farthest cosine distance that still counts as a hit. "
-        f"Default {fieldindex.DEFAULT_MAX_DISTANCE}, or {fieldindex.SPECS_MAX_DISTANCE} with --specs."
+        f"Default {fieldindex.FIELD_CUTOFFS.max_distance}, "
+        f"or {fieldindex.SPECS_CUTOFFS.max_distance} with --specs."
     ),
     show_default=False,
     hidden=True,
@@ -51,7 +53,8 @@ MIN_MARGIN = typer.Option(
     max=2.0,
     help=(
         "How much nearer than the median page searched a hit must sit. 0 turns this off. "
-        f"Default {fieldindex.DEFAULT_MIN_MARGIN}, or {fieldindex.SPECS_MIN_MARGIN} with --specs."
+        f"Default {fieldindex.FIELD_CUTOFFS.min_margin}, "
+        f"or {fieldindex.SPECS_CUTOFFS.min_margin} with --specs."
     ),
     show_default=False,
     hidden=True,
@@ -98,8 +101,7 @@ def search_command(  # noqa: PLR0913
         build_embedder(),
         text,
         limit=limit,
-        max_distance=max_distance,
-        min_margin=min_margin,
+        cutoffs=_cutoffs(field_dir, max_distance=max_distance, min_margin=min_margin),
         exclude=None if include_retired else fieldindex.default_exclude(field_dir),
     )
 
@@ -120,6 +122,17 @@ def search_command(  # noqa: PLR0913
             f"{hit.path}\n  {_title_line(hit, specs_flag=specs_flag)}\n  {hit.summary}"
             for hit in hits
         )
+    )
+
+
+def _cutoffs(
+    field_dir: Path, *, max_distance: float | None, min_margin: float | None
+) -> fieldindex.Cutoffs:
+    """Return the measured cutoffs for `field_dir` with any hidden override applied."""
+    overrides = {"max_distance": max_distance, "min_margin": min_margin}
+    return dataclasses.replace(
+        fieldindex.default_cutoffs(field_dir),
+        **{name: value for name, value in overrides.items() if value is not None},
     )
 
 

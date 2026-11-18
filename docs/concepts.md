@@ -347,17 +347,10 @@ and it is accepted as one.
 
 Automatic prompt-time retrieval is deferred rather than rejected. A hook that embedded
 each prompt and injected the nearest pages would remove the agent's decision entirely. The
-threshold such a hook needs is already measured and applied. `sessionmemory search`
-returns a page only when it sits within a cosine distance of 0.45 of the query and stands
-out from the rest of its field in one of two ways. It sits at least 0.17 nearer to the
-query than the median page in its field, or it sits above the largest gap between
-neighbors among the 5 nearest pages, and that gap is at least 0.05. A field with fewer
-than 8 pages measures against a fixed median of 0.49 instead. `--json` prints each hit's
-distance.
-
-Specs have their own numbers: a ceiling of 0.42, a margin of 0.19, and a gap of 0.02
-among the 11 nearest specs. A spec is embedded from its title and headings, not its body,
-and specs spread wider than learnings, so they were measured apart.
+threshold such a hook needs is already measured and applied: `sessionmemory search`
+returns a page only when it stands out from the rest of its field, so a query that nothing
+answers returns nothing. The rule and its measured numbers are in
+[the search reference](cli.md#sessionmemory-search). `--json` prints each hit's distance.
 
 ## The memoryfield format
 

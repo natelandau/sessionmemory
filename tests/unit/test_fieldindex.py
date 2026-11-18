@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import itertools
 import json
 import sqlite3
@@ -17,6 +18,9 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 NOW = "2026-09-01T14:03:11Z"
+
+# Admits every page, for tests about what a search returns rather than which pages are hits.
+_ADMIT_ALL = fieldindex.Cutoffs(max_distance=2.0, min_margin=0.0, min_drop=1.0, drop_window=5)
 
 
 @pytest.fixture(autouse=True)
@@ -103,9 +107,7 @@ def test_search_returns_nearest_first_with_title_and_summary(tmp_path):
     matching_text = (tmp_path / "match.md").read_text(encoding="utf-8")
 
     # When searching with that exact text
-    hits = fieldindex.search(
-        tmp_path, StubEmbedder(), matching_text, limit=5, max_distance=2.0, min_margin=0.0
-    )
+    hits = fieldindex.search(tmp_path, StubEmbedder(), matching_text, limit=5, cutoffs=_ADMIT_ALL)
 
     # Then it is first, with its display fields, and the distance is bounded
     assert [hit.path.name for hit in hits] == ["match.md", "other.md"]
@@ -118,9 +120,7 @@ def test_search_refreshes_before_querying(tmp_path):
     """Verify a page written moments ago is found without an explicit reindex."""
     _page(tmp_path, "Fresh")
 
-    hits = fieldindex.search(
-        tmp_path, StubEmbedder(), "anything", limit=5, max_distance=2.0, min_margin=0.0
-    )
+    hits = fieldindex.search(tmp_path, StubEmbedder(), "anything", limit=5, cutoffs=_ADMIT_ALL)
 
     assert [hit.path.name for hit in hits] == ["fresh.md"]
 
@@ -136,14 +136,7 @@ def test_search_honors_limit(tmp_path):
     for name in ("a", "b", "c"):
         _page(tmp_path, name)
 
-    assert (
-        len(
-            fieldindex.search(
-                tmp_path, StubEmbedder(), "q", limit=2, max_distance=2.0, min_margin=0.0
-            )
-        )
-        == 2
-    )
+    assert len(fieldindex.search(tmp_path, StubEmbedder(), "q", limit=2, cutoffs=_ADMIT_ALL)) == 2
 
 
 def test_forget_removes_one_row(tmp_path):
@@ -182,9 +175,7 @@ def test_refresh_indexes_a_page_with_invalid_utf8_bytes(tmp_path):
     result = fieldindex.refresh(tmp_path, StubEmbedder())
 
     assert result.added == 1
-    hits = fieldindex.search(
-        tmp_path, StubEmbedder(), "broken", limit=5, max_distance=2.0, min_margin=0.0
-    )
+    hits = fieldindex.search(tmp_path, StubEmbedder(), "broken", limit=5, cutoffs=_ADMIT_ALL)
     assert [hit.path.name for hit in hits] == ["invalid.md"]
 
 
@@ -193,9 +184,7 @@ def test_a_corrupt_index_is_rebuilt(tmp_path):
     _page(tmp_path, "Alpha")
     fieldindex.index_path(tmp_path, StubEmbedder()).write_bytes(b"not a database")
 
-    hits = fieldindex.search(
-        tmp_path, StubEmbedder(), "q", limit=5, max_distance=2.0, min_margin=0.0
-    )
+    hits = fieldindex.search(tmp_path, StubEmbedder(), "q", limit=5, cutoffs=_ADMIT_ALL)
 
     assert [hit.path.name for hit in hits] == ["alpha.md"]
 
@@ -208,7 +197,13 @@ def test_search_drops_hits_farther_than_max_distance(tmp_path):
     matching_text = (tmp_path / "match.md").read_text(encoding="utf-8")
 
     # When searching with a cutoff that only the identical page can clear
-    hits = fieldindex.search(tmp_path, StubEmbedder(), matching_text, limit=5, max_distance=0.5)
+    hits = fieldindex.search(
+        tmp_path,
+        StubEmbedder(),
+        matching_text,
+        limit=5,
+        cutoffs=dataclasses.replace(fieldindex.FIELD_CUTOFFS, max_distance=0.5),
+    )
 
     # Then the far page is absent rather than padding the result
     assert [hit.path.name for hit in hits] == ["match.md"]
@@ -219,34 +214,6 @@ def test_search_default_cutoff_is_the_measured_one(tmp_path):
     _page(tmp_path, "Far")
 
     assert fieldindex.search(tmp_path, StubEmbedder(), "unrelated", limit=5) == []
-
-
-def _field_of(directory: Path, count: int) -> str:
-    """Write `count` pages and return the text of the first, which the stub embeds as itself."""
-    for index in range(count):
-        _page(directory, f"Page {index}", summary=f"summary {index}", body="")
-    return (directory / "page-0.md").read_text(encoding="utf-8")
-
-
-def test_search_margin_keeps_the_page_that_stands_out_of_a_large_field(tmp_path):
-    """Verify a page far nearer than the field's median is a hit while the rest are not."""
-    # Given a field large enough to measure its own background
-    matching_text = _field_of(tmp_path, fieldindex.MIN_BACKGROUND_PAGES)
-
-    # When searching with no absolute ceiling to speak of
-    hits = fieldindex.search(tmp_path, StubEmbedder(), matching_text, limit=10, max_distance=2.0)
-
-    # Then only the page that stands out comes back
-    assert [hit.path.name for hit in hits] == ["page-0.md"]
-
-
-def test_search_margin_in_a_small_field_measures_against_the_fallback_background(tmp_path):
-    """Verify a field too small for a median still returns a page that answers the query."""
-    matching_text = _field_of(tmp_path, 2)
-
-    hits = fieldindex.search(tmp_path, StubEmbedder(), matching_text, limit=10, max_distance=2.0)
-
-    assert [hit.path.name for hit in hits] == ["page-0.md"]
 
 
 def _spec(directory: Path, name: str, text: str) -> Path:
@@ -287,9 +254,7 @@ def test_search_in_specs_shows_the_derived_summary_and_status(tmp_path):
     """Verify a spec hit carries the hit summary and its status."""
     directory = tmp_path / "specs"
     _spec(directory, "a.md", "---\ntitle: A\nstatus: shipped\n---\n# A\n\n## Goal\n\nThe goal.\n")
-    hits = fieldindex.search(
-        directory, StubEmbedder(), "A", limit=5, max_distance=2.0, min_margin=0
-    )
+    hits = fieldindex.search(directory, StubEmbedder(), "A", limit=5, cutoffs=_ADMIT_ALL)
     assert (hits[0].summary, hits[0].status) == ("The goal.", "shipped")
 
 
@@ -303,8 +268,7 @@ def test_search_exclude_does_not_use_up_the_limit(tmp_path):
         StubEmbedder(),
         "x",
         limit=1,
-        max_distance=2.0,
-        min_margin=0,
+        cutoffs=_ADMIT_ALL,
         exclude=specs.is_retired,
     )
     assert [h.path.name for h in hits] == ["b.md"]
@@ -322,9 +286,7 @@ def test_learning_hits_keep_their_frontmatter_summary(tmp_path):
     directory = tmp_path / "learnings"
     directory.mkdir()
     _page(directory, "T", summary="from meta")
-    hits = fieldindex.search(
-        directory, StubEmbedder(), "T", limit=1, max_distance=2.0, min_margin=0
-    )
+    hits = fieldindex.search(directory, StubEmbedder(), "T", limit=1, cutoffs=_ADMIT_ALL)
     assert (hits[0].summary, hits[0].status) == ("from meta", "")
 
 
@@ -332,9 +294,7 @@ def test_search_in_specs_titles_a_hit_from_its_h1(tmp_path):
     """Verify a spec without a frontmatter title shows its first heading."""
     directory = tmp_path / "specs"
     _spec(directory, "a.md", "# The Heading\n\n## Goal\n\nText.\n")
-    hits = fieldindex.search(
-        directory, StubEmbedder(), "x", limit=5, max_distance=2.0, min_margin=0
-    )
+    hits = fieldindex.search(directory, StubEmbedder(), "x", limit=5, cutoffs=_ADMIT_ALL)
     assert hits[0].title == "The Heading"
 
 
@@ -350,7 +310,7 @@ def test_search_skips_a_spec_whose_file_cannot_be_read(tmp_path):
         return False
 
     hits = fieldindex.search(
-        directory, StubEmbedder(), "x", limit=5, max_distance=2.0, min_margin=0, exclude=delete_a
+        directory, StubEmbedder(), "x", limit=5, cutoffs=_ADMIT_ALL, exclude=delete_a
     )
     assert [h.path.name for h in hits] == ["b.md"]
 
@@ -422,70 +382,62 @@ def _ranking(*distances: float) -> list[fieldindex.Ranked]:
     ]
 
 
-_NO_DROP = 1.0
-_TAIL = (0.60, 0.61, 0.62, 0.63, 0.64, 0.65, 0.66, 0.67)
+_RULE = fieldindex.Cutoffs(max_distance=1.0, min_margin=0.17, min_drop=0.05, drop_window=5)
+_MARGIN_ONLY = dataclasses.replace(_RULE, min_drop=1.0)
+_DENSE = (0.30, 0.37, 0.375, 0.38, 0.385, 0.39, 0.395, 0.40)
 
 
 @pytest.mark.parametrize(
     ("distances", "cutoffs", "expected"),
     [
         pytest.param(
-            (0.20, *_TAIL),
-            fieldindex.Cutoffs(max_distance=1.0, min_margin=0.17, min_drop=_NO_DROP, drop_window=5),
+            (0.20, 0.60, 0.61, 0.62, 0.63, 0.64, 0.65, 0.66, 0.67),
+            _MARGIN_ONLY,
             ["p0.md"],
             id="margin-admits-a-page-far-below-the-median",
         ),
         pytest.param(
-            (0.50, 0.51, 0.52, 0.53, 0.54, 0.55, 0.56, 0.57, 0.58),
-            fieldindex.Cutoffs(max_distance=1.0, min_margin=0.17, min_drop=0.05, drop_window=5),
-            [],
-            id="nothing-stands-out",
-        ),
-        pytest.param(
-            (0.30, 0.37, 0.375, 0.38, 0.385, 0.39, 0.395, 0.40),
-            fieldindex.Cutoffs(max_distance=1.0, min_margin=0.17, min_drop=0.05, drop_window=5),
-            ["p0.md"],
-            id="drop-admits-the-answer-in-a-dense-field-the-margin-misses",
+            _DENSE, _RULE, ["p0.md"], id="drop-admits-the-answer-in-a-dense-field-the-margin-misses"
         ),
         pytest.param(
             (0.30, 0.31, 0.40, 0.41, 0.42, 0.43, 0.44, 0.45),
-            fieldindex.Cutoffs(max_distance=1.0, min_margin=0.17, min_drop=0.05, drop_window=5),
+            _RULE,
             ["p0.md", "p1.md"],
             id="drop-keeps-a-cluster-above-the-break",
         ),
         pytest.param(
-            (0.30, 0.37, 0.375, 0.38, 0.385, 0.39, 0.395, 0.40),
-            fieldindex.Cutoffs(max_distance=0.25, min_margin=0.17, min_drop=0.05, drop_window=5),
+            _DENSE,
+            dataclasses.replace(_RULE, max_distance=0.25),
             [],
             id="max-distance-caps-the-drop",
         ),
         pytest.param(
             (0.30, 0.34, 0.375, 0.38, 0.385, 0.39, 0.395, 0.40),
-            fieldindex.Cutoffs(max_distance=1.0, min_margin=0.17, min_drop=0.05, drop_window=5),
+            _RULE,
             [],
             id="a-drop-under-the-minimum-admits-nothing",
         ),
         pytest.param(
             (0.30, 0.31, 0.32, 0.33, 0.34, 0.50, 0.51, 0.52),
-            fieldindex.Cutoffs(max_distance=1.0, min_margin=0.17, min_drop=0.05, drop_window=5),
+            _RULE,
             [],
             id="a-drop-past-the-window-admits-nothing",
         ),
         pytest.param(
             (0.20, 0.60),
-            fieldindex.Cutoffs(max_distance=1.0, min_margin=0.17, min_drop=_NO_DROP, drop_window=5),
+            _MARGIN_ONLY,
             ["p0.md"],
             id="small-field-measures-the-margin-against-the-fallback",
         ),
         pytest.param(
             (0.90,),
-            fieldindex.Cutoffs(max_distance=1.0, min_margin=0.17, min_drop=0.0, drop_window=5),
+            dataclasses.replace(_RULE, min_drop=0.0),
             [],
             id="a-single-far-page-has-no-drop",
         ),
         pytest.param(
             (0.50, 0.60, 0.70),
-            fieldindex.Cutoffs(max_distance=0.65, min_margin=0.0, min_drop=_NO_DROP, drop_window=5),
+            dataclasses.replace(_MARGIN_ONLY, max_distance=0.65, min_margin=0.0),
             ["p0.md", "p1.md"],
             id="margin-zero-leaves-only-max-distance",
         ),
