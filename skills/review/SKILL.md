@@ -62,8 +62,9 @@ the report.
 
 The JSON is a list with one object per reconciler, named by its `reconciler` field.
 Each object has `changed` (a list of the paths of the logs rewritten, so its length is
-the number of logs changed), `replaced`, `dropped`, `in_progress`, `unchecked`, and
-`notes`. Keep the payload, and report each reconciler's counts under its name. If the
+the number of logs changed), `replaced`, `dropped`, `in_progress`, `unchecked`,
+`notes`, and `note_logs`, which maps each reason in `notes` to the filenames of the logs
+that hold its unchecked lines. Keep the payload, and report each reconciler's counts under its name. If the
 command exits non-zero, keep its error message for the report and go on. The learnings
 review does not depend on it.
 
@@ -140,7 +141,7 @@ Apply every verdict. No delete and no edit needs a confidence gate.
 
 Write one short paragraph or a brief list. For the logs, report the logs changed (the
 length of `changed`), replaced, dropped, in progress, and unchecked, then every note
-verbatim, or the error message if `reconcile` failed. For the learnings, report pages
+verbatim with the logs `note_logs` gives for it, or the error message if `reconcile` failed. For the learnings, report pages
 reviewed, titles and summaries sharpened, pages merged and deleted, backlog lines
 added, and each CLAUDE.md recommendation, stated as not applied. Then list every `DELETE` the reviewer
 returned with low confidence, each with its one-line reason, so a wrong one can be
