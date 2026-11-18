@@ -138,11 +138,11 @@ reader in four ways:
   the reason is not self-evident, as with most refactors, tests, and changed
   defaults, the detail says what goes wrong without the change or what it enables.
 
-| Fails the reader                                 | Holds up                                                   |
-| ------------------------------------------------ | ---------------------------------------------------------- |
-| Fix the stale-hash path in refresh               | Stop search returning pages deleted since the last search |
-| Handle the phase-2 edge case                     | Keep a sweep from adding an item the backlog already has   |
-| Refactor the guard                               | Split the sweep's write checks so each can be tested alone |
+| Fails the reader                   | Holds up                                                   |
+| ---------------------------------- | ---------------------------------------------------------- |
+| Fix the stale-hash path in refresh | Stop search returning pages deleted since the last search  |
+| Handle the phase-2 edge case       | Keep a sweep from adding an item the backlog already has   |
+| Refactor the guard                 | Split the sweep's write checks so each can be tested alone |
 
 Before you run the command, check: from the title and detail alone, with no
 transcript and no code open, could that reader say what the change is and why it

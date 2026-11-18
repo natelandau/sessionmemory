@@ -1058,7 +1058,7 @@ file lacks it.
 | ---------- | ------------------------------------------------------------------------------------------------------------------------- |
 | `--kind`   | The heading the item goes under: `feat`, `fix`, `refactor`, `perf`, `docs`, `test`, `build`, `ci`, or `decide`. Required. |
 | `--size`   | Effort: `S`, `M`, or `L`. Required.                                                                                       |
-| `--title`  | The imperative description of the work. Required.                                                                         |
+| `--title`  | The imperative description of the work, in the product's words. Required.                                                 |
 | `--topic`  | A topic tag, without the leading hash.                                                                                    |
 | `--detail` | Context written as indented lines under the item: why, where, what was tried.                                             |
 | `--cwd`    | Directory to resolve the project from.                                                                                    |
@@ -1080,8 +1080,10 @@ sessionmemory new backlog --kind feat --size M \
 
 The command prints the line it wrote, then the path.
 
-Keep the title to one short sentence. Context that someone needs to start the work goes
-in `--detail`. The command writes each line of the text as a nested bullet under the
+Keep the title to one short sentence. Write it for a reader who knows the product but not
+the code: say what changes, not which function changes. Context that someone needs to
+start the work goes in `--detail`, with the files, the approach, and the reason when it is
+not obvious. The command writes each line of the text as a nested bullet under the
 item and wraps it at 88 columns. Blank lines are dropped, and a line that already starts
 with `- ` keeps its one marker. Indented lines are not counted as items, so the detail
 never changes the open count. Put the detail in single quotes when it holds a backtick or

@@ -82,12 +82,12 @@ Dispatch `backlog-validity-reviewer` with the path of `backlog.md` and one batch
 of open lines, leaving out the `## decide` items. It returns one verdict per line,
 keyed by `item`, with cited `evidence` and a `confidence`:
 
-| Verdict  | Meaning                                                                      |
-| -------- | ---------------------------------------------------------------------------- |
-| `CLOSE`  | The work is done.                                                            |
-| `REMOVE` | The item is obsolete.                                                        |
+| Verdict  | Meaning                                                                                    |
+| -------- | ------------------------------------------------------------------------------------------ |
+| `CLOSE`  | The work is done.                                                                          |
+| `REMOVE` | The item is obsolete.                                                                      |
 | `AMEND`  | The item is real, but the line has drifted or is unclear. `proposed_change` holds the fix. |
-| `KEEP`   | The item is real and accurate as written.                                    |
+| `KEEP`   | The item is real and accurate as written.                                                  |
 
 A `KEEP` can carry `unclear`: the reviewer could not work out what the item means.
 
