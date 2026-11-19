@@ -22,7 +22,7 @@
         "commitizen>=4.19.3",
         "coverage>=7.17.3",
         "duty>=1.10.1",
-        "gate-cache>=0.9.0",
+        "gate-cache>=0.11.0",
         "prek>=0.5.11",
         "pytest-clarity>=1.0.1",
         "pytest-cov>=7.1.0",

@@ -86,7 +86,8 @@ repos:
         stages: [commit-msg]
 
   # Checks with a duty run through it, so gate-cache skips any that already passed on
-  # this tree. Keep these ids in sync with PREK_DUTY_HOOKS in duties.py.
+  # this tree. Keep these ids in sync with PREK_DUTY_HOOKS in duties.py. A duty's own
+  # gate paths decide when it runs, so a hook with no file filter costs only a skip.
   - repo: local
     hooks:
       - id: ruff
@@ -110,8 +111,6 @@ repos:
         entry: uv run duty ty
         language: system
         pass_filenames: false
-        files: ^src/
-        types: [python]
         stages: [pre-commit, pre-push]
 
       - id: typos
@@ -143,14 +142,6 @@ repos:
         entry: uv run duty test
         language: system
         pass_filenames: false
-        files: |
-          (?x)^(
-          src/|
-          tests/|
-          hooks/|
-          uv\.lock|
-          pyproject\.toml
-          )
         stages: [pre-commit, pre-push]
 
       # Workaround until commitizen fixes its commitizen-branch hook (see commitizen #1923).

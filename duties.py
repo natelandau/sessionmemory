@@ -35,6 +35,10 @@ TEST_PATHS = (
     ":(exclude)CHANGELOG.md",
     ":(exclude).github/",
 )
+# Every input a Python lint gate reads, so a change elsewhere skips it
+PY_LINT_PATHS = ("*.py", "pyproject.toml", "uv.lock")
+YAML_LINT_PATHS = ("*.yml", "*.yaml", ".yamllint.yml", "uv.lock", "duties.py")
+TEST_JUNIT = ".cache/junit.xml"
 
 
 def strip_ansi(text: str) -> str:
@@ -52,7 +56,9 @@ def strip_ansi(text: str) -> str:
     return ansi_chars.sub("", text).replace("[", r"\[")
 
 
-def gated(*command: str, name: str, paths: tuple[str, ...] = ()) -> list[str]:
+def gated(
+    *command: str, name: str, paths: tuple[str, ...] = (), junit: str | None = None
+) -> list[str]:
     """Wrap a command in gate-cache so it skips when it already passed on the same content.
 
     gate-cache turns itself off when `CI` is set, so CI always runs the command. Run
@@ -63,12 +69,15 @@ def gated(*command: str, name: str, paths: tuple[str, ...] = ()) -> list[str]:
         name (str): The gate name, free of spaces. Put an input git does not track after an
             `@`, as in `test@python3.14`.
         paths (tuple[str, ...]): Git pathspecs that scope the gate. Defaults to the whole tree.
+        junit (str | None): A JUnit XML report the command writes, so run recording keeps
+            per-test results. Must be a path git ignores.
 
     Returns:
         list[str]: The argv to pass to `ctx.run`.
     """
     scope = [arg for path in paths for arg in ("--path", path)]
-    return ["gate-cache", "--name", name, *scope, "--", *command]
+    report = ["--junit", junit] if junit else []
+    return ["gate-cache", "--name", name, *scope, *report, "--", *command]
 
 
 def pyprefix(title: str) -> str:
@@ -93,14 +102,22 @@ def clean(ctx: Context) -> None:
     ctx.run("rm -rf pip-wheel-metadata")
     ctx.run("find . -type d -name __pycache__ | xargs rm -rf")
     ctx.run("find . -name '.DS_Store' -delete")
-    ctx.run(["gate-cache", "clear", "--yes"])
 
 
 @duty
 def ruff(ctx: Context) -> None:
     """Check the code quality with ruff."""
     ctx.run(
-        gated("ruff", "check", "--config", "pyproject.toml", "--no-fix", *PY_SRC_LIST, name="ruff"),
+        gated(
+            "ruff",
+            "check",
+            "--config",
+            "pyproject.toml",
+            "--no-fix",
+            *PY_SRC_LIST,
+            name="ruff",
+            paths=PY_LINT_PATHS,
+        ),
         title=pyprefix("code quality check"),
     )
 
@@ -110,7 +127,14 @@ def format(ctx: Context) -> None:  # noqa: A001
     """Check the code formatting with ruff."""
     ctx.run(
         gated(
-            "ruff", "format", "--config", "pyproject.toml", "--check", *PY_SRC_LIST, name="format"
+            "ruff",
+            "format",
+            "--config",
+            "pyproject.toml",
+            "--check",
+            *PY_SRC_LIST,
+            name="format",
+            paths=PY_LINT_PATHS,
         ),
         title=pyprefix("code formatting"),
     )
@@ -142,7 +166,15 @@ def typos(ctx: Context) -> None:
 def yamllint(ctx: Context) -> None:
     """Check YAML files with yamllint."""
     ctx.run(
-        gated("yamllint", "--strict", "--config-file", ".yamllint.yml", ".", name="yamllint"),
+        gated(
+            "yamllint",
+            "--strict",
+            "--config-file",
+            ".yamllint.yml",
+            ".",
+            name="yamllint",
+            paths=YAML_LINT_PATHS,
+        ),
         title=pyprefix("yamllint check"),
     )
 
@@ -157,7 +189,7 @@ def shellcheck(ctx: Context) -> None:
             "--severity=warning",
             *SH_SRC_LIST,
             name="shellcheck",
-            paths=("bin/", "duties.py"),
+            paths=("bin/", "uv.lock", "duties.py"),
         ),
         title=pyprefix("shellcheck"),
     )
@@ -206,13 +238,16 @@ def test(ctx: Context, *cli_args: str) -> None:
         "--cov-config=pyproject.toml",
         "--cov-report=xml",
         "--cov-report=term",
+        f"--junitxml={TEST_JUNIT}",
         *cli_args,
     )
     # A filtered run must never skip the full suite, so only the bare suite is gated. The
     # interpreter is not in the tree, so the key keeps one version's pass from skipping another's.
     python = f"python{sys.version_info.major}.{sys.version_info.minor}"
     ctx.run(
-        list(command) if cli_args else gated(*command, name=f"test@{python}", paths=TEST_PATHS),
+        list(command)
+        if cli_args
+        else gated(*command, name=f"test@{python}", paths=TEST_PATHS, junit=TEST_JUNIT),
         title=pyprefix("Running tests - this may take a while"),
         capture=CI,
     )
