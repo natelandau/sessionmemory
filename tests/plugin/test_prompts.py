@@ -63,7 +63,7 @@ def _rendered_prompt() -> str:
 
 
 def test_the_prompt_searches_the_repo_docs_before_a_learning():
-    """Verify the prompt names the repo docs and tells the sweep to search them before creating a learning."""
+    """Verify the prompt tells the sweep to search the repo docs, specs, and logs before creating a learning."""
     text = _rendered_prompt()
     command = text.index("new learning")
 
@@ -71,6 +71,8 @@ def test_the_prompt_searches_the_repo_docs_before_a_learning():
     assert len(grep_lines) == 1
     for doc in ("CLAUDE.md", "AGENTS.md", "README.md", "docs/"):
         assert f"{{{{repo}}}}/{doc}" in grep_lines[0]
+    for vault_dir in ("specs/", "logs/"):
+        assert f" {vault_dir}" in grep_lines[0]
     assert text.index("grep -rnis") < command
 
 

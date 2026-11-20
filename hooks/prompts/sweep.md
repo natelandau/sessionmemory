@@ -81,9 +81,10 @@ it. Read the file the fact is about, and read the diff of the commits in
 `<changes>` with `git -C {{repo}} show <sha>`; when `<changes>` is empty, read
 `git -C {{repo}} log -p -3`. Then search the repository's own docs for the
 candidate's distinctive terms (identifiers, names, values):
-`grep -rnis "<term>" {{repo}}/CLAUDE.md {{repo}}/AGENTS.md {{repo}}/README.md {{repo}}/docs/`.
-A candidate the code, a comment, a config value, a test, or any of those docs
-already states is dropped. A fact found only in a commit message is still
+`grep -rnis "<term>" {{repo}}/CLAUDE.md {{repo}}/AGENTS.md {{repo}}/README.md {{repo}}/docs/ specs/ logs/`.
+A candidate the code, a comment, a config value, a test, any of those docs, a
+spec, or an earlier session's log already states is dropped. This session's own
+log does not count. A fact found only in a commit message is still
 unrecorded, since sessions rarely read old commit messages. The transcript
 is not evidence for gate 2: it shows the fact being discovered, and everything
 being discovered looks new. Do this for every candidate, not only the doubtful

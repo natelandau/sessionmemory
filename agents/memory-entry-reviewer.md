@@ -36,11 +36,16 @@ place:
 1. **Generality** - does this help work on parts of the repository OTHER than
    the one that produced it? Open the referenced code: if the entry just narrates one
    subsystem's current implementation, it fails.
+   Name the work that will hit it next: an open backlog item, a recurring workflow,
+   or a tool every session runs. A page that leans on "a future feature in the same
+   area" or "someone might build X" fails.
 2. **Non-recoverability** - read the cited files. If the code, tests, types, or
    config already make this obvious, the entry is redundant. So is an entry the
    project's documentation already states: search `CLAUDE.md`, `AGENTS.md`,
    `README.md`, and `docs/` for the page's key terms with
-   `grep -rnis "<term>" CLAUDE.md AGENTS.md README.md docs/`. **Carve-out:** durable
+   `grep -rnis "<term>" CLAUDE.md AGENTS.md README.md docs/`, and search the vault's
+   `specs/` and `logs/`, beside `<learnings-dir>`, the same way: a fact a spec or a
+   log states is already recorded. **Carve-out:** durable
    user/project preferences and coding standards pass this gate even when simple -
    they are not recoverable from the code. The value test still applies to them: a
    preference no tool enforces costs the user a correction each time it is missed,
@@ -49,6 +54,12 @@ place:
    A rejected alternative never passes: "X was considered and rejected because Y"
    is a commit message written a second time, and the absence of X from the code is
    the rejection, not a trap.
+   Neither does a decision: a page whose core sentence is "the user chose,
+   rejected, removed, or approved X" belongs in the spec, the commit, or the log,
+   whatever word frames it. A preference passes the carve-out only when the user
+   stated it as a rule for future work ("always", "never", "from now on"), not as
+   a call about one feature. A negative finding ("X does not apply here") passes
+   only when missing it cost real time, or the code depends on X not applying.
 3. **Placement** - would a comment beside the code, or a line in the project's
    committed `CLAUDE.md`, serve the next agent better than a page they have to
    search for? A fact every session needs, about how the repository is laid out,
@@ -118,6 +129,10 @@ A title or summary that narrates how the fact came to be ("formerly", "used to",
 "no longer") is judged by what it says holds now. If the present condition is the
 fact, propose a title that states it and drops the history. If the history IS the
 fact, the page is DELETE, below.
+
+A page is one fact. A summary that joins two claims with "and", "but", or "so" is
+more than one fact or a story. A body that needs a date, a device, "checked on", or
+"the owner" to make sense is a log entry, and the page is DELETE.
 
 Propose a replacement whenever the existing title or summary names a topic rather
 than a fact, leads with something other than its subject, omits a condition the
