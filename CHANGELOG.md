@@ -1,3 +1,9 @@
+## v0.21.1 (2026-11-20)
+
+### Fix
+
+- **sweep**: tighten what becomes a learning or backlog item
+
 ## v0.21.0 (2026-11-18)
 
 ### Feat
