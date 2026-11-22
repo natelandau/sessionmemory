@@ -6,7 +6,7 @@ This project keeps a coding agent's durable memory as markdown. Each registered 
 owns one folder in a vault, and inside it `learnings/` and `logs/` are fields: flat
 directories of pages, each with its own deletable vector index. The CLI creates pages and
 searches them by meaning, and does nothing an agent already does well with Read, Grep,
-and Write. The repository is also a Claude Code plugin (`hooks/`, `skills/`).
+and Write. The repository is also a Claude Code plugin (`hooks/`, `skills/`, `agents/`).
 
 User-facing behavior is documented in `README.md` and `docs/` (`concepts.md`, `cli.md`,
 `plugin.md`, `vault-health.md`). Read those for what a command or hook does; this file
@@ -25,8 +25,8 @@ uv run sessionmemory init
 uv run sessionmemory --help
 ```
 
-`init` is a human bootstrap command. An agent never runs it, and no error message may
-suggest `init --force` as a next action.
+`init` is a human bootstrap command. An agent never runs it, and no error message
+suggests `init --force` as a next action.
 
 ## Development
 
@@ -140,7 +140,7 @@ never let it write an index ours reads: its Ollama vectors need not match fastem
 - One SQLite file per field (and one in `specs/`), named for the embedder, holding only
   the spec's `pages` table. Changing the model changes `embed.MODEL_CODE`, which renames
   the file; that is the whole migration.
-- The index is derived and disposable. Nothing may treat a value read from it as
+- The index is derived and disposable. Never treat a value read from it as
   authoritative. Freshness is the sha256 of raw bytes, and `search` refreshes before
   querying, so nothing depends on `reindex` having run.
 - Bump `specs.INPUT_VERSION` whenever `specs.embedding_input` changes what it derives,
@@ -154,10 +154,10 @@ never let it write an index ours reads: its Ollama vectors need not match fastem
 
 ### Locking
 
-There is no general application lock; do not reintroduce `lib/locking.py`. The CLI's one
-lock is `registry.locked`, held around every load-modify-save of `registry.toml`, and
-`registry.save` is called only inside it. The plugin's one lock is the per-project
-`sweep.lock` flock held by the sweep worker; that file is never deleted.
+Add no general application lock. The CLI's one lock is `registry.locked`, held around
+every load-modify-save of `registry.toml`, and `registry.save` is called only inside it.
+The plugin's one lock is the per-project `sweep.lock` flock held by the sweep worker;
+that file is never deleted.
 
 ### Injection
 
@@ -178,8 +178,9 @@ must update it.
   commitizen `version_files`.
 - `sessionmemory log` replaces the whole body on every call, which is why the sweep is
   handed the existing log first.
-- `sweep.md` is the one statement of the sweep's rules for both runs; `<!-- headless -->`
-  and `<!-- manual -->` blocks are kept for one kind and dropped for the other.
+- `hooks/prompts/sweep.md` is the one statement of the sweep's rules for both runs;
+  `<!-- headless -->` and `<!-- manual -->` blocks are kept for one kind and dropped for
+  the other.
 - `hookmain.begin` opens every hook and configures logging. Log one INFO line per
   decision, and every fail-open `except` logs at ERROR before swallowing.
 - Every git subprocess runs under `store.git_safe_env`. Commit staging and its skip
@@ -195,7 +196,7 @@ must update it.
 sum. Raising any such constant means raising the timeout that covers it.
 
 `SessionEnd` is different: Claude Code gives all SessionEnd hooks a shared 1.5s budget
-that a plugin cannot raise. Nothing it runs inline may start the vault CLI. It finds the
+that a plugin cannot raise. Nothing it runs inline starts the vault CLI. It finds the
 vault with `VaultCLI.locate`, commits with git alone, and leaves the version handshake to
 the detached sweep worker.
 
@@ -223,4 +224,7 @@ name, never a stale meaning.
 ## Conventions
 
 - Google-style docstrings, type hints on every signature
-- `ruff` for lint and format, `ty` for types, `prek` for pre-commit hooks
+- Agent-facing text that ships is code, not docs: `lib/agent_skill.md`, the `--prompt`
+  text, the `inject` guidance block, `skills/`, `agents/`, and `hooks/prompts/`. Type a
+  commit that changes it `feat`, `fix`, or `refactor` by its effect on agent behavior,
+  never `docs`. `docs` covers `README.md`, `docs/`, and this file.

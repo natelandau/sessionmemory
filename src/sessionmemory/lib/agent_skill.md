@@ -1,40 +1,39 @@
 # Managing a sessionmemory vault
 
-You are helping a person manage their sessionmemory vault: the store of a coding agent's
-durable memory, kept as markdown. This guide covers the vault as a whole: its projects,
-its health, its indexes, and the private files it keeps. It does not cover writing memory
-during a coding session, or the plugin's `/sessionmemory:*` slash commands. Those have
-their own instructions.
+The sessionmemory vault holds a coding agent's durable memory as markdown. This guide
+covers managing the vault as a whole for a person: its projects, its health, its indexes,
+and its private files. Writing memory during a coding session and the plugin's
+`/sessionmemory:*` slash commands are out of scope; they have their own instructions.
 
 ## Rules
 
 - Work on the whole vault unless the person names one project. If the current directory
   belongs to a registered project (`sessionmemory project --json` exits 0), ask whether
-  to focus on that project or on the whole vault.
-- Never run `sessionmemory init`. It is the person's bootstrap command. If no vault is
+  to focus on that project or on the whole vault before you report anything.
+- Never run `sessionmemory init`; it is the person's bootstrap command. If no vault is
   configured, say so and stop.
-- Ask before you do anything that removes, moves, or overwrites content: deleting a file,
+- Ask before anything that removes, moves, or overwrites content: deleting a file,
   editing or removing a registry entry, renaming or splitting a page, rewriting logs, and
-  any `sessionmemory local` command other than `status`. Say what you will change, then
-  wait for a yes.
-- The CLI creates pages, searches them, and reports on them. It never repairs. Make each
-  fix yourself with your own file tools, then run `sessionmemory doctor --json` again to confirm.
+  any `sessionmemory local` command other than `status`. Say what will change, then wait
+  for a yes. This covers every "Ask first" below.
+- Before any delete, run `git status` in the vault. If earlier work is uncommitted, tell
+  the person and wait for them to commit it, since git history is the only way to
+  recover a deleted file.
+- The CLI creates, searches, and reports. It never repairs. Make each fix with your own
+  file tools, then run `sessionmemory doctor --json` again to confirm it.
 - Add `--json` to every command whose output you parse. JSON output is never styled.
-- Never write a credential into the vault. It is a git repository and is committed.
-  Record where a credential lives instead.
-- Do not commit the vault. When the sessionmemory plugin is installed, its hooks commit
-  the vault at session start and session end. Otherwise, committing is the person's job.
-- Git history recovers anything deleted. Before you delete, check with `git status` in
-  the vault that earlier work is committed. If it is not, tell the person and wait for
-  them to commit it.
+- Never write a credential into the vault; it is a committed git repository. Record where
+  the credential lives instead.
+- Never commit the vault. With the sessionmemory plugin installed, its hooks commit at
+  session start and end. Without it, committing is the person's job.
 
 ## Find the vault
 
 The CLI reads `SESSIONMEMORY_VAULT`, then `[vault] root` in
 `~/.claude/sessionmemory.toml`. The variable wins when both are set. Inside a registered
 checkout, `project_dir` in `sessionmemory project --json` output is
-`<vault>/projects/<slug>`. Do not rely on `doctor` output for the vault's location: a
-clean vault reports no findings, and so no paths.
+`<vault>/projects/<slug>`. Never take the vault's location from `doctor` output: a clean
+vault reports no findings, and so no paths.
 
 ## Vault layout
 
@@ -122,7 +121,7 @@ Commands other than `doctor`, `delete`, and `reindex --all` act on one project, 
 `--cwd`, a directory inside that project's checkout. Run `sessionmemory <command> --help`
 for every option.
 
-`delete` asks for no confirmation and has no dry run. Ask the person first, every time.
+`delete` has no confirmation prompt and no dry run, so the person's yes is the only check.
 
 `reconcile` leaves a line it cannot prove right as it is and counts it as unchecked. Each
 warning gives the reason and lists the logs that hold the line. With `--json`,
@@ -151,11 +150,11 @@ finding is a suggestion, and the command always exits 0.
 | `local`       | A private file or its link has a problem                | Follow the remedy in the message. Ask before moving or overwriting a file. |
 | `doctor`      | A check itself failed                                   | Report the message. The other checks still ran.                            |
 
-The message of each finding names its specific remedy. Prefer it over the table above.
+When a finding's message names a remedy, follow the message over the table.
 
-Work through findings as the person directs. Group them by project when you report, and
-lead with the ones that hide memory from search: `filename`, `frontmatter`, `size`, then
-`registry` and `project`.
+Report findings grouped by project, in this order: `filename`, `frontmatter`, and `size`
+first, since they hide memory from search, then `registry` and `project`, then the rest.
+Fix them in the order the person picks.
 
 ## Private local files
 
@@ -198,15 +197,16 @@ Settings live in `~/.claude/sessionmemory.toml`, and a project can override any 
 | `local.link`     | `true`  | Link private files into the checkout at session start    |
 | `log.level`      | `info`  | The plugin's log level: debug, info, warning, error, off |
 
-`hooks/vault-path.py --log` in the plugin prints where the plugin's hooks log.
+The plugin's hooks write their own log. To find it, run `hooks/vault-path.py --log` from
+the plugin's install folder under `~/.claude/plugins/cache/`.
 
 ## Suggestions to offer
 
 When the person asks what is worth doing, look for:
 
-- Doctor findings, grouped by project, starting with the ones that hide memory.
+- Doctor findings, grouped and ordered as in the doctor section.
 - Registered projects whose checkout is gone, and project folders with no registry entry.
-- A project with many learnings whose `reviewed` date is missing or more than 30 days
-  old. Suggest the person run `/sessionmemory:review` in that project.
+- A project with 10 or more learnings whose `reviewed` date is missing or more than 30
+  days old. Suggest the person run `/sessionmemory:review` in that project.
 - A long `backlog.md`. Suggest the person run `/sessionmemory:backlog` in that project.
 - Index problems across projects, fixed by one `sessionmemory reindex --all`.

@@ -11,10 +11,11 @@ from importlib import resources
 PROMPT = """\
 Help me manage my sessionmemory vault.
 
-1. Run `sessionmemory --skill` and read all of it. It explains how the vault works and how to manage it.
-2. Run `sessionmemory doctor --json`.
-3. Give me a brief overview of the vault's state: its projects, and what doctor found in each.
-4. Ask me what I want help with, and offer a few suggestions based on what you found.
+1. Run `sessionmemory --skill` and read all of it before doing anything else.
+2. If this directory is in a registered project, ask whether to focus on it or on the whole vault.
+3. Run `sessionmemory doctor --json`.
+4. Give me an overview of that scope: one line per project with what doctor found there.
+5. Ask what I want help with, and offer up to three suggestions from what you found.
 
 Ask me before you delete, move, or overwrite anything."""
 

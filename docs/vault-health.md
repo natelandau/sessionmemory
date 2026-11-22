@@ -62,9 +62,10 @@ about the vault itself:
 ]
 ```
 
-## The eleven checks
+## The checks
 
-Each finding names the check that produced it.
+Each finding names the check that produced it. A `doctor` finding means that a check
+stopped with an error. It is described at the top of this page.
 
 ### `filename`
 
@@ -127,9 +128,21 @@ If the repository moved, edit that entry's `root` in `_system/registry.toml`. If
 repository is gone for good, delete the entry, and delete the project's folder under
 `projects/` when you want its pages gone too.
 
-This check also reports a `registry` finding when `_system/registry.toml` cannot be read
-at all. Correct the file by hand: with the registry unreadable, no directory resolves to
-a project and every other command fails.
+### `registry`
+
+The vault's `_system/registry.toml` cannot be read. The finding is grouped under
+`(vault)`:
+
+```
+1 suggestion
+(vault)
+  registry  registry is not valid TOML: Expected ']' at the end of a table
+            declaration (at line 1, column 22)
+For an AI agent's help, paste the output of: sessionmemory --prompt
+```
+
+Correct the file by hand. While the registry is unreadable, no directory resolves to a
+project, and every other command fails.
 
 ### `backlog`
 
