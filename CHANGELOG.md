@@ -1,3 +1,9 @@
+## v0.21.2 (2026-11-22)
+
+### Refactor
+
+- **agent**: tighten the vault guide, help prompt, and CLAUDE.md
+
 ## v0.21.1 (2026-11-20)
 
 ### Fix
